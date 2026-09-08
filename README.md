@@ -1,5 +1,7 @@
 # MW120R Custom Maps
 
+This project is made open source with the goal of providing a modding base for others who want to play, experiement with, and iterate on the code.
+
 Load CoD4 custom maps in **MW2019 Replay 1.20.4.7623265**. Includes normal Local Play map selection, a game console, and tools for converting downloaded maps or building maps from Radiant.
 
 ## Requirements
