@@ -1,0 +1,2 @@
+# Python 3.10+; validated on Python 3.14 with this Pillow release.
+Pillow==12.3.0

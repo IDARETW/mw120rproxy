@@ -2,7 +2,7 @@
 
 This project is made open source with the goal of providing a modding base for others who want to play, experiement with, and iterate on the code. Later iterations will be updated in this repo as the days progress.
 
-Load CoD4 custom maps in **MW2019 Replay 1.20.4.7623265**. Includes normal Local Play map selection, a game console, and tools for converting downloaded maps or building maps from Radiant.
+Load custom maps in **MW2019 Replay 1.20.4.7623265**. Includes normal Local Play map selection, a game console, CoD4 conversion tools, an offline importer for additional map and mesh formats, and a Radiant build workflow.
 
 ## Requirements
 
@@ -58,7 +58,8 @@ Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The
 
 Office, Nuketown, `mp_test`, and Super Mario 64 have been tested. Download the [Nuketown example package and usage instructions](docs/NUKETOWN_EXAMPLE.md) to try a converted map without running the conversion tools. The other maps are not included.
 
-- [Convert an IW3 map to IW8](docs/IW3_TO_IW8.md) — extract a downloaded CoD4 map, convert it, and install it in Replay.
+- [Import maps from other engines](docs/MULTI_ENGINE_IMPORT.md) — IW3/IW4/IW5, Quake II/III/Live, Source BSP, OBJ and glTF static imports, with explicit per-format validation and conversion limits.
+- [Convert an IW3 map to IW8](docs/IW3_TO_IW8.md) — the existing CoD4 workflow, including its additional map-specific features.
 - [Build a map from Radiant](docs/MAP_BUILDING.md#radiant-source-map) — compile your own map source and static models.
 - [Imported doors](docs/DOORS.md) — open, close, and bash compatible brush doors.
 - [Custom-map lighting](docs/LIGHTING.md) — rebuild a map with native sun shadows and adjust baked-light exposure.

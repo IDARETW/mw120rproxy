@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 PIN = "7d027e8f89118196713e955b0e11f8404149c54d"
 WAVELET = "39e46495b9dfa0f533fed4ae72b175d99eb165d5"
@@ -58,7 +59,9 @@ def configure(root, with_wavelet=False):
                 ) != original.stdout.replace(b"\r\n", b"\n"):
                     raise ValueError(f"Preserve unexpected local changes in {path}")
             destination.write_bytes(replacement)
-    print(f"Configured Replay exporters in {root}; rebuild UnlinkerCli next.")
+    importer = Path(__file__).resolve().parents[3] / "iw8-zonetool/tools/install_oat_exporters.py"
+    subprocess.run([sys.executable, str(importer), str(root)], check=True)
+    print(f"Configured IW3/IW4/IW5 Replay exporters in {root}; rebuild UnlinkerCli next.")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,18 @@ foreach ($project in @('mw120rproxy', 'iw8-zonetool')) {
     }
 }
 if ($Tests) {
+    $previousImportWriter = $env:IW8_ZONETOOL_WRITER
+    try {
+        $importConfiguration = if ($Mode -eq 'debug') { 'Debug' } else { 'Release' }
+        $env:IW8_ZONETOOL_WRITER = Join-Path $PSScriptRoot "iw8-zonetool/xmake-out/x64/$importConfiguration/iw8-zonetool.exe"
+        & python -B (Join-Path $PSScriptRoot 'iw8-zonetool/tests/test_import.py')
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Multi-engine importer tests failed'
+        }
+    }
+    finally {
+        $env:IW8_ZONETOOL_WRITER = $previousImportWriter
+    }
     & python -B (Join-Path $PSScriptRoot 'mw120rproxy/tests/test_shader_setup.py')
     if ($LASTEXITCODE -ne 0) {
         throw 'Shader setup validation tests failed'

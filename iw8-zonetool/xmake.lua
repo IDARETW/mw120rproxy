@@ -1,4 +1,4 @@
--- XMake build for the offline IW3 dump-to-IW8 package converter.
+-- XMake build for the offline multi-engine IW8 Replay package converter.
 -- Run from this directory:
 --   xmake f -m release -a x64 -y && xmake
 
@@ -22,7 +22,7 @@ target("iw8-zonetool")
 
     add_defines("WIN32", "NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS")
     add_includedirs("src", "src/common", "src/common/zlib")
-    add_syslinks("kernel32")
+    add_syslinks("kernel32", "shell32")
     add_cxflags("/permissive-", "/EHsc", "/W3", {tools = "cl"})
 
     if MODE_DEBUG then

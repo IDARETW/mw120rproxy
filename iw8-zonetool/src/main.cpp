@@ -28,6 +28,9 @@
 #include <fstream>
 #include <cmath>
 #include "common/json.hpp"
+#include "import_cli.h"
+#include <Windows.h>
+#include <shellapi.h>
 
 using namespace zt;
 
@@ -45,8 +48,10 @@ struct Args {
 
 void usage() {
     std::printf(
-        "iw8-zonetool — offline IW3->IW8 fastfile converter\n"
+        "iw8-zonetool — offline multi-engine -> IW8 Replay converter\n"
         "usage:\n"
+        "  iw8-zonetool import <source> <map> -o <build_dir> [--format <engine>] [--spawn X Y Z]\n"
+        "  iw8-zonetool formats                  (implemented readers and explicit limits)\n"
         "  iw8-zonetool fromdump <dumpDir> <map>   [-o <out_dir>]   (ZoneTool dump -> five IW8 .ff)\n"
         "  iw8-zonetool inspect  <file.ff>\n"
         "  iw8-zonetool validate-package <package_dir> <map>\n"
@@ -503,6 +508,23 @@ int cmd_fromdump(const Args& a) {
             "fromdump: comworld name='%s' isInUse=%d primaryLightCount=%d -> com_map valid-empty",
             cw.name.c_str(), cw.isInUse, cw.primaryLightCount);
 
+    const auto boundsPath = path_join(dumpDir, "maps/mp/" + map + ".d3dbsp.bounds.json");
+    if (file_exists(boundsPath)) {
+        std::ifstream file(boundsPath);
+        const auto j = nlohmann::json::parse(file);
+        if (j.at("schema") != 1 || j.at("min").size() != 3 || j.at("max").size() != 3)
+            throw std::runtime_error("Invalid imported map bounds schema");
+        for (int k = 0; k < 3; ++k) {
+            bounds.mn[k] = j.at("min").at(k).get<float>();
+            bounds.mx[k] = j.at("max").at(k).get<float>();
+            if (!std::isfinite(bounds.mn[k]) || !std::isfinite(bounds.mx[k]) ||
+                bounds.mn[k] >= bounds.mx[k] || std::abs(bounds.mn[k]) > 100100 ||
+                std::abs(bounds.mx[k]) > 100100)
+                throw std::runtime_error("Invalid imported map bounds");
+        }
+        bounds.valid = true;
+    }
+
     return writeMapPackage(a, map, outDir, ents, bounds, dumpDir);
 }
 
@@ -548,6 +570,15 @@ int cmd_validatePackage(const Args& a) {
 } // namespace
 
 int main(int argc, char** argv) try {
+    if (argc > 1 && (std::strcmp(argv[1], "import") == 0 || std::strcmp(argv[1], "formats") == 0)) {
+        int count = 0;
+        wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &count);
+        if (!wide)
+            return 1;
+        const int result = runImportCli(count, wide);
+        LocalFree(wide);
+        return result;
+    }
     Args a;
     if (!parse(argc, argv, a)) {
         usage();
