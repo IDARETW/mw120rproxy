@@ -45,6 +45,16 @@ if ($Tests) {
                 throw "Tests failed: $target"
             }
         }
+        & xmake -P (Join-Path $PSScriptRoot 'mw120rproxy/tests') -j 2 render_raster_tests
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Shader raster test build failed'
+        }
+        foreach ($rasterMode in @('biased', 'shadow', 'ao', 'night', 'glass', 'baked', 'baked_half', 'sky_half')) {
+            & './test-out/render_raster_tests.exe' 'mw120rproxy/tools/map_surface_realtime.hlsl' $rasterMode
+            if ($LASTEXITCODE -ne 0) {
+                throw "Shader raster test failed: $rasterMode"
+            }
+        }
     }
     finally {
         Pop-Location

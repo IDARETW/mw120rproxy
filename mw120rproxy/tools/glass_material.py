@@ -1,4 +1,4 @@
-"""Create an owned alpha-blended BSP technique using verified Replay state bits."""
+"""Create glass, foliage, and sky BSP techniques using Replay's native state bits."""
 
 import copy
 import hashlib
@@ -7,7 +7,7 @@ import struct
 
 
 def create(folder, stem, mapid, kind="glass"):
-    if kind not in ("glass", "foliage"):
+    if kind not in ("glass", "foliage", "sky"):
         raise ValueError("Invalid material kind")
     path = folder / (stem + ".techset.json")
     ts = json.loads(path.read_text())
@@ -20,8 +20,8 @@ def create(folder, stem, mapid, kind="glass"):
     # compare table 23E4748 index 3 = GREATER_EQUAL; bit 9 writes depth.
     other = struct.unpack_from("<Q", header, 0xA0)[0]
     other = (other & ~(0xE00 | 3)) | (
-        0xC00 if kind == "glass" else 0xE00
-    )  # depth test, no depth writes, two-sided
+        0xE00 if kind == "foliage" else 0xC00
+    )  # Two-sided depth test; only foliage writes depth.
     struct.pack_into("<QQ", header, 0xA0, other, 0x28054 if kind == "glass" else 0)
     # ECF8C0 tables: RGB srcalpha(4), invsrcalpha(5); alpha one(0),
     # invsrcalpha(5); ADD(0). Preserve destination scene alpha convention.

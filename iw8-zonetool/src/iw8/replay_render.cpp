@@ -222,9 +222,8 @@ Mesh Load(const std::string& path) {
     static_cast<Material&>(m) = LoadMaterial(path, j);
     if (j.contains("additionalMaterials"))
         for (const auto& definition : j.at("additionalMaterials")) {
-            if (m.additionalMaterials.size() >= 2)
-                throw std::runtime_error(
-                    "Only cutout and glass additional materials are supported");
+            if (m.additionalMaterials.size() >= 3)
+                throw std::runtime_error("At most three additional materials are supported");
             m.additionalMaterials.push_back(LoadMaterial(path, definition));
         }
     const auto& list = j.at("surfaces");
@@ -245,9 +244,20 @@ Mesh Load(const std::string& path) {
         const unsigned material = s.value("materialIndex", 0u);
         if (material > m.additionalMaterials.size())
             throw std::runtime_error("Invalid surface material index");
-        if (!material && m.opaqueCount != i)
+        const bool sky = s.value("renderClass", std::string{}) == "sky";
+        if (sky) {
+            if (!material || vertices.empty() || !vertices[0].contains("lightmapUV") ||
+                vertices[0]["lightmapUV"].size() != 2)
+                throw std::runtime_error(
+                    "Sky surfaces require a separate material and UV metadata");
+            const float flags = vertices[0]["lightmapUV"][1].get<float>();
+            if (!std::isfinite(flags) || flags < 0 || std::fmod(std::floor(flags), 4.0f) != 1)
+                throw std::runtime_error("Invalid sky UV metadata");
+        }
+        const bool opaque = !material || sky;
+        if (opaque && m.opaqueCount != i)
             throw std::runtime_error("Opaque surfaces must precede transparent surfaces");
-        if (!material)
+        if (opaque)
             ++m.opaqueCount;
         m.surfaceMaterials.push_back(material);
         if (vertices.size() < 3 || vertices.size() > 65535 || indices.empty() ||
@@ -319,14 +329,13 @@ Mesh Load(const std::string& path) {
         put(sf, 12, baseIndex);
         put(sf, 16, PTR_FOLLOWS);
         put(sf, 24, i);
-        put(sf, 32, uint32_t(0x41));
+        put(sf, 32, uint32_t(sky ? 0x40 : 0x41));
         auto* bounds = m.bounds.data() + 56 * i;
         for (unsigned k = 0; k < 3; ++k) {
             put(bounds, 4 * k, (mins[k] + maxs[k]) * 0.5f);
             put(bounds, 12 + 4 * k, (maxs[k] - mins[k]) * 0.5f + 1.0f);
         }
         auto* gpu = m.surfData.data() + 88 * i;
-
         put(gpu, 4, uint32_t(1));
         put(gpu, 8, posOffset);
         put(gpu, 12, normalOffset);

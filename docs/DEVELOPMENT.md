@@ -11,6 +11,10 @@ Build both targets and run the custom-map tests:
 .\build.ps1 -Tests
 ```
 
+This builds both targets and runs package, door, and shader checks. The lighting
+tests use the Windows software renderer and do not launch Replay. See
+[Custom-map lighting](LIGHTING.md) for rebuilding and testing map packages.
+
 Verify a DLL against your game:
 
 ```powershell

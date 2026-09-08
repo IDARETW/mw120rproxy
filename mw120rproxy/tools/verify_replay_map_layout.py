@@ -20,11 +20,14 @@ def verify(game, package, map_id):
     owned_material = ("w/mw120r_" + map_id).encode("ascii")
     glass_material = owned_material + b"_glass"
     foliage_material = owned_material + b"_foliage"
+    sky_material = owned_material + b"_sky"
 
     def owned_techset(name):
         return (
             re.fullmatch(
-                b"tw/mw120r_" + map_id.encode("ascii") + b"_(?:(?:glass|foliage)_)?[0-9a-f]{12}",
+                b"tw/mw120r_"
+                + map_id.encode("ascii")
+                + b"_(?:(?:glass|foliage|sky)_)?[0-9a-f]{12}",
                 name,
             )
             is not None
@@ -147,6 +150,8 @@ def verify(game, package, map_id):
                 b"," + glass_material,
                 foliage_material,
                 b"," + foliage_material,
+                sky_material,
+                b"," + sky_material,
             ):
                 raise ValueError("Unrecognized material reference")
             name(reference)
@@ -157,7 +162,13 @@ def verify(game, package, map_id):
                 if (
                     not allow_definition
                     or reference
-                    not in (b"w/mw120r_test", owned_material, glass_material, foliage_material)
+                    not in (
+                        b"w/mw120r_test",
+                        owned_material,
+                        glass_material,
+                        foliage_material,
+                        sky_material,
+                    )
                     or material[28:32] != bytes([3, 4, 1, 0])
                 ):
                     raise ValueError("Unexpected custom world material counts")
@@ -336,6 +347,7 @@ def verify(game, package, map_id):
                 [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 31, 25],
                 [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 18, 11, 31, 25],
                 [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 18, 11, 18, 11, 31, 25],
+                [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 18, 11, 18, 11, 18, 11, 31, 25],
                 [14] * 4 + [17] * 4 + [18, 11, 31, 25],
             ):
                 raise ValueError("Unexpected render asset dependency order")
@@ -431,8 +443,12 @@ def verify(game, package, map_id):
                     if count == 1 and (
                         te[0x9C] != 35
                         or (q(te, 0xA0), q(te, 0xA8))
-                        != ((0xE00, 0) if b"_foliage_" in ts_name else (0xC00, 0x28054))
-                        or not any(k in ts_name for k in (b"_foliage_", b"_glass_"))
+                        != (
+                            (0xE00, 0)
+                            if b"_foliage_" in ts_name
+                            else (0xC00, 0) if b"_sky_" in ts_name else (0xC00, 0x28054)
+                        )
+                        or not any(k in ts_name for k in (b"_foliage_", b"_glass_", b"_sky_"))
                     ):
                         raise ValueError("Invalid transparent BSP blend/depth state")
                     tn = body[pos : body.index(b"\0", pos)]
@@ -568,6 +584,8 @@ def verify(game, package, map_id):
                         if q(sf, 16) != 2**64 - 2:
                             raise ValueError("Missing surface material")
                         material_refs.append(read_material(take(120)))
+                        if material_refs[-1] == b"," + sky_material and u(sf, 32) & 1:
+                            raise ValueError("Sky surfaces must not cast sun shadows")
                     transparent = sum(
                         r in (b"," + glass_material, b"," + foliage_material) for r in material_refs
                     )
