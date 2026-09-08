@@ -12,7 +12,7 @@ Load CoD4 custom maps in **MW2019 Replay 1.20.4.7623265**. Includes normal Local
 - Python 3.10 or newer.
 - A converted MW120R map package to play a custom map. Original CoD4 `.ff` files cannot be installed directly.
 
-The repository contains source and tools. Game executables, stock fastfiles, shaders, downloaded maps, and prebuilt DLLs are not bundled.
+The repository contains source and tools. Game executables, stock fastfiles, shaders, and prebuilt DLLs are not bundled in the source checkout. A ready-to-install [Nuketown example map](docs/NUKETOWN_EXAMPLE.md) is available as a separate release download.
 
 ## Build and install
 
@@ -56,7 +56,7 @@ Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The
 3. Start **Team Deathmatch with zero bots** for the first test, select a loadout, and spawn.
 4. Return to Local Play before switching maps. Stock maps can be selected from the same menu.
 
-Office, Nuketown, `mp_test`, and Super Mario 64 have been tested. These maps are not included.
+Office, Nuketown, `mp_test`, and Super Mario 64 have been tested. Download the [Nuketown example package and usage instructions](docs/NUKETOWN_EXAMPLE.md) to try a converted map without running the conversion tools. The other maps are not included.
 
 - [Convert an IW3 map to IW8](docs/IW3_TO_IW8.md) — extract a downloaded CoD4 map, convert it, and install it in Replay.
 - [Build a map from Radiant](docs/MAP_BUILDING.md#radiant-source-map) — compile your own map source and static models.
