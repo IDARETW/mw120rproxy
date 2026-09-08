@@ -19,3 +19,21 @@ python mw120rproxy/tools/verify_build.py `
     --game 'D:/Games/Replay/game_dx12_ship_replay.exe' `
     --out evidence/build-validation.json
 ```
+
+## Formatting
+
+Use four spaces for indentation and a 100-column limit. Keep control-flow blocks
+and multi-statement functions on separate lines.
+
+- C++ uses the repository's `.clang-format` settings (clang-format 22).
+- Python uses Black with the settings in `pyproject.toml`.
+- PowerShell uses `PSScriptAnalyzerSettings.psd1` with `Invoke-Formatter`.
+
+Format a C++ file or the Python tools:
+
+```powershell
+clang-format -i mw120rproxy/custom_maps.cpp
+python -m black mw120rproxy/tools mw120rproxy/tests
+```
+
+Leave bundled third-party code in its original style.

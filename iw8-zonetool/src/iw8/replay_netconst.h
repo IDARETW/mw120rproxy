@@ -49,6 +49,6 @@ inline constexpr const char* Tags[] = {
     "stk", // 39
     "vcm", // 40
 };
-inline constexpr unsigned Count = sizeof(Tags)/sizeof(Tags[0]);
+inline constexpr unsigned Count = sizeof(Tags) / sizeof(Tags[0]);
 static_assert(Count == 41);
 }

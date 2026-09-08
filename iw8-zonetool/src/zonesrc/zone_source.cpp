@@ -27,8 +27,12 @@ ZoneSource::ZoneSource(const std::string& assetDir, const std::string& mapName, 
     }
 }
 
-std::string ZoneSource::abs(const std::string& rel) const { return path_join(dir_, rel); }
-std::string ZoneSource::manifestPath() const { return abs(map_ + ".csv"); }
+std::string ZoneSource::abs(const std::string& rel) const {
+    return path_join(dir_, rel);
+}
+std::string ZoneSource::manifestPath() const {
+    return abs(map_ + ".csv");
+}
 
 // ---- manifest ------------------------------------------------------------------------------------
 void ZoneSource::manifestAdd(const std::string& iw8Type, const std::string& name) {
@@ -37,7 +41,8 @@ void ZoneSource::manifestAdd(const std::string& iw8Type, const std::string& name
 
 bool ZoneSource::manifestWrite() {
     std::ostringstream os;
-    for (const auto& e : entries_) os << e.type << "," << e.name << "\n";
+    for (const auto& e : entries_)
+        os << e.type << "," << e.name << "\n";
     std::string s = os.str();
     if (!write_file_str(manifestPath(), s)) {
         zt::err("zonesrc: cannot write manifest %s", manifestPath().c_str());
@@ -57,10 +62,15 @@ bool ZoneSource::manifestRead() {
     std::istringstream is(s);
     std::string line;
     while (std::getline(is, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.empty()) continue;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty())
+            continue;
         size_t c = line.find(',');
-        if (c == std::string::npos) { zt::warn("zonesrc: skipping malformed manifest line '%s'", line.c_str()); continue; }
+        if (c == std::string::npos) {
+            zt::warn("zonesrc: skipping malformed manifest line '%s'", line.c_str());
+            continue;
+        }
         entries_.push_back({line.substr(0, c), line.substr(c + 1)});
     }
     zt::info("zonesrc: read manifest %s (%zu assets)", manifestPath().c_str(), entries_.size());
@@ -88,12 +98,24 @@ bool ZoneSource::blobExists(const std::string& relPath) const {
 }
 
 // ---- typed paths ---------------------------------------------------------------------------------
-std::string ZoneSource::imagePath(const std::string& name) const    { return "images/" + name + ".iwi"; }
-std::string ZoneSource::materialPath(const std::string& name) const { return "materials/" + name + ".json"; }
-std::string ZoneSource::xmodelPath(const std::string& name) const   { return "xmodel/" + name + ".json"; }
-std::string ZoneSource::xsurfacePath(const std::string& name) const { return "xsurface/" + name + ".xsurf_bin"; }
-std::string ZoneSource::mapSubPath(const std::string& sub) const    { return "maps/mp/" + map_ + ".d3dbsp." + sub; }
-std::string ZoneSource::dynentPath() const                          { return "dynentitylist0.dynent.data"; }
+std::string ZoneSource::imagePath(const std::string& name) const {
+    return "images/" + name + ".iwi";
+}
+std::string ZoneSource::materialPath(const std::string& name) const {
+    return "materials/" + name + ".json";
+}
+std::string ZoneSource::xmodelPath(const std::string& name) const {
+    return "xmodel/" + name + ".json";
+}
+std::string ZoneSource::xsurfacePath(const std::string& name) const {
+    return "xsurface/" + name + ".xsurf_bin";
+}
+std::string ZoneSource::mapSubPath(const std::string& sub) const {
+    return "maps/mp/" + map_ + ".d3dbsp." + sub;
+}
+std::string ZoneSource::dynentPath() const {
+    return "dynentitylist0.dynent.data";
+}
 
 // ---- typed convenience ---------------------------------------------------------------------------
 bool ZoneSource::addImage(const std::string& name, const std::vector<uint8_t>& iwiBytes) {
@@ -125,7 +147,9 @@ bool ZoneSource::getXSurface(const std::string& name, std::vector<uint8_t>& out)
     return readBlob(xsurfacePath(name), out);
 }
 
-bool ZoneSource::addMapSubText(const std::string& iw8Type, const std::string& sub, const std::string& text) {
+bool ZoneSource::addMapSubText(const std::string& iw8Type,
+                               const std::string& sub,
+                               const std::string& text) {
     if (!iw8Type.empty()) {
         std::string assetName = "maps/mp/" + map_ + ".d3dbsp";
         manifestAdd(iw8Type, assetName);
@@ -145,8 +169,8 @@ bool ZoneSource::readDynents(std::vector<uint8_t>& out) const {
 
 // ---- self-describing blob header -----------------------------------------------------------------
 // layout: char magic[8] (NUL-padded) | u32 version | u32 payloadLen | payload[payloadLen]
-std::vector<uint8_t> ZoneSource::wrapBlob(const char* magic, uint32_t version,
-                                          const void* payload, size_t n) {
+std::vector<uint8_t>
+ZoneSource::wrapBlob(const char* magic, uint32_t version, const void* payload, size_t n) {
     std::vector<uint8_t> b;
     b.resize(16 + n);
     std::memset(b.data(), 0, 8);
@@ -154,20 +178,25 @@ std::vector<uint8_t> ZoneSource::wrapBlob(const char* magic, uint32_t version,
     std::memcpy(b.data() + 8, &version, 4);
     uint32_t len = static_cast<uint32_t>(n);
     std::memcpy(b.data() + 12, &len, 4);
-    if (n) std::memcpy(b.data() + 16, payload, n);
+    if (n)
+        std::memcpy(b.data() + 16, payload, n);
     return b;
 }
 
-bool ZoneSource::unwrapBlob(const std::vector<uint8_t>& blob, std::string& magicOut,
-                            uint32_t& versionOut, std::vector<uint8_t>& payloadOut) {
-    if (blob.size() < 16) return false;
+bool ZoneSource::unwrapBlob(const std::vector<uint8_t>& blob,
+                            std::string& magicOut,
+                            uint32_t& versionOut,
+                            std::vector<uint8_t>& payloadOut) {
+    if (blob.size() < 16)
+        return false;
     char m[9] = {0};
     std::memcpy(m, blob.data(), 8);
     magicOut = m;
     std::memcpy(&versionOut, blob.data() + 8, 4);
     uint32_t len = 0;
     std::memcpy(&len, blob.data() + 12, 4);
-    if (16 + static_cast<size_t>(len) > blob.size()) return false;
+    if (16 + static_cast<size_t>(len) > blob.size())
+        return false;
     payloadOut.assign(blob.begin() + 16, blob.begin() + 16 + len);
     return true;
 }

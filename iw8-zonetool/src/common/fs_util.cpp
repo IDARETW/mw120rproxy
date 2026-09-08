@@ -12,11 +12,15 @@ namespace zt {
 bool read_file(const std::string& path, std::vector<uint8_t>& out) {
     out.clear();
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
+    if (!f)
+        return false;
     std::fseek(f, 0, SEEK_END);
     long n = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    if (n < 0) { std::fclose(f); return false; }
+    if (n < 0) {
+        std::fclose(f);
+        return false;
+    }
     out.resize(static_cast<size_t>(n));
     size_t r = (n > 0) ? std::fread(out.data(), 1, static_cast<size_t>(n), f) : 0;
     out.resize(r);
@@ -26,16 +30,21 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 
 bool read_file_str(const std::string& path, std::string& out) {
     std::vector<uint8_t> b;
-    if (!read_file(path, b)) { out.clear(); return false; }
+    if (!read_file(path, b)) {
+        out.clear();
+        return false;
+    }
     out.assign(reinterpret_cast<const char*>(b.data()), b.size());
     return true;
 }
 
 bool write_file(const std::string& path, const void* data, size_t n) {
     std::string dir = path_dir(path);
-    if (!dir.empty()) mkdirs(dir);
+    if (!dir.empty())
+        mkdirs(dir);
     FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) return false;
+    if (!f)
+        return false;
     size_t w = (n > 0) ? std::fwrite(data, 1, n, f) : 0;
     std::fclose(f);
     return w == n;
@@ -50,7 +59,8 @@ bool write_file_str(const std::string& path, const std::string& data) {
 }
 
 bool mkdirs(const std::string& dir) {
-    if (dir.empty()) return true;
+    if (dir.empty())
+        return true;
     std::error_code ec;
     fs::path p = fs::path(dir);
     fs::create_directories(p, ec);
@@ -63,13 +73,17 @@ bool mkdirs(const std::string& dir) {
 }
 
 std::string path_join(const std::string& a, const std::string& b) {
-    if (a.empty()) return b;
-    if (b.empty()) return a;
+    if (a.empty())
+        return b;
+    if (b.empty())
+        return a;
     char last = a.back();
     bool aSep = (last == '/' || last == '\\');
     bool bSep = (b.front() == '/' || b.front() == '\\');
-    if (aSep && bSep) return a + b.substr(1);
-    if (!aSep && !bSep) return a + "/" + b;
+    if (aSep && bSep)
+        return a + b.substr(1);
+    if (!aSep && !bSep)
+        return a + "/" + b;
     return a + b;
 }
 
@@ -103,7 +117,8 @@ bool list_dir(const std::string& dir, std::vector<std::string>& out) {
     out.clear();
     std::error_code ec;
     fs::directory_iterator it(fs::path(dir), ec);
-    if (ec) return false;
+    if (ec)
+        return false;
     for (const auto& e : it) {
         out.push_back(e.path().filename().string());
     }

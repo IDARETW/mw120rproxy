@@ -1,22 +1,5 @@
-// asset_image.cpp — Stage-B IW8 GfxImage writer (SPEC §4b/§3a). Replaces the iw8_assets_stub.cpp
-// no-op for the image family. Implements convert::iw8_write_image = read the self-describing image
-// blob (images/<name>.iwi) the Stage-A reader produced, convert IW3 fields -> IW8 GfxImage(0xE8), and
-// emit it into the ZoneWriter in load-read order with the correct -2/null pointer sentinels.
-//
-// PROTOTYPE IMAGE MODEL (SPEC §3a / §4 "inline pixel buffer in the zone, no .xpak yet"):
-//   - streams[4] (the xpak/streamed locators) are ZEROED and streamedPartCount=0 => the loader treats
-//     the image as fully resident (no imagefile*.pak dependency we cannot satisfy offline).
-//   - pixels (@0xE0) carries the -2 "follows" sentinel; the raw DXT/RGBA mip chain is written inline
-//     right after the struct's name, exactly where the loader reads a follows pointer.
-//   - fallback/packedAtlasData are null.
-//
-// STREAM PLACEMENT (mirrors the proven map_zone.h pattern: struct -> TEMP_PRELOAD, trailing data ->
-// VIRTUAL). The body callback runs with VIRTUAL(8) already active (iw8_zone.cpp build()); it pushes its
-// own streams and pops back to VIRTUAL for the next asset.
-//
-// SIZE INVARIANT: we stamp into a fixed kImageSize(0xE8) byte buffer via the pinned field offsets
-// (iw8_focus::GfxImage), so the emitted struct is exactly g_assetSizes[19]=0xE8 bytes regardless of
-// host struct padding.
+
+
 #include "../convert/registry.h"
 #include "../convert/image_fmt.h"
 #include "../common/log.h"
@@ -31,49 +14,58 @@
 namespace convert {
 
 // GfxImage(19) = 0xE8 bytes (g_assetSizes). Pinned field offsets (iw8_focus::GfxImage):
-static constexpr size_t kImageSize         = iw8sz::IMAGE;        // 0xE8
-static constexpr size_t kGI_name           = 0x00;   // const char*   //PTR
-static constexpr size_t kGI_packedAtlas    = 0x08;   // uint8_t*      //PTR
-static constexpr size_t kGI_textureId      = 0x10;   // u32 (runtime; 0)
-static constexpr size_t kGI_format         = 0x14;   // u32 GfxPixelFormat
-static constexpr size_t kGI_flags          = 0x18;   // u32 GfxImageFlags
-static constexpr size_t kGI_totalSize      = 0x1C;   // u32
-static constexpr size_t kGI_semanticSpec   = 0x20;   // u32
-static constexpr size_t kGI_width          = 0x24;   // u16
-static constexpr size_t kGI_height         = 0x26;   // u16
-static constexpr size_t kGI_depth          = 0x28;   // u16
-static constexpr size_t kGI_numElements    = 0x2A;   // u16
-static constexpr size_t kGI_atlasInfo      = 0x2C;   // u16
-static constexpr size_t kGI_semantic       = 0x2E;   // u8
-static constexpr size_t kGI_category       = 0x2F;   // u8
-static constexpr size_t kGI_levelCount     = 0x30;   // u8
-static constexpr size_t kGI_streamedPart   = 0x31;   // u8
-static constexpr size_t kGI_decalAtlasIdx  = 0x32;   // u8
-static constexpr size_t kGI_freqBias       = 0x33;   // i8
-static constexpr size_t kGI_streams        = 0x38;   // GfxImageStreamData[4] (0xA0) — zeroed
-static constexpr size_t kGI_fallback       = 0xD8;   // GfxImageFallback* //PTR
-static constexpr size_t kGI_pixels         = 0xE0;   // void* GfxImagePixels //PTR
+static constexpr size_t kImageSize = iw8sz::IMAGE; // 0xE8
+static constexpr size_t kGI_name = 0x00;           // const char*   //PTR
+static constexpr size_t kGI_packedAtlas = 0x08;    // uint8_t*      //PTR
+static constexpr size_t kGI_textureId = 0x10;      // u32 (runtime; 0)
+static constexpr size_t kGI_format = 0x14;         // u32 GfxPixelFormat
+static constexpr size_t kGI_flags = 0x18;          // u32 GfxImageFlags
+static constexpr size_t kGI_totalSize = 0x1C;      // u32
+static constexpr size_t kGI_semanticSpec = 0x20;   // u32
+static constexpr size_t kGI_width = 0x24;          // u16
+static constexpr size_t kGI_height = 0x26;         // u16
+static constexpr size_t kGI_depth = 0x28;          // u16
+static constexpr size_t kGI_numElements = 0x2A;    // u16
+static constexpr size_t kGI_atlasInfo = 0x2C;      // u16
+static constexpr size_t kGI_semantic = 0x2E;       // u8
+static constexpr size_t kGI_category = 0x2F;       // u8
+static constexpr size_t kGI_levelCount = 0x30;     // u8
+static constexpr size_t kGI_streamedPart = 0x31;   // u8
+static constexpr size_t kGI_decalAtlasIdx = 0x32;  // u8
+static constexpr size_t kGI_freqBias = 0x33;       // i8
+static constexpr size_t kGI_streams = 0x38;        // GfxImageStreamData[4] (0xA0) — zeroed
+static constexpr size_t kGI_fallback = 0xD8;       // GfxImageFallback* //PTR
+static constexpr size_t kGI_pixels = 0xE0;         // void* GfxImagePixels //PTR
 
 // keep the pinned struct in lockstep with these literal offsets (compile-time guard)
 static_assert(sizeof(iw8_focus::GfxImage) == kImageSize, "GfxImage must be 0xE8");
-static_assert(offsetof(iw8_focus::GfxImage, format)   == kGI_format,   "format@0x14");
-static_assert(offsetof(iw8_focus::GfxImage, totalSize)== kGI_totalSize,"totalSize@0x1C");
-static_assert(offsetof(iw8_focus::GfxImage, streams)  == kGI_streams,  "streams@0x38");
+static_assert(offsetof(iw8_focus::GfxImage, format) == kGI_format, "format@0x14");
+static_assert(offsetof(iw8_focus::GfxImage, totalSize) == kGI_totalSize, "totalSize@0x1C");
+static_assert(offsetof(iw8_focus::GfxImage, streams) == kGI_streams, "streams@0x38");
 static_assert(offsetof(iw8_focus::GfxImage, fallback) == kGI_fallback, "fallback@0xD8");
-static_assert(offsetof(iw8_focus::GfxImage, pixels)   == kGI_pixels,   "pixels@0xE0");
+static_assert(offsetof(iw8_focus::GfxImage, pixels) == kGI_pixels, "pixels@0xE0");
 
-static inline void s64(uint8_t* p, size_t off, uint64_t v) { std::memcpy(p + off, &v, 8); }
-static inline void s32(uint8_t* p, size_t off, uint32_t v) { std::memcpy(p + off, &v, 4); }
-static inline void s16(uint8_t* p, size_t off, uint16_t v) { std::memcpy(p + off, &v, 2); }
-static inline void s8 (uint8_t* p, size_t off, uint8_t  v) { p[off] = v; }
+static inline void s64(uint8_t* p, size_t off, uint64_t v) {
+    std::memcpy(p + off, &v, 8);
+}
+static inline void s32(uint8_t* p, size_t off, uint32_t v) {
+    std::memcpy(p + off, &v, 4);
+}
+static inline void s16(uint8_t* p, size_t off, uint16_t v) {
+    std::memcpy(p + off, &v, 2);
+}
+static inline void s8(uint8_t* p, size_t off, uint8_t v) {
+    p[off] = v;
+}
 
-// IW8 GfxImage category/semantic defaults (IW-line enums; material may have overridden the stored
-// semantic — we carry whatever the blob recorded, defaulting to LOAD_FROM_FILE / COLOR_MAP).
 static constexpr uint8_t IW8_IMG_CATEGORY_LOAD_FROM_FILE = 3;
-static constexpr uint8_t IW8_TS_COLOR_MAP                = 2;
+static constexpr uint8_t IW8_TS_COLOR_MAP = 2;
 
 void iw8_write_image(iw8::ZoneWriter& zw, iw3sr::ZoneSource& zs, const char* name) {
-    if (!name) { zt::err("iw8_write_image: null name"); return; }
+    if (!name) {
+        zt::err("iw8_write_image: null name");
+        return;
+    }
 
     // 1) Load the self-describing image blob produced by Stage A.
     std::vector<uint8_t> blob;
@@ -94,10 +86,10 @@ void iw8_write_image(iw8::ZoneWriter& zw, iw3sr::ZoneSource& zs, const char* nam
     std::string realName;
     if (h.nameLen > 0 && off + h.nameLen <= blob.size()) {
         const char* np = reinterpret_cast<const char*>(blob.data() + off);
-        realName.assign(np);                 // up to NUL within nameLen
+        realName.assign(np); // up to NUL within nameLen
         off += h.nameLen;
     } else {
-        realName = name;                     // fall back to the manifest/stem name
+        realName = name; // fall back to the manifest/stem name
     }
     const uint8_t* pix = blob.data() + off;
     uint32_t pixAvail = (off <= blob.size()) ? static_cast<uint32_t>(blob.size() - off) : 0u;
@@ -105,49 +97,49 @@ void iw8_write_image(iw8::ZoneWriter& zw, iw3sr::ZoneSource& zs, const char* nam
     uint32_t pixSize = cvtimg::validate_pixel_size(h, pixAvail);
 
     // 2) Convert IW3 fields -> IW8 GfxImage and stamp the 0xE8 struct.
-    const uint32_t iw8Format  = cvtimg::iw3_to_iw8_pixel_format(h.iw3Format);
-    const uint8_t  semantic   = h.semantic  ? h.semantic  : IW8_TS_COLOR_MAP;
-    const uint8_t  category   = h.category  ? h.category  : IW8_IMG_CATEGORY_LOAD_FROM_FILE;
-    const uint8_t  levelCount = h.levelCount ? h.levelCount : 1;
-    const uint32_t totalSize  = pixSize ? pixSize
-                                        : cvtimg::iw3_total_size(h.iw3Format, h.width, h.height, levelCount);
+    const uint32_t iw8Format = cvtimg::iw3_to_iw8_pixel_format(h.iw3Format);
+    const uint8_t semantic = h.semantic ? h.semantic : IW8_TS_COLOR_MAP;
+    const uint8_t category = h.category ? h.category : IW8_IMG_CATEGORY_LOAD_FROM_FILE;
+    const uint8_t levelCount = h.levelCount ? h.levelCount : 1;
+    const uint32_t totalSize =
+        pixSize ? pixSize : cvtimg::iw3_total_size(h.iw3Format, h.width, h.height, levelCount);
 
     uint8_t gi[kImageSize];
     std::memset(gi, 0, sizeof(gi));
-    s64(gi, kGI_name,         iw8::PTR_FOLLOWS);                 // name follows inline (-2)
-    s64(gi, kGI_packedAtlas,  iw8::PTR_NULL);                   // no atlas blob
-    s32(gi, kGI_textureId,    0);                              // runtime; 0
-    s32(gi, kGI_format,       iw8Format);                      // GfxPixelFormat (provisional map)
-    s32(gi, kGI_flags,        0);                              // GfxImageFlags (none for resident)
-    s32(gi, kGI_totalSize,    totalSize);
+    s64(gi, kGI_name, iw8::PTR_FOLLOWS);     // name follows inline (-2)
+    s64(gi, kGI_packedAtlas, iw8::PTR_NULL); // no atlas blob
+    s32(gi, kGI_textureId, 0);               // runtime; 0
+    s32(gi, kGI_format, iw8Format);
+    s32(gi, kGI_flags, 0); // GfxImageFlags (none for resident)
+    s32(gi, kGI_totalSize, totalSize);
     s32(gi, kGI_semanticSpec, 0);
-    s16(gi, kGI_width,        h.width);
-    s16(gi, kGI_height,       h.height);
-    s16(gi, kGI_depth,        h.depth ? h.depth : 1);
-    s16(gi, kGI_numElements,  h.numElements ? h.numElements : 1);
-    s16(gi, kGI_atlasInfo,    0);
-    s8 (gi, kGI_semantic,     semantic);
-    s8 (gi, kGI_category,     category);
-    s8 (gi, kGI_levelCount,   levelCount);
-    s8 (gi, kGI_streamedPart, 0);                              // 0 => fully resident (no xpak)
-    s8 (gi, kGI_decalAtlasIdx,0);
-    s8 (gi, kGI_freqBias,     0);
+    s16(gi, kGI_width, h.width);
+    s16(gi, kGI_height, h.height);
+    s16(gi, kGI_depth, h.depth ? h.depth : 1);
+    s16(gi, kGI_numElements, h.numElements ? h.numElements : 1);
+    s16(gi, kGI_atlasInfo, 0);
+    s8(gi, kGI_semantic, semantic);
+    s8(gi, kGI_category, category);
+    s8(gi, kGI_levelCount, levelCount);
+    s8(gi, kGI_streamedPart, 0); // 0 => fully resident (no xpak)
+    s8(gi, kGI_decalAtlasIdx, 0);
+    s8(gi, kGI_freqBias, 0);
     // streams[4] @0x38 (0xA0): left zeroed (no streamed parts).
-    s64(gi, kGI_fallback,     iw8::PTR_NULL);                  // no low-res fallback
-    // pixels @0xE0: -2 follows if we have inline pixels, else null.
-    s64(gi, kGI_pixels,       pixSize ? iw8::PTR_FOLLOWS : iw8::PTR_NULL);
+    s64(gi, kGI_fallback, iw8::PTR_NULL);
+
+    s64(gi, kGI_pixels, pixSize ? iw8::PTR_FOLLOWS : iw8::PTR_NULL);
 
     // 3) Emit in load-read order. struct -> TEMP_PRELOAD(1); name + pixels -> VIRTUAL(8).
     zw.pushStream(iw8::XFILE_BLOCK_TEMP_PRELOAD);
-    zw.align(7);                                   // 8-align the struct
+    zw.align(7); // 8-align the struct
     zw.write(gi, sizeof(gi));
-        zw.pushStream(iw8::XFILE_BLOCK_VIRTUAL);
-        zw.writeStr(realName);                     // GfxImage.name (the TRUE asset name)
-        if (pixSize) {
-            zw.align(15);                          // 16-align pixel data (DXT block alignment)
-            zw.write(pix, pixSize);                // the raw DXT/RGBA mip chain (resident inline)
-        }
-        zw.popStream();
+    zw.pushStream(iw8::XFILE_BLOCK_VIRTUAL);
+    zw.writeStr(realName); // GfxImage.name (the TRUE asset name)
+    if (pixSize) {
+        zw.align(15);           // 16-align pixel data (DXT block alignment)
+        zw.write(pix, pixSize); // the raw DXT/RGBA mip chain (resident inline)
+    }
+    zw.popStream();
     zw.popStream();
 
     zt::info("iw8_write_image: '%s' %ux%u fmt=%u(iw3=%d) L=%u %s%u px -> GfxImage(0xE8)",

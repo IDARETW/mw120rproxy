@@ -1,15 +1,5 @@
-// maps_convert.h — IW3->IW8 conversion helpers for the MAPS asset family (map_ents/col_map/com_map
-// + dynentitylist). Namespaced under convert:: to avoid clashes with other families' helpers.
-//
-// The single load-critical conversion is the entityString: IW3 (CoD4) serializes entity key/value
-// pairs with STRING keys ("classname" "worldspawn"); IW8 (MW2019) serializes them with NUMERIC keyIds
-// ({ 212 "worldspawn" }). The engine's spawn parser (G_SelectSpawnPoint / GScr_AddFieldsForEntity)
-// reads the numeric keyId form. iw3ToIw8EntityString() reparses the IW3 text and re-emits the IW8
-// numeric form, dropping keys we have no keyId for (and the entities that become empty).
-//
-// keyIds are the canonical IW8 entity-field ids confirmed from real shipped maps
-// (fastfile_research/dumps/*.entityString.txt) and the proven iw8zonewriter mp_test_iw8_ents.txt:
-// classname=212, origin=709, angles=80, etc.
+
+
 #pragma once
 #include <cstdint>
 #include <string>
@@ -35,18 +25,18 @@ size_t iw3ToIw8EntityString(const std::string& in, std::string& out);
 // pose + physics) for downstream/inspection use. The LOAD-critical IW8 MapEnts body emits 0 dynents
 // (the trailing dynent region zeroed = load-safe); these are recorded for fidelity / future work.
 struct DynentRecord {
-    int32_t  type;          // IW3 DynEntityType
-    float    quat[4];       // GfxPlacement.quat
-    float    origin[3];     // GfxPlacement.origin
-    char     modelName[64]; // resolved XModel name (or "")
+    int32_t type;       // IW3 DynEntityType
+    float quat[4];      // GfxPlacement.quat
+    float origin[3];    // GfxPlacement.origin
+    char modelName[64]; // resolved XModel name (or "")
     uint16_t brushModel;
-    int32_t  health;
-    int32_t  contents;
+    int32_t health;
+    int32_t contents;
 };
 
 // Serialize/parse the dynentitylist blob. Format = wrapBlob("DYNENT", 1, payload) where payload =
 // u32 count followed by count * DynentRecord (POD, little-endian host write).
 std::vector<uint8_t> serializeDynents(const std::vector<DynentRecord>& recs);
-bool                 parseDynents(const std::vector<uint8_t>& blob, std::vector<DynentRecord>& out);
+bool parseDynents(const std::vector<uint8_t>& blob, std::vector<DynentRecord>& out);
 
 } // namespace convert

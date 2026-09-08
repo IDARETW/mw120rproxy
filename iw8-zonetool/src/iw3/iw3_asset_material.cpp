@@ -37,35 +37,51 @@ namespace iw3mtl {
 
 // ---- absolute-offset readers (no cursor advance) -------------------------------------------------
 bool readAt(iw3::LoadCtx& lc, size_t abs, void* dst, size_t n) {
-    if (abs == iw3::LoadCtx::npos) return false;
-    if (abs + n > lc.size()) return false;
+    if (abs == iw3::LoadCtx::npos)
+        return false;
+    if (abs + n > lc.size())
+        return false;
     std::memcpy(dst, lc.base() + abs, n);
     return true;
 }
 
 std::string readCStrAt(iw3::LoadCtx& lc, size_t abs) {
-    if (abs == iw3::LoadCtx::npos || abs >= lc.size()) return std::string();
+    if (abs == iw3::LoadCtx::npos || abs >= lc.size())
+        return std::string();
     const char* p = reinterpret_cast<const char*>(lc.base() + abs);
     size_t maxLen = lc.size() - abs;
     size_t len = 0;
-    while (len < maxLen && p[len] != '\0') ++len;
+    while (len < maxLen && p[len] != '\0')
+        ++len;
     return std::string(p, len);
 }
 
 size_t resolvePtrAt(iw3::LoadCtx& lc, size_t ptrFieldAbs, bool* isNull, bool* isFollows) {
-    if (isNull) *isNull = false;
-    if (isFollows) *isFollows = false;
+    if (isNull)
+        *isNull = false;
+    if (isFollows)
+        *isFollows = false;
     uint32_t v = 0;
-    if (!readScalarAt(lc, ptrFieldAbs, v)) { if (isNull) *isNull = true; return iw3::LoadCtx::npos; }
-    if (v == 0u) { if (isNull) *isNull = true; return iw3::LoadCtx::npos; }
+    if (!readScalarAt(lc, ptrFieldAbs, v)) {
+        if (isNull)
+            *isNull = true;
+        return iw3::LoadCtx::npos;
+    }
+    if (v == 0u) {
+        if (isNull)
+            *isNull = true;
+        return iw3::LoadCtx::npos;
+    }
     bool follows = false;
     size_t target = lc.resolve(v, &follows);
-    if (follows && isFollows) *isFollows = true;
+    if (follows && isFollows)
+        *isFollows = true;
     return target;
 }
 
 std::string readImageName(iw3::LoadCtx& lc, size_t imageBaseAbs) {
-    if (imageBaseAbs == iw3::LoadCtx::npos) return std::string();
+    if (imageBaseAbs == iw3::LoadCtx::npos)
+        return std::string();
     size_t nameAbs = resolvePtrAt(lc, imageBaseAbs + off::img_name);
     return readCStrAt(lc, nameAbs);
 }
@@ -90,23 +106,20 @@ void iw3_dump_material(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs) {
     uint8_t gameFlags = 0, sortKey = 0, animationX = 0, animationY = 0;
     uint8_t numMaps = 0, constantCount = 0, stateBitsCount = 0, stateFlags = 0, cameraRegion = 0;
     uint32_t surfaceTypeBits = 0;
-    readScalarAt(lc, matBase + off::gameFlags,       gameFlags);
-    readScalarAt(lc, matBase + off::sortKey,         sortKey);
-    readScalarAt(lc, matBase + off::animationX,      animationX);
-    readScalarAt(lc, matBase + off::animationY,      animationY);
+    readScalarAt(lc, matBase + off::gameFlags, gameFlags);
+    readScalarAt(lc, matBase + off::sortKey, sortKey);
+    readScalarAt(lc, matBase + off::animationX, animationX);
+    readScalarAt(lc, matBase + off::animationY, animationY);
     readScalarAt(lc, matBase + off::surfaceTypeBits, surfaceTypeBits);
-    readScalarAt(lc, matBase + off::numMaps,         numMaps);
-    readScalarAt(lc, matBase + off::constantCount,   constantCount);
-    readScalarAt(lc, matBase + off::stateBitsCount,  stateBitsCount);
-    readScalarAt(lc, matBase + off::stateFlags,      stateFlags);
-    readScalarAt(lc, matBase + off::cameraRegion,    cameraRegion);
+    readScalarAt(lc, matBase + off::numMaps, numMaps);
+    readScalarAt(lc, matBase + off::constantCount, constantCount);
+    readScalarAt(lc, matBase + off::stateBitsCount, stateBitsCount);
+    readScalarAt(lc, matBase + off::stateFlags, stateFlags);
+    readScalarAt(lc, matBase + off::cameraRegion, cameraRegion);
 
     ordered_json matdata;
     matdata["name"] = name;
 
-    // techniqueSet name (deferred): if the techset pointer is non-null and resolves to a name string we
-    // record it (matching zonetool "iw3/<name>"); otherwise omit (the IW8 writer treats absent =
-    // technique-less, load-safe).
     {
         bool tsNull = false;
         size_t tsBase = resolvePtrAt(lc, matBase + off::techniqueSet, &tsNull);
@@ -114,18 +127,19 @@ void iw3_dump_material(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs) {
             // IW3 MaterialTechniqueSet.name is at offset 0 of the techset struct (a const char* ptr).
             size_t tsNameAbs = resolvePtrAt(lc, tsBase + 0);
             std::string tsName = readCStrAt(lc, tsNameAbs);
-            if (!tsName.empty()) matdata["techniqueSet->name"] = std::string("iw3/") + tsName;
+            if (!tsName.empty())
+                matdata["techniqueSet->name"] = std::string("iw3/") + tsName;
         }
     }
 
-    matdata["gameFlags"]   = static_cast<int>(gameFlags);
-    matdata["animationX"]  = static_cast<int>(animationX);
-    matdata["animationY"]  = static_cast<int>(animationY);
-    matdata["sortKey"]     = static_cast<int>(sortKey);
-    matdata["unknown"]     = 0;
+    matdata["gameFlags"] = static_cast<int>(gameFlags);
+    matdata["animationX"] = static_cast<int>(animationX);
+    matdata["animationY"] = static_cast<int>(animationY);
+    matdata["sortKey"] = static_cast<int>(sortKey);
+    matdata["unknown"] = 0;
     matdata["surfaceTypeBits"] = static_cast<int>(surfaceTypeBits);
-    matdata["stateFlags"]  = static_cast<int>(stateFlags);
-    matdata["cameraRegion"]= static_cast<int>(cameraRegion);
+    matdata["stateFlags"] = static_cast<int>(stateFlags);
+    matdata["cameraRegion"] = static_cast<int>(cameraRegion);
 
     // --- constantTable[constantCount] (MaterialConstantDef, stride 0x20) ---
     {
@@ -137,14 +151,14 @@ void iw3_dump_material(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs) {
                 size_t e = ctBase + static_cast<size_t>(i) * off::CD_SIZE;
                 uint32_t nameHash = 0;
                 char cname[13] = {0};
-                float literal[4] = {0,0,0,0};
+                float literal[4] = {0, 0, 0, 0};
                 readScalarAt(lc, e + off::cd_nameHash, nameHash);
                 readAt(lc, e + off::cd_name, cname, 12);
                 readAt(lc, e + off::cd_literal, literal, sizeof(literal));
                 ordered_json cent;
-                cent["name"]     = std::string(cname); // NUL-bounded within the 12-byte field
+                cent["name"] = std::string(cname); // NUL-bounded within the 12-byte field
                 cent["nameHash"] = nameHash;
-                cent["literal"]  = { literal[0], literal[1], literal[2], literal[3] };
+                cent["literal"] = {literal[0], literal[1], literal[2], literal[3]};
                 carr.push_back(cent);
             }
         }
@@ -162,7 +176,7 @@ void iw3_dump_material(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs) {
                 uint32_t lb0 = 0, lb1 = 0;
                 readScalarAt(lc, e + 0, lb0);
                 readScalarAt(lc, e + 4, lb1);
-                sarr.push_back({ lb0, lb1 });
+                sarr.push_back({lb0, lb1});
             }
         }
         matdata["stateMap"] = sarr;
@@ -178,20 +192,17 @@ void iw3_dump_material(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs) {
                 size_t e = mBase + static_cast<size_t>(i) * off::TD_SIZE;
                 uint32_t typeHash = 0;
                 int8_t firstChar = 0, secondLast = 0, sampleState = 0, semantic = 0;
-                readScalarAt(lc, e + off::td_typeHash,    typeHash);
-                readScalarAt(lc, e + off::td_firstChar,   firstChar);
-                readScalarAt(lc, e + off::td_secondLast,  secondLast);
+                readScalarAt(lc, e + off::td_typeHash, typeHash);
+                readScalarAt(lc, e + off::td_firstChar, firstChar);
+                readScalarAt(lc, e + off::td_secondLast, secondLast);
                 readScalarAt(lc, e + off::td_sampleState, sampleState);
-                readScalarAt(lc, e + off::td_semantic,    semantic);
+                readScalarAt(lc, e + off::td_semantic, semantic);
 
                 std::string imgName;
                 size_t imgBase = resolvePtrAt(lc, e + off::td_image);
                 if (imgBase != iw3::LoadCtx::npos) {
                     if (convert::mtl::iw3_semantic_is_water(static_cast<uint8_t>(semantic))) {
-                        // water_t* — the bound image is water_t.image (last field). We read its name by
-                        // resolving water_t.image's ptr. water_t layout (IW3): writable(4) + H0(ptr,4) +
-                        // wTerm(ptr,4) + M,N(8) + Lx,Lz,gravity,windvel(16) + winddir[2](8) +
-                        // amplitude(4) + codeConstant[4](16) + image(ptr) -> image ptr @ 0x40.
+
                         constexpr size_t water_image_off = 0x40;
                         size_t innerImgBase = resolvePtrAt(lc, imgBase + water_image_off);
                         imgName = readImageName(lc, innerImgBase);
@@ -201,12 +212,12 @@ void iw3_dump_material(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs) {
                 }
 
                 ordered_json image;
-                image["image"]         = imgName;
-                image["semantic"]      = static_cast<int>(semantic);
-                image["sampleState"]   = static_cast<int>(sampleState);
+                image["image"] = imgName;
+                image["semantic"] = static_cast<int>(semantic);
+                image["sampleState"] = static_cast<int>(sampleState);
                 image["lastCharacter"] = static_cast<int>(secondLast);
-                image["firstCharacter"]= static_cast<int>(firstChar);
-                image["typeHash"]      = typeHash;
+                image["firstCharacter"] = static_cast<int>(firstChar);
+                image["typeHash"] = typeHash;
                 marr.push_back(image);
             }
         }
@@ -219,8 +230,8 @@ void iw3_dump_material(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs) {
         zt::err("iw3_dump material '%s': failed to write zone-source JSON", name.c_str());
         return;
     }
-    zt::info("iw3_dump material '%s': %u maps, %u const, %u statebits -> %s",
-             name.c_str(), numMaps, constantCount, stateBitsCount, zs.materialPath(name).c_str());
+    zt::info("iw3_dump material '%s': %u maps, %u const, %u statebits -> %s", name.c_str(), numMaps,
+             constantCount, stateBitsCount, zs.materialPath(name).c_str());
 }
 
 } // namespace convert

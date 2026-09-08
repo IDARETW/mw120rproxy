@@ -1,31 +1,5 @@
-// write_xmodel.cpp — Stage B (Tier2): IW8 (MW2019 1.24) XModel(9)=0x2B0 writer.
-// Serializes a convert::xmodel::Iw8XModelRecord into the ZoneWriter as a real IW8 XModel asset, in
-// load-read order with the RAW tagged-pointer sentinels (-2 follows / -3 insert / 0 null). FLAG-GATED
-// (only registered when main runs with --assets) -> it can NEVER affect the Tier1 srv/map zone.
-//
-// FIELD MAP: src/iw8/iw8_focus_structs.h iw8_focus::XModel (dev.i64-pinned, sizeof 0x2B0 incl. the
-// 8-byte retail tail; matches reference/iw8_asset_structs_pinned.h). The g_assetSizes invariant
-// (sizeof == 0x2B0) is static_asserted in that header -> if it ever drifts the build fails here too.
-//
-// STREAM PLACEMENT (mirrors the proven Tier1 map_zone.h emitters): the XModel struct (0x2B0) is written
-// to TEMP_PRELOAD(1); the trailing name + arrays to VIRTUAL(8). The ZoneWriter::build() has already
-// framed XAssetList(TEMP) + XAsset[](VIRTUAL, header=-3) and is sitting in the VIRTUAL stream when our
-// body callback runs; we push/pop around our own stream switches and leave the stream as we found it.
-//
-// CROSS-REFERENCE POLICY (prototype, LOAD-SAFE):
-//   The IW8 loader resolves an asset cross-reference via a positive PACKED OFFSET into already-loaded
-//   zone data (DB_ConvertOffsetToAlias). The ZoneWriter exposes writePacked() but has no zone-wide
-//   asset-offset table yet, so a correct alias cannot be emitted here. A NULL pointer is always
-//   load-safe (the loader skips it). Therefore:
-//     * materialHandles -> a real [numsurfs] array of NULL Material* (the array region is present &
-//       walkable; numsurfs>0 stays consistent) — or the whole pointer NULL when numsurfs==0.
-//     * every lodInfo[].surfs / .modelSurfsStaging (the XModelSurfs cross-ref) -> NULL.
-//   This yields a structurally-valid, fully-parseable but renderless model. Wiring the packed-offset
-//   aliases (so the model references its real XModelSurfs + Materials) is the verify-phase follow-up.
-//
-// TRAILING-DATA ORDER matches the dev XModel load walk (and the green Tier1/scaffold pattern):
-//   name -> boneNames[numBones] (u32 script-string ids; 0 offline = empty-string handle, load-safe)
-//        -> materialHandles[numsurfs] (NULL Material*). All other //PTR fields NULL => no inline data.
+
+
 #include "../dumpsrc/xmodel_dump.h"
 #include "iw8_zone.h"
 #include "iw8_structs.h"
@@ -42,8 +16,9 @@ namespace {
 namespace cx = convert::xmodel;
 
 // stamp a tagged sentinel (or any 64-bit value) into a struct pointer slot without UB.
-template <typename P>
-inline void stampPtr(P& slot, uint64_t v) { std::memcpy(&slot, &v, sizeof(slot)); }
+template <typename P> inline void stampPtr(P& slot, uint64_t v) {
+    std::memcpy(&slot, &v, sizeof(slot));
+}
 
 // Build the fixed iw8_focus::XModel struct (0x2B0) from the converted record. All //PTR fields get
 // tagged sentinels; scalar fields get the real values. Returns the struct by value.
@@ -52,47 +27,47 @@ iw8_focus::XModel buildStruct(const cx::Iw8XModelRecord& rec) {
     std::memset(&xm, 0, sizeof(xm));
 
     // ---- scalar fields ----
-    xm.numsurfs      = rec.numsurfs;
-    xm.numLods       = rec.numLods;
-    xm.collLod       = rec.collLod;
+    xm.numsurfs = rec.numsurfs;
+    xm.numLods = rec.numLods;
+    xm.collLod = rec.collLod;
     xm.shadowCutoffLod = rec.shadowCutoffLod;
-    xm.numBones      = rec.numBones;
-    xm.numRootBones  = rec.numRootBones;
-    xm.numClientBones= rec.numClientBones;
-    xm.flags         = rec.flags;
-    xm.contents      = rec.contents;
-    xm.scale         = (rec.scale != 0.f) ? rec.scale : 1.f;
-    xm.radius        = rec.radius;
-    xm.bounds.midPoint = { rec.boundsMid[0],  rec.boundsMid[1],  rec.boundsMid[2]  };
-    xm.bounds.halfSize = { rec.boundsHalf[0], rec.boundsHalf[1], rec.boundsHalf[2] };
+    xm.numBones = rec.numBones;
+    xm.numRootBones = rec.numRootBones;
+    xm.numClientBones = rec.numClientBones;
+    xm.flags = rec.flags;
+    xm.contents = rec.contents;
+    xm.scale = (rec.scale != 0.f) ? rec.scale : 1.f;
+    xm.radius = rec.radius;
+    xm.bounds.midPoint = {rec.boundsMid[0], rec.boundsMid[1], rec.boundsMid[2]};
+    xm.bounds.halfSize = {rec.boundsHalf[0], rec.boundsHalf[1], rec.boundsHalf[2]};
     // numAimAssistBones / numClothAssets / mdaoVolumeCount / physicsUseCategory / impactType / mdaoType
     // / characterCollBoundsType / edgeLength / lgvData / physicsUsageCounter / noScalePartBits: 0 (no
     // IW5 source) -> all their //PTR/CNT pairs are null/zero (load-safe).
 
     // ---- pointer fields -> sentinels ----
-    stampPtr(xm.name,                PTR_FOLLOWS);                                // name follows
-    stampPtr(xm.scriptableMoverDef,  PTR_NULL);
-    stampPtr(xm.proceduralBones,     PTR_NULL);
-    stampPtr(xm.dynamicBones,        PTR_NULL);
-    stampPtr(xm.aimAssistBones,      PTR_NULL);                                   // numAimAssistBones=0
-    stampPtr(xm.boneNames,           rec.numBones ? PTR_FOLLOWS : PTR_NULL);      // [numBones] follows
-    stampPtr(xm.parentList,          PTR_NULL);                                   // offline: not re-derived
-    stampPtr(xm.quats,               PTR_NULL);
-    stampPtr(xm.trans,               PTR_NULL);
-    stampPtr(xm.partClassification,  PTR_NULL);
-    stampPtr(xm.baseMat,             PTR_NULL);
-    stampPtr(xm.ikHingeAxis,         PTR_NULL);
-    stampPtr(xm.reactiveMotionInfo,  PTR_NULL);
-    stampPtr(xm.materialHandles,     rec.numsurfs ? PTR_FOLLOWS : PTR_NULL);      // [numsurfs] follows
-    stampPtr(xm.boneInfo,            PTR_NULL);
-    stampPtr(xm.himipRadiusInvSq,    PTR_NULL);
-    stampPtr(xm.physicsAsset,        PTR_NULL);
-    stampPtr(xm.physicsFXShape,      PTR_NULL);
-    stampPtr(xm.detailCollision,     PTR_NULL);
-    stampPtr(xm.clothAssets,         PTR_NULL);                                   // numClothAssets=0
-    stampPtr(xm.blendShapeInfo,      PTR_NULL);
-    stampPtr(xm.mdaoVolumes,         PTR_NULL);                                   // mdaoVolumeCount=0
-    stampPtr(xm.decalVolumesInfo,    PTR_NULL);
+    stampPtr(xm.name, PTR_FOLLOWS); // name follows
+    stampPtr(xm.scriptableMoverDef, PTR_NULL);
+    stampPtr(xm.proceduralBones, PTR_NULL);
+    stampPtr(xm.dynamicBones, PTR_NULL);
+    stampPtr(xm.aimAssistBones, PTR_NULL);                         // numAimAssistBones=0
+    stampPtr(xm.boneNames, rec.numBones ? PTR_FOLLOWS : PTR_NULL); // [numBones] follows
+    stampPtr(xm.parentList, PTR_NULL);                             // offline: not re-derived
+    stampPtr(xm.quats, PTR_NULL);
+    stampPtr(xm.trans, PTR_NULL);
+    stampPtr(xm.partClassification, PTR_NULL);
+    stampPtr(xm.baseMat, PTR_NULL);
+    stampPtr(xm.ikHingeAxis, PTR_NULL);
+    stampPtr(xm.reactiveMotionInfo, PTR_NULL);
+    stampPtr(xm.materialHandles, rec.numsurfs ? PTR_FOLLOWS : PTR_NULL); // [numsurfs] follows
+    stampPtr(xm.boneInfo, PTR_NULL);
+    stampPtr(xm.himipRadiusInvSq, PTR_NULL);
+    stampPtr(xm.physicsAsset, PTR_NULL);
+    stampPtr(xm.physicsFXShape, PTR_NULL);
+    stampPtr(xm.detailCollision, PTR_NULL);
+    stampPtr(xm.clothAssets, PTR_NULL); // numClothAssets=0
+    stampPtr(xm.blendShapeInfo, PTR_NULL);
+    stampPtr(xm.mdaoVolumes, PTR_NULL); // mdaoVolumeCount=0
+    stampPtr(xm.decalVolumesInfo, PTR_NULL);
     // _retailTail[8] stays zeroed (load-safe; not an active pointer in a minimal model).
 
     // ---- lodInfo[6] (inline in the struct) ----
@@ -101,15 +76,15 @@ iw8_focus::XModel buildStruct(const cx::Iw8XModelRecord& rec) {
         std::memset(&li, 0, sizeof(li));
         if (i < (int)rec.lods.size()) {
             const cx::Iw8LodInfo& s = rec.lods[i];
-            li.dist      = s.dist;
-            li.numsurfs  = s.numsurfs;
+            li.dist = s.dist;
+            li.numsurfs = s.numsurfs;
             li.surfIndex = s.surfIndex;
-            li.flags     = s.flags;
+            li.flags = s.flags;
             std::memcpy(li.partBits, s.partBits.data(),
-                        sizeof(uint32_t) * s.partBits.size());                    // 8 u32 = 32B == partBits[32]
+                        sizeof(uint32_t) * s.partBits.size()); // 8 u32 = 32B == partBits[32]
         }
-        stampPtr(li.modelSurfsStaging, PTR_NULL);  // XModelSurfs cross-ref (verify-phase alias)
-        stampPtr(li.surfs,             PTR_NULL);   // XSurface*    cross-ref (verify-phase alias)
+        stampPtr(li.modelSurfsStaging, PTR_NULL); // XModelSurfs cross-ref (verify-phase alias)
+        stampPtr(li.surfs, PTR_NULL);             // XSurface*    cross-ref (verify-phase alias)
     }
     return xm;
 }
@@ -120,36 +95,47 @@ void emitBody(ZoneWriter& zw, const cx::Iw8XModelRecord& rec) {
     static_assert(sizeof(iw8_focus::XModel) == iw8sz::XMODEL, "XModel writer struct must be 0x2B0");
 
     zw.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
-    zw.align(7);                                  // 8-align the struct
-    zw.write(&xm, sizeof(xm));                     // exactly 0x2B0 bytes
+    zw.align(7);               // 8-align the struct
+    zw.write(&xm, sizeof(xm)); // exactly 0x2B0 bytes
 
-        zw.pushStream(XFILE_BLOCK_VIRTUAL);
-        // name (follows)
-        zw.writeStr(rec.name);
+    zw.pushStream(XFILE_BLOCK_VIRTUAL);
+    // name (follows)
+    zw.writeStr(rec.name);
 
-        // boneNames[numBones] : scr_string_t (u32). No live ScriptStringList offline -> zeroed handles
-        // (0 = empty-string handle, load-safe). align to 4.
-        if (rec.numBones) {
-            zw.align(3);
-            for (int i = 0; i < rec.numBones; ++i) { uint32_t h = 0; zw.write(&h, sizeof(h)); }
+    // boneNames[numBones] : scr_string_t (u32). No live ScriptStringList offline -> zeroed handles
+    // (0 = empty-string handle, load-safe). align to 4.
+    if (rec.numBones) {
+        zw.align(3);
+        for (int i = 0; i < rec.numBones; ++i) {
+            uint32_t h = 0;
+            zw.write(&h, sizeof(h));
         }
-        // materialHandles[numsurfs] : Material* . Cross-ref aliasing unavailable -> each slot NULL
-        // (the array region is present & walkable). align to 8 (pointer array).
-        if (rec.numsurfs) {
-            zw.align(7);
-            for (int i = 0; i < rec.numsurfs; ++i) { uint64_t v = PTR_NULL; zw.write(&v, sizeof(v)); }
+    }
+    // materialHandles[numsurfs] : Material* . Cross-ref aliasing unavailable -> each slot NULL
+    // (the array region is present & walkable). align to 8 (pointer array).
+    if (rec.numsurfs) {
+        zw.align(7);
+        for (int i = 0; i < rec.numsurfs; ++i) {
+            uint64_t v = PTR_NULL;
+            zw.write(&v, sizeof(v));
         }
-        zw.popStream();   // VIRTUAL -> TEMP_PRELOAD
-    zw.popStream();       // TEMP_PRELOAD -> (caller's stream, VIRTUAL)
+    }
+    zw.popStream(); // VIRTUAL -> TEMP_PRELOAD
+    zw.popStream(); // TEMP_PRELOAD -> (caller's stream, VIRTUAL)
 }
 
 } // namespace
 
 void writeXModel(ZoneWriter& zw, const cx::Iw8XModelRecord& rec) {
-    if (rec.name.empty()) { zt::err("writeXModel: empty record name"); return; }
+    if (rec.name.empty()) {
+        zt::err("writeXModel: empty record name");
+        return;
+    }
     // capture rec by value so the deferred body callback owns its data.
     cx::Iw8XModelRecord r = rec;
-    zw.add(ASSET_TYPE_XMODEL, r.name, [r](ZoneWriter& w) { emitBody(w, r); });
+    zw.add(ASSET_TYPE_XMODEL, r.name, [r](ZoneWriter& w) {
+        emitBody(w, r);
+    });
     zt::info("writeXModel: registered '%s' (0x2B0; surfs=%u lods=%u bones=%u) "
              "[material/surfs cross-refs NULL — verify-phase wiring]",
              r.name.c_str(), r.numsurfs, r.numLods, r.numBones);

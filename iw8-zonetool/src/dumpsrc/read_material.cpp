@@ -1,11 +1,5 @@
-// read_material.cpp — DUMP-PATH material reader (Tier2, FLAG-GATED via --assets).
-// Parses one ZoneTool (IW5) dump material file (materials/<2char>/<name>, JSON) into a DumpMaterial.
-// Authority for the JSON key set = zonetool-develop/src/IW5/Assets/Material.cpp IMaterial::dump (the
-// writer that produced these files); cross-verified against C:\Games\CoD4\dump\mp_test\materials\*.
-//
-// Fully offline: pure file-in, no game memory. Uses the vendored nlohmann/json (common/json.hpp) — the
-// same parser the Tier1 .comworld loader uses. Self-contained under convdump::mtl (no collision with the
-// legacy IW3-.ff material path).
+
+
 #include "dumpsrc/material_dumpsrc.h"
 #include "common/fs_util.h"
 #include "common/log.h"
@@ -22,23 +16,32 @@ namespace convdump::mtl {
 // scalars as ints; json.hpp would throw on a get<int>() of a null, so guard nulls -> default.
 static int j_int(const json& parent, const char* key, int def) {
     auto it = parent.find(key);
-    if (it == parent.end() || it->is_null()) return def;
-    if (it->is_number_integer() || it->is_number_unsigned()) return it->get<int>();
-    if (it->is_number_float()) return static_cast<int>(it->get<double>());
-    if (it->is_boolean()) return it->get<bool>() ? 1 : 0;
+    if (it == parent.end() || it->is_null())
+        return def;
+    if (it->is_number_integer() || it->is_number_unsigned())
+        return it->get<int>();
+    if (it->is_number_float())
+        return static_cast<int>(it->get<double>());
+    if (it->is_boolean())
+        return it->get<bool>() ? 1 : 0;
     return def;
 }
 static uint32_t j_u32(const json& parent, const char* key, uint32_t def) {
     auto it = parent.find(key);
-    if (it == parent.end() || it->is_null()) return def;
-    if (it->is_number_unsigned()) return it->get<uint32_t>();
-    if (it->is_number_integer())  return static_cast<uint32_t>(it->get<int64_t>());
-    if (it->is_number_float())    return static_cast<uint32_t>(it->get<double>());
+    if (it == parent.end() || it->is_null())
+        return def;
+    if (it->is_number_unsigned())
+        return it->get<uint32_t>();
+    if (it->is_number_integer())
+        return static_cast<uint32_t>(it->get<int64_t>());
+    if (it->is_number_float())
+        return static_cast<uint32_t>(it->get<double>());
     return def;
 }
 static std::string j_str(const json& parent, const char* key, const std::string& def) {
     auto it = parent.find(key);
-    if (it == parent.end() || it->is_null() || !it->is_string()) return def;
+    if (it == parent.end() || it->is_null() || !it->is_string())
+        return def;
     return it->get<std::string>();
 }
 
@@ -52,36 +55,37 @@ DumpMaterial readMaterialJson(const std::string& filePath, const std::string& di
     }
 
     json j;
-    try { j = json::parse(text); }
-    catch (const std::exception& e) {
+    try {
+        j = json::parse(text);
+    } catch (const std::exception& e) {
         err("read_material: JSON parse error in '%s': %s", filePath.c_str(), e.what());
         return d; // loaded=false
     }
 
     // --- top-level scalars (verbatim IW5 dump values) ---
-    d.name             = j_str(j, "name", displayName);
+    d.name = j_str(j, "name", displayName);
     d.techniqueSetName = j_str(j, "techniqueSet->name", "");
-    d.gameFlags        = j_int(j, "gameFlags", 0);
-    d.sortKey          = j_int(j, "sortKey", 0);
-    d.stateFlags       = j_int(j, "stateFlags", 0);
-    d.cameraRegion     = j_int(j, "cameraRegion", 0);
-    d.surfaceTypeBits  = j_u32(j, "surfaceTypeBits", 0);
-    d.animationX       = j_int(j, "animationX", 0);
-    d.animationY       = j_int(j, "animationY", 0);
+    d.gameFlags = j_int(j, "gameFlags", 0);
+    d.sortKey = j_int(j, "sortKey", 0);
+    d.stateFlags = j_int(j, "stateFlags", 0);
+    d.cameraRegion = j_int(j, "cameraRegion", 0);
+    d.surfaceTypeBits = j_u32(j, "surfaceTypeBits", 0);
+    d.animationX = j_int(j, "animationX", 0);
+    d.animationY = j_int(j, "animationY", 0);
 
     // --- maps[] : image refs + per-slot metadata ---
     auto mIt = j.find("maps");
     if (mIt != j.end() && mIt->is_array()) {
         for (const auto& e : *mIt) {
             DumpMap m;
-            m.image       = j_str(e, "image", "");
-            m.semantic    = j_int(e, "semantic", 0);
-            m.sampleState = j_int(e, "sampleState", 0);     // may be negative
+            m.image = j_str(e, "image", "");
+            m.semantic = j_int(e, "semantic", 0);
+            m.sampleState = j_int(e, "sampleState", 0); // may be negative
             // IW5 dump uses "firstCharacter"/"lastCharacter"; tolerate the alt "secondLastCharacter".
-            m.firstChar   = j_int(e, "firstCharacter", 0);
-            m.lastChar    = e.contains("lastCharacter") ? j_int(e, "lastCharacter", 0)
-                                                        : j_int(e, "secondLastCharacter", 0);
-            m.typeHash    = j_u32(e, "typeHash", 0);
+            m.firstChar = j_int(e, "firstCharacter", 0);
+            m.lastChar = e.contains("lastCharacter") ? j_int(e, "lastCharacter", 0)
+                                                     : j_int(e, "secondLastCharacter", 0);
+            m.typeHash = j_u32(e, "typeHash", 0);
             d.maps.push_back(std::move(m));
         }
     }
@@ -91,14 +95,16 @@ DumpMaterial readMaterialJson(const std::string& filePath, const std::string& di
     if (cIt != j.end() && cIt->is_array()) {
         for (const auto& e : *cIt) {
             DumpConst c;
-            c.name     = j_str(e, "name", "");
+            c.name = j_str(e, "name", "");
             c.nameHash = j_u32(e, "nameHash", 0);
             auto lIt = e.find("literal");
             if (lIt != e.end() && lIt->is_array()) {
                 for (int k = 0; k < 4 && k < static_cast<int>(lIt->size()); ++k) {
                     const auto& lv = (*lIt)[k];
-                    c.literal[k] = lv.is_null() ? 0.f
-                                 : (lv.is_number() ? static_cast<float>(lv.get<double>()) : 0.f);
+                    c.literal[k] =
+                        lv.is_null()
+                            ? 0.f
+                            : (lv.is_number() ? static_cast<float>(lv.get<double>()) : 0.f);
                 }
             }
             d.constants.push_back(std::move(c));

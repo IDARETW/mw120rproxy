@@ -1,3 +1,5 @@
 #pragma once
 #include <windows.h>
-namespace diagnostics { void Initialize(HMODULE self); }
+namespace diagnostics {
+void Initialize(HMODULE self);
+}

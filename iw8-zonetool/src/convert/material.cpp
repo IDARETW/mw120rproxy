@@ -4,11 +4,9 @@
 namespace convert::mtl {
 
 uint8_t iw3_to_iw8_semantic(uint8_t iw3Semantic) {
-    // IW3 and IW8 share the low TextureSemantic ordinals for the maps we care about:
-    //   0 TS_2D, 1 TS_FUNCTION, 2 TS_COLOR_MAP, 5 TS_NORMAL_MAP, 8 TS_SPECULAR_MAP.
-    // Water maps (0xB) have no IW8 GfxImage-bound equivalent here -> downgrade to a colour map so the
-    // bound (inner) image still binds to a sampler slot.
-    if (iw3Semantic == 0x0B) return 0x02; // water -> colour map
+
+    if (iw3Semantic == 0x0B)
+        return 0x02; // water -> colour map
     return iw3Semantic;
 }
 
@@ -24,7 +22,8 @@ uint32_t iw3_to_iw8_material_type(uint8_t /*iw3GameFlags*/) {
 
 uint8_t iw3_to_iw8_camera_region(uint8_t iw3CameraRegion) {
     // Pass-through; both engines use small GfxCameraRegionType bytes. 0xFF/garbage clamps to NONE(4).
-    if (iw3CameraRegion > 11) return 4; // CAMERA_REGION_NONE
+    if (iw3CameraRegion > 11)
+        return 4; // CAMERA_REGION_NONE
     return iw3CameraRegion;
 }
 

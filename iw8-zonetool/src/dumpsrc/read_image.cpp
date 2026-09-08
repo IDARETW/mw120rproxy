@@ -1,17 +1,5 @@
-// read_image.cpp — Stage-A: parse a ZoneTool dump images/<cleanName>.ffImg into ImageDumpFile.
-// =================================================================================================
-// The .ffImg is a HAND-ROLLED little-endian FileReader stream (NO BinaryDumper DUMP_TYPE tags) — see
-// image_dump.h header comment and reference/IW5_DUMP_FORMAT.md §9. Byte order is taken VERBATIM from
-// the authoritative writer, zonetool-develop/src/IW5/Assets/GfxImage.cpp IGfxImage::dump() (408-429):
-//   header: mapType,semantic,category,flags (4x char) + cardMemory,dataLen1,dataLen2,height,width,depth
-//           (6x int) + name (NUL-terminated C-string)
-//   loaddef: mipLevels,ldFlags (2x char) + dimensions[0..2],format,dataSize (5x int) + dataSize pixels
-//
-// All reads are bounds-checked against a fixed buffer (offline, untrusted file). A short/garbled file
-// fails cleanly (loaded=false + warning); the integrator's --assets path then skips this image, which
-// can NEVER break the Tier1 map zone (separate ZoneBuffer).
-//
-// FILE OWNERSHIP: this file + image_dump.h + write_image.cpp + conv_image.cpp are the image family's.
+
+
 #include "image_dump.h"
 #include "common/fs_util.h"
 #include "common/log.h"
@@ -29,28 +17,43 @@ struct Cur {
     const uint8_t* p;
     size_t n;
     size_t at = 0;
-    bool   ok = true;
+    bool ok = true;
 
     bool need(size_t k) {
-        if (!ok) return false;
-        if (at + k > n) { ok = false; return false; }
+        if (!ok)
+            return false;
+        if (at + k > n) {
+            ok = false;
+            return false;
+        }
         return true;
     }
-    uint8_t  rd_u8()  { if (!need(1)) return 0; return p[at++]; }
-    int8_t   rd_i8()  { return (int8_t)rd_u8(); }
-    int32_t  rd_i32() {
-        if (!need(4)) return 0;
-        int32_t v; std::memcpy(&v, p + at, 4); at += 4; return v;
+    uint8_t rd_u8() {
+        if (!need(1))
+            return 0;
+        return p[at++];
+    }
+    int8_t rd_i8() {
+        return (int8_t)rd_u8();
+    }
+    int32_t rd_i32() {
+        if (!need(4))
+            return 0;
+        int32_t v;
+        std::memcpy(&v, p + at, 4);
+        at += 4;
+        return v;
     }
     // NUL-terminated C-string (FileReader ReadString). Empty + ok=false if unterminated.
     std::string rd_cstr() {
         std::string s;
         while (ok && at < n) {
             char c = (char)p[at++];
-            if (c == '\0') return s;
+            if (c == '\0')
+                return s;
             s.push_back(c);
         }
-        ok = false;   // ran off the end without a NUL
+        ok = false; // ran off the end without a NUL
         return s;
     }
 };
@@ -60,20 +63,27 @@ struct Cur {
 // (CoD4 map images are named "*lightmap0_primary" / "$outdoor"; '$' is filesystem-safe and kept.)
 std::string cleanImageName(const std::string& name) {
     std::string out = name;
-    for (char& c : out) if (c == '*') c = '_';
+    for (char& c : out)
+        if (c == '*')
+            c = '_';
     return out;
 }
 
 std::vector<std::string> listImageDumps(const std::string& dumpDir) {
     std::vector<std::string> out, files;
     const std::string imagesDir = path_join(dumpDir, "images");
-    if (!list_dir(imagesDir, files)) return out;
+    if (!list_dir(imagesDir, files))
+        return out;
     for (const auto& f : files) {
         // accept both ".ffImg" (dump's casing) and any-case extension defensively.
         if (f.size() > 6) {
             std::string ext = f.substr(f.size() - 6);
-            for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-            if (ext == ".ffimg") { out.push_back(f.substr(0, f.size() - 6)); continue; }
+            for (char& c : ext)
+                c = (char)std::tolower((unsigned char)c);
+            if (ext == ".ffimg") {
+                out.push_back(f.substr(0, f.size() - 6));
+                continue;
+            }
         }
     }
     return out;
@@ -97,45 +107,53 @@ ImageDumpFile readImageDump(const std::string& dumpDir, const std::string& nameO
             for (const auto& f : files) {
                 if (f.size() > 6 && f.compare(0, stem.size(), stem) == 0) {
                     std::string ext = f.substr(f.size() - 6);
-                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+                    for (char& c : ext)
+                        c = (char)std::tolower((unsigned char)c);
                     if (ext == ".ffimg" && f.size() == stem.size() + 6) {
                         path = path_join(imagesDir, f);
-                        if (read_file(path, buf)) { found = true; break; }
+                        if (read_file(path, buf)) {
+                            found = true;
+                            break;
+                        }
                     }
                 }
             }
         }
-        if (!found) { warn("dumpimg: no .ffImg for '%s' at %s", nameOrStem.c_str(), path.c_str()); return d; }
+        if (!found) {
+            warn("dumpimg: no .ffImg for '%s' at %s", nameOrStem.c_str(), path.c_str());
+            return d;
+        }
     }
 
-    Cur c{ buf.data(), buf.size() };
+    Cur c{buf.data(), buf.size()};
 
     // ---- header (4 char + 6 int + name) ----
-    d.mapType   = c.rd_u8();
-    d.semantic  = c.rd_u8();
-    d.category  = c.rd_u8();
-    d.flags     = c.rd_u8();
+    d.mapType = c.rd_u8();
+    d.semantic = c.rd_u8();
+    d.category = c.rd_u8();
+    d.flags = c.rd_u8();
     d.cardMemory = c.rd_i32();
-    d.dataLen1  = c.rd_i32();
-    d.dataLen2  = c.rd_i32();
-    d.height    = c.rd_i32();
-    d.width     = c.rd_i32();
-    d.depth     = c.rd_i32();
-    d.name      = c.rd_cstr();
+    d.dataLen1 = c.rd_i32();
+    d.dataLen2 = c.rd_i32();
+    d.height = c.rd_i32();
+    d.width = c.rd_i32();
+    d.depth = c.rd_i32();
+    d.name = c.rd_cstr();
 
     if (!c.ok || d.name.empty()) {
-        warn("dumpimg: '%s' header/name parse failed (@%zu/%zu)", nameOrStem.c_str(), c.at, buf.size());
+        warn("dumpimg: '%s' header/name parse failed (@%zu/%zu)", nameOrStem.c_str(), c.at,
+             buf.size());
         return d;
     }
 
     // ---- GfxImageLoadDef (2 char + 5 int + dataSize pixels) ----
     d.mipLevels = c.rd_u8();
-    d.ldFlags   = c.rd_u8();
+    d.ldFlags = c.rd_u8();
     d.dimensions[0] = c.rd_i32();
     d.dimensions[1] = c.rd_i32();
     d.dimensions[2] = c.rd_i32();
-    d.format    = c.rd_i32();
-    d.dataSize  = c.rd_i32();
+    d.format = c.rd_i32();
+    d.dataSize = c.rd_i32();
 
     if (!c.ok) {
         warn("dumpimg: '%s' loaddef parse failed (@%zu/%zu)", d.name.c_str(), c.at, buf.size());
@@ -146,9 +164,10 @@ ImageDumpFile readImageDump(const std::string& dumpDir, const std::string& nameO
     uint32_t want = (d.dataSize > 0) ? (uint32_t)d.dataSize : 0u;
     uint32_t avail = (c.at <= buf.size()) ? (uint32_t)(buf.size() - c.at) : 0u;
     uint32_t take = want < avail ? want : avail;
-    if (take) d.pixels.assign(buf.begin() + c.at, buf.begin() + c.at + take);
+    if (take)
+        d.pixels.assign(buf.begin() + c.at, buf.begin() + c.at + take);
     if (want != avail) {
-        // not fatal: the dump's dataSize is frequently stale (see below); we keep `take` bytes.
+
         debug("dumpimg: '%s' dataSize=%d but %u bytes remain after header (kept %u)",
               d.name.c_str(), d.dataSize, avail, take);
     }
@@ -159,7 +178,7 @@ ImageDumpFile readImageDump(const std::string& dumpDir, const std::string& nameO
     // it never blocks the read (the image still emits).
     {
         const bool tinyPayload = (d.dataSize >= 0 && d.dataSize <= 64);
-        const bool bigSurface  = ((int64_t)d.width * d.height >= 4096); // >=64x64
+        const bool bigSurface = ((int64_t)d.width * d.height >= 4096); // >=64x64
         const bool dimMismatch = (d.dimensions[0] != d.width || d.dimensions[1] != d.height);
         d.loadDefStale = tinyPayload && bigSurface && dimMismatch;
     }

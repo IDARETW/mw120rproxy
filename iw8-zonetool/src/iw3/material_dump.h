@@ -1,19 +1,5 @@
-// iw3/material_dump.h — material-family Stage-A reader helpers (owned by the material agent).
-// Namespaced under iw3mtl to avoid clashes. These read fixed-size IW3 structs / strings / arrays at an
-// ABSOLUTE byte offset in the inflated zone buffer, using the LoadCtx tagged-pointer resolve(). The IW3
-// Material pointer graph (Material -> maps[] -> image -> name) is followed offline (NO game memory),
-// reproducing DB_LoadXFile's pointer fixup over the flat buffer.
-//
-// IW3 Material serialized layout (32-bit, pack(4); offsets cl.exe-confirmed against iw3_structs.h):
-//   0x00 name(ptr) 0x04 gameFlags 0x05 sortKey 0x06 atlasRow 0x07 atlasCol
-//   0x08 drawSurf(u64) 0x10 surfaceTypeBits(u32) 0x14 hashIndex(u16) 0x16 animationX 0x17 animationY
-//   0x18 stateBitsEntry[34] 0x3A numMaps 0x3B constantCount 0x3C stateBitsCount 0x3D stateFlags
-//   0x3E cameraRegion (0x3F pad) 0x40 techniqueSet(ptr) 0x44 maps(ptr) 0x48 constantTable(ptr)
-//   0x4C stateMap(ptr)  -> total 0x50
-//   MaterialTextureDef (0x0C): typeHash(u32)@0 firstChar@4 secondLastChar@5 sampleState@6 semantic@7 image(ptr)@8
-//   MaterialConstantDef (0x20): nameHash(u32)@0 name[12]@4 literal[4](float)@0x10
-//   GfxStateBits (0x08): loadBits[2](u32)
-//   GfxImage: name(ptr)@0x20
+
+
 #pragma once
 #include "iw3_zone.h"
 #include <cstdint>
@@ -24,55 +10,55 @@ namespace iw3mtl {
 
 // IW3 Material serialized field offsets (bytes). See header comment.
 namespace off {
-    constexpr size_t name           = 0x00; // u32 ptr
-    constexpr size_t gameFlags      = 0x04; // u8
-    constexpr size_t sortKey        = 0x05; // u8
-    constexpr size_t atlasRowCount  = 0x06; // u8
-    constexpr size_t atlasColCount  = 0x07; // u8
-    constexpr size_t surfaceTypeBits= 0x10; // u32
-    constexpr size_t animationX     = 0x16; // u8
-    constexpr size_t animationY     = 0x17; // u8
-    constexpr size_t numMaps        = 0x3A; // u8
-    constexpr size_t constantCount  = 0x3B; // u8
-    constexpr size_t stateBitsCount = 0x3C; // u8
-    constexpr size_t stateFlags     = 0x3D; // u8
-    constexpr size_t cameraRegion   = 0x3E; // u8
-    constexpr size_t techniqueSet   = 0x40; // u32 ptr
-    constexpr size_t maps           = 0x44; // u32 ptr -> MaterialTextureDef[numMaps]
-    constexpr size_t constantTable  = 0x48; // u32 ptr -> MaterialConstantDef[constantCount]
-    constexpr size_t stateMap       = 0x4C; // u32 ptr -> GfxStateBits[stateBitsCount]
-    constexpr size_t SIZE           = 0x50;
+constexpr size_t name = 0x00;            // u32 ptr
+constexpr size_t gameFlags = 0x04;       // u8
+constexpr size_t sortKey = 0x05;         // u8
+constexpr size_t atlasRowCount = 0x06;   // u8
+constexpr size_t atlasColCount = 0x07;   // u8
+constexpr size_t surfaceTypeBits = 0x10; // u32
+constexpr size_t animationX = 0x16;      // u8
+constexpr size_t animationY = 0x17;      // u8
+constexpr size_t numMaps = 0x3A;         // u8
+constexpr size_t constantCount = 0x3B;   // u8
+constexpr size_t stateBitsCount = 0x3C;  // u8
+constexpr size_t stateFlags = 0x3D;      // u8
+constexpr size_t cameraRegion = 0x3E;    // u8
+constexpr size_t techniqueSet = 0x40;    // u32 ptr
+constexpr size_t maps = 0x44;            // u32 ptr -> MaterialTextureDef[numMaps]
+constexpr size_t constantTable = 0x48;   // u32 ptr -> MaterialConstantDef[constantCount]
+constexpr size_t stateMap = 0x4C;        // u32 ptr -> GfxStateBits[stateBitsCount]
+constexpr size_t SIZE = 0x50;
 
-    // MaterialTextureDef (0x0C)
-    constexpr size_t td_typeHash    = 0x00; // u32
-    constexpr size_t td_firstChar   = 0x04; // i8
-    constexpr size_t td_secondLast  = 0x05; // i8
-    constexpr size_t td_sampleState = 0x06; // i8
-    constexpr size_t td_semantic    = 0x07; // i8
-    constexpr size_t td_image       = 0x08; // u32 ptr -> GfxImage (or water_t* if semantic==0xB)
-    constexpr size_t TD_SIZE        = 0x0C;
+// MaterialTextureDef (0x0C)
+constexpr size_t td_typeHash = 0x00;    // u32
+constexpr size_t td_firstChar = 0x04;   // i8
+constexpr size_t td_secondLast = 0x05;  // i8
+constexpr size_t td_sampleState = 0x06; // i8
+constexpr size_t td_semantic = 0x07;    // i8
+constexpr size_t td_image = 0x08;       // u32 ptr -> GfxImage (or water_t* if semantic==0xB)
+constexpr size_t TD_SIZE = 0x0C;
 
-    // MaterialConstantDef (0x20)
-    constexpr size_t cd_nameHash    = 0x00; // u32
-    constexpr size_t cd_name        = 0x04; // char[12]
-    constexpr size_t cd_literal     = 0x10; // float[4]
-    constexpr size_t CD_SIZE        = 0x20;
+// MaterialConstantDef (0x20)
+constexpr size_t cd_nameHash = 0x00; // u32
+constexpr size_t cd_name = 0x04;     // char[12]
+constexpr size_t cd_literal = 0x10;  // float[4]
+constexpr size_t CD_SIZE = 0x20;
 
-    // GfxStateBits (0x08): loadBits[2]
-    constexpr size_t SB_SIZE        = 0x08;
+// GfxStateBits (0x08): loadBits[2]
+constexpr size_t SB_SIZE = 0x08;
 
-    // GfxImage.name (ptr) offset within GfxImage (0x24 struct)
-    constexpr size_t img_name       = 0x20; // u32 ptr
-    // water_t.image (ptr) offset within water_t — image is the LAST field. We read only its name; the
-    // reader computes the offset from the resolved water_t base + water image-ptr offset.
+// GfxImage.name (ptr) offset within GfxImage (0x24 struct)
+constexpr size_t img_name = 0x20;
+
 }
 
 // Read `n` bytes from the inflated zone at ABSOLUTE offset `abs` into `dst`. Returns false on OOB.
 bool readAt(iw3::LoadCtx& lc, size_t abs, void* dst, size_t n);
 
 // Read a scalar of type T at ABSOLUTE offset `abs`. Returns false on OOB (leaves v unspecified).
-template <typename T>
-bool readScalarAt(iw3::LoadCtx& lc, size_t abs, T& v) { return readAt(lc, abs, &v, sizeof(T)); }
+template <typename T> bool readScalarAt(iw3::LoadCtx& lc, size_t abs, T& v) {
+    return readAt(lc, abs, &v, sizeof(T));
+}
 
 // Read a NUL-terminated string at ABSOLUTE offset `abs` (bounded scan). Empty on OOB/0-offset.
 std::string readCStrAt(iw3::LoadCtx& lc, size_t abs);
@@ -83,7 +69,9 @@ std::string readCStrAt(iw3::LoadCtx& lc, size_t abs);
 // null. For follows, returns the CURRENT cursor pos (callers that follow inline must position the
 // cursor; the material reader only walks already-serialized cross-refs + the inline name, handled
 // explicitly). Most material sub-pointers are packed offsets aliasing other streams.
-size_t resolvePtrAt(iw3::LoadCtx& lc, size_t ptrFieldAbs, bool* isNull = nullptr,
+size_t resolvePtrAt(iw3::LoadCtx& lc,
+                    size_t ptrFieldAbs,
+                    bool* isNull = nullptr,
                     bool* isFollows = nullptr);
 
 // Given a resolved GfxImage base offset, read its name string (GfxImage.name @0x20).

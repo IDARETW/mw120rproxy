@@ -16,8 +16,12 @@
 #include <cstdint>
 #include <string>
 
-namespace iw3 { class LoadCtx; }
-namespace iw3sr { class ZoneSource; }
+namespace iw3 {
+class LoadCtx;
+}
+namespace iw3sr {
+class ZoneSource;
+}
 
 namespace iw3xs {
 
@@ -25,7 +29,10 @@ namespace iw3xs {
 // each surface's geometry (verts/tris/weights/vertlists), and dump them to xsurface/<name>.xsurf_bin
 // (adding the "xmodelsurfs" manifest row). `lc` provides the flat zone + resolve(). Returns true on
 // success (false on a hard read error). Used by the xmodel reader (the IW3-native path).
-bool dumpXSurfacesForModel(iw3::LoadCtx& lc, iw3sr::ZoneSource& zs,
-                           uint32_t surfsOff, uint32_t numsurfs, const std::string& name);
+bool dumpXSurfacesForModel(iw3::LoadCtx& lc,
+                           iw3sr::ZoneSource& zs,
+                           uint32_t surfsOff,
+                           uint32_t numsurfs,
+                           const std::string& name);
 
 } // namespace iw3xs

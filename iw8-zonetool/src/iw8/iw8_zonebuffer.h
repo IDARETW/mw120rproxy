@@ -7,30 +7,31 @@
 
 namespace iw8 {
 
-// RETAIL (1.24 PC) stream indices. The header carries blockSize[11], BUT the retail zone-memory allocator
-// DB_AllocXZoneMemoryInternal (sub_140001E410D0) only reserves streams 0..7 (loop `v9<8`); streams 8..10 are
-// header-only and NEVER get a memory region. The 8 streams map to 4 regions via off_140004A69A80 =
-// {2,2,2,0,0,0,1,3} (DWORD table, mapper sub_140001830B50: region0={3,4,5}, region1={6}, region2={0,1,2},
-// region3={7}). Empirically (mp_aniyah_tac.ff + every aniyah companion) the BULK content lives in STREAM 5
-// (region 0); small/header data in 1,2; large/resident-pixels in 7. This is NOT the dev/Durango 11-stream model
-// where VIRTUAL=8 — on retail PC index 8 is unallocated, so a bulk write there faults the deserializer with
-// Com_Error(0x1338). VIRTUAL is therefore remapped 8 -> 5. (fn-map §30a, codknowledge §20a, 2026-06-14.)
 enum XFileBlock : uint8_t {
-    XFILE_BLOCK_TEMP = 0, XFILE_BLOCK_TEMP_PRELOAD = 1, XFILE_BLOCK_TEMP_POSTLOAD = 2,
-    XFILE_BLOCK_IMAGE_STREAM = 3, XFILE_BLOCK_SHARED_STREAM = 4,
-    XFILE_BLOCK_VIRTUAL = 5,   // BULK asset bodies/geometry -> retail stream 5 / region 0 (was dev's 8 = unallocated)
-    XFILE_BLOCK_RUNTIME = 6, XFILE_BLOCK_UNK7 = 7, XFILE_BLOCK_CALLBACK = 8, XFILE_BLOCK_SCRIPT = 9,
-    XFILE_BLOCK_UNK10 = 10, IW8_MAX_XFILE_COUNT = 11
+    XFILE_BLOCK_TEMP = 0,
+    XFILE_BLOCK_TEMP_PRELOAD = 1,
+    XFILE_BLOCK_TEMP_POSTLOAD = 2,
+    XFILE_BLOCK_IMAGE_STREAM = 3,
+    XFILE_BLOCK_SHARED_STREAM = 4,
+    XFILE_BLOCK_VIRTUAL =
+        5, // BULK asset bodies/geometry -> retail stream 5 / region 0 (was dev's 8 = unallocated)
+    XFILE_BLOCK_RUNTIME = 6,
+    XFILE_BLOCK_UNK7 = 7,
+    XFILE_BLOCK_CALLBACK = 8,
+    XFILE_BLOCK_SCRIPT = 9,
+    XFILE_BLOCK_UNK10 = 10,
+    IW8_MAX_XFILE_COUNT = 11
 };
 
 // tagged-pointer sentinels (raw values — Load_RawFilePtr compares == -1/-2/-3 exactly)
-static constexpr uint64_t PTR_NULL    = 0ull;
-static constexpr uint64_t PTR_FOLLOWS = (uint64_t)-2;  // data follows inline (the common case)
-static constexpr uint64_t PTR_INSERT  = (uint64_t)-3;  // follows + DB_InsertPointer (top-level asset ptrs)
-static constexpr uint64_t PTR_SHARED  = (uint64_t)-1;  // shared stream
+static constexpr uint64_t PTR_NULL = 0ull;
+static constexpr uint64_t PTR_FOLLOWS = (uint64_t)-2; // data follows inline (the common case)
+static constexpr uint64_t PTR_INSERT =
+    (uint64_t)-3; // follows + DB_InsertPointer (top-level asset ptrs)
+static constexpr uint64_t PTR_SHARED = (uint64_t)-1; // shared stream
 
 class ZoneBuffer {
-public:
+  public:
     ZoneBuffer() : stream_(XFILE_BLOCK_TEMP), streamSize_(IW8_MAX_XFILE_COUNT, 0) {}
 
     void write(const void* data, size_t n) {
@@ -38,8 +39,12 @@ public:
         buf_.insert(buf_.end(), p, p + n);
         streamSize_[stream_] += n;
     }
-    template <typename T> void writeT(const T& v) { write(&v, sizeof(T)); }
-    void writeStr(const char* s) { write(s, std::strlen(s) + 1); } // incl NUL
+    template <typename T> void writeT(const T& v) {
+        write(&v, sizeof(T));
+    }
+    void writeStr(const char* s) {
+        write(s, std::strlen(s) + 1);
+    } // incl NUL
 
     // reserveCalc — reserve `n` bytes in the CURRENT stream WITHOUT emitting body bytes. For a CALC /
     // zero-fill stream (retail stream 4 = SHARED_STREAM, the gfxWorld dpvs region): the loader's
@@ -52,7 +57,10 @@ public:
     // single Oodle frame's decompressed length) from ΣblockSize (= body + calc). Do NOT align() before a
     // reserveCalc — align() materializes zero BODY bytes and would desync body.size() from XFile.size.
     // (workflow w98wrqmz9: streamSem.calc_consumes_body_bytes=false.)
-    void reserveCalc(size_t n) { streamSize_[stream_] += n; calcSize_ += n; }
+    void reserveCalc(size_t n) {
+        streamSize_[stream_] += n;
+        calcSize_ += n;
+    }
 
     // Replay DB_PatchMem_FixStreamAlignment (RVA 0xD8D480) changes the memory
     // cursor only. It never reads the fastfile. Charge padding to the reservation,
@@ -67,15 +75,29 @@ public:
         }
     }
 
-    void pushStream(XFileBlock s) { stack_.push(stream_); stream_ = s; }
-    void popStream() { stream_ = stack_.top(); stack_.pop(); }
+    void pushStream(XFileBlock s) {
+        stack_.push(stream_);
+        stream_ = s;
+    }
+    void popStream() {
+        stream_ = stack_.top();
+        stack_.pop();
+    }
 
-    uint64_t streamSize(int i) const { return streamSize_[i]; }
-    uint64_t calcSize() const { return calcSize_; }   // bytes reserved via reserveCalc (NOT in buf_)
-    const std::vector<uint8_t>& data() const { return buf_; }
-    size_t size() const { return buf_.size(); }
+    uint64_t streamSize(int i) const {
+        return streamSize_[i];
+    }
+    uint64_t calcSize() const {
+        return calcSize_;
+    } // bytes reserved via reserveCalc (NOT in buf_)
+    const std::vector<uint8_t>& data() const {
+        return buf_;
+    }
+    size_t size() const {
+        return buf_.size();
+    }
 
-private:
+  private:
     std::vector<uint8_t> buf_;
     std::vector<uint64_t> streamSize_;
     XFileBlock stream_;
