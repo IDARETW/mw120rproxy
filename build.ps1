@@ -21,6 +21,10 @@ if ($Tests) {
     if ($LASTEXITCODE -ne 0) {
         throw 'Shader setup validation tests failed'
     }
+    & python -B (Join-Path $PSScriptRoot 'mw120rproxy/tests/test_door_data.py')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Door conversion tests failed'
+    }
     & xmake -P (Join-Path $PSScriptRoot 'mw120rproxy/tests') -j 2 custom_map_tests
     if ($LASTEXITCODE -ne 0) {
         throw 'Test build failed'
@@ -30,6 +34,16 @@ if ($Tests) {
         & './test-out/custom_map_tests.exe'
         if ($LASTEXITCODE -ne 0) {
             throw 'Tests failed'
+        }
+        foreach ($target in @('door_tests', 'door_ui_tests')) {
+            & xmake -P (Join-Path $PSScriptRoot 'mw120rproxy/tests') -j 2 $target
+            if ($LASTEXITCODE -ne 0) {
+                throw "Test build failed: $target"
+            }
+            & "./test-out/$target.exe"
+            if ($LASTEXITCODE -ne 0) {
+                throw "Tests failed: $target"
+            }
         }
     }
     finally {

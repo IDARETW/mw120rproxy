@@ -1,3 +1,4 @@
+#include "door_file.h"
 #include "custom_maps.h"
 #include "collision_file.h"
 #include "ladder_file.h"
@@ -451,6 +452,21 @@ void ValidatePackage(custommaps::Package& package, const std::filesystem::path& 
         unsigned surfaces = 0;
         if (!glassfile::Load(directory / "glass.bin", panes, surfaces)) {
             package.error = "glass.bin is missing or invalid";
+            return;
+        }
+    }
+    std::string doors;
+    if (!OptionalString(text, "doors", doors) || (!doors.empty() && doors != "brush-poses-v1")) {
+        package.error = "unsupported door format";
+        return;
+    }
+    if (!doors.empty() || std::filesystem::exists(directory / "doors.bin")) {
+        std::vector<doorfile::Door> data;
+        unsigned surfaces = 0;
+        if ((GetFileAttributesW((directory / "doors.bin").c_str()) &
+             FILE_ATTRIBUTE_REPARSE_POINT) ||
+            !doorfile::Load(directory / "doors.bin", data, surfaces)) {
+            package.error = "doors.bin is missing or invalid";
             return;
         }
     }

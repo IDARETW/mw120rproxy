@@ -29,6 +29,7 @@ import ladder_data
 import glass_panes
 import map_lighting
 import window_entities
+import door_data
 from foliage_material import classify
 
 
@@ -38,7 +39,7 @@ def merge_surfaces(surfaces):
     for s in surfaces:
         if not s["indices"]:
             continue
-        key = (s["material"], s.get("glassPane"))
+        key = (s["material"], s.get("glassPane"), s.get("door"), s.get("doorFrame"))
         target = active.get(key)
         if len(s["vertices"]) > 60000 or len(s["indices"]) > 65535 * 3:
             raise ValueError("Source surface exceeds native mesh limits")
@@ -50,6 +51,9 @@ def merge_surfaces(surfaces):
             target = {"material": s["material"], "vertices": [], "indices": []}
             if "glassPane" in s:
                 target["glassPane"] = s["glassPane"]
+            for field in ("door", "doorFrame"):
+                if field in s:
+                    target[field] = s[field]
             active[key] = target
             output.append(target)
         first = len(target["vertices"])
@@ -102,6 +106,10 @@ def build(args):
     brush_entities = {
         int(e["model"][1:]): e for e in entities if re.fullmatch(r"\*\d+", e.get("model", ""))
     }
+    script = source / f"maps/mp/{mapid}.gsc"
+    doors = door_data.discover(entities, world, script.read_text() if script.exists() else "")
+    door_models = {d["model"]: i for i, d in enumerate(doors)}
+    door_entities = {id(brush_entities[m]): index for m, index in door_models.items()}
     surface_entities = {}
     for index, m in enumerate(world["brush_models"][1:], 1):
         for si in range(m["start"], m["start"] + m["count"]):
@@ -178,6 +186,8 @@ def build(args):
                 }
             )
         surface = {**s, "vertices": vertices}
+        if id(entity) in door_entities:
+            surface["door"] = door_entities[id(entity)]
         if id(entity) in windows:
             surface["glassGroup"] = windows[id(entity)]
         surfaces.extend(alpha_convert(surface))
@@ -218,7 +228,11 @@ def build(args):
 
     decal_report = separate(surfaces, materials)
     print("Decal separation: " + str(decal_report), flush=True)
-    surfaces, panes = glass_panes.prepare(surfaces, materials)
+    surfaces = door_data.poses(surfaces, doors)
+    moving = [s for s in surfaces if "door" in s]
+    surfaces, panes = glass_panes.prepare([s for s in surfaces if "door" not in s], materials)
+    surfaces.extend(moving)
+    del moving
     surfaces = merge_surfaces(surfaces)
     print(
         f'Geometry: {len(surfaces)} surfaces, {sum(len(s["indices"])//3 for s in surfaces)} triangles',
@@ -324,6 +338,9 @@ def build(args):
             not visible_entity(entity) or entity.get("classname") != "script_brushmodel"
         ):
             continue
+        if id(entity) in door_entities:
+            door_data.add_hull(doors[door_entities[id(entity)]], b, entity)
+            continue
         h = brush_hull(b, i)
         if entity:
             h["vertices"] = [transform(v, entity) for v in h["vertices"]]
@@ -332,6 +349,9 @@ def build(args):
             ladders.extend(ladder_data.faces(b))
     triangle_hulls = radiant_collision.add_compiled_triangles(brushes, collision)
     brushes, glass_collision_removed = glass_panes.remove_static_collision(brushes, panes)
+    if doors:
+        (out / "doors.bin").write_bytes(door_data.encode(doors, surfaces))
+        write_json(out / "doors.json", doors)
     write_json(out / "source_collision.json", brushes)
     ladder_matches = ladder_data.align_models(ladders, instances, source)
     (out / "ladders.bin").write_bytes(ladder_data.encode(ladders))
@@ -430,6 +450,7 @@ def build(args):
         "glass_collision_removed": glass_collision_removed,
         "hidden_window_states": len(hidden),
         "scripted_windows": len(windows),
+        "doors": [{k: v for k, v in d.items() if k != "hulls"} for d in doors],
         "skipped_brush_contents": dict(skipped_contents),
         "static_collision_models": collision["static_models"],
         "submodel_count": collision["submodel_count"],

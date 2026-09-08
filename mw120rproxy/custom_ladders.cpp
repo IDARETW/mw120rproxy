@@ -1,3 +1,4 @@
+#include "custom_doors.h"
 #include "custom_ladders.h"
 #include "ladder_file.h"
 #include "custom_physics.h"
@@ -33,6 +34,7 @@ float Lateral(const ladderfile::Face& f, const float* p) {
     return -(p[0] - f.bottom[0]) * f.normal[1] + (p[1] - f.bottom[1]) * f.normal[0];
 }
 void Check(void* pm, void* pml) {
+    customdoors::Movement(pm, pml);
     const auto faces = g_faces.load();
     auto* bytes = static_cast<unsigned char*>(pm);
     if (faces && !faces->empty() && customphysics::OwnsEmptyWorld()) {

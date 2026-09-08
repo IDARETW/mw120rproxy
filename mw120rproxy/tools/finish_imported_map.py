@@ -43,6 +43,9 @@ def finish(out, mapid, title, credit, source):
         validate(data)
         (package / "glass.bin").write_bytes(data)
         manifest["glass"] = "panes-v2" if data[:8] == b"MWRGLS02" else "panes-v1"
+    if (out / "doors.bin").exists():
+        (package / "doors.bin").write_bytes((out / "doors.bin").read_bytes())
+        manifest["doors"] = "brush-poses-v1"
     write_json(package / "manifest.json", manifest)
     from map_presentation import preview
 

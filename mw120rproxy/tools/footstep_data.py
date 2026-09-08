@@ -25,6 +25,8 @@ def encode(surfaces, types):
     records = []
     counts = Counter()
     for s in surfaces:
+        if "door" in s:
+            continue
         for i in range(0, len(s["indices"]), 3):
             vs = [s["vertices"][j] for j in s["indices"][i : i + 3]]
             tile = int(vs[0]["lightmapUV"][0])

@@ -1,3 +1,4 @@
+#include "custom_doors.h"
 #include "developer_ui.h"
 #include "custom_map_ui.h"
 #include "custom_glass.h"
@@ -447,6 +448,7 @@ uintptr_t __fastcall DrawOverlay(uintptr_t self, int localClient) {
     try {
         PollControl();
         customglass::PumpEffects();
+        customdoors::PumpSounds();
         if (!g_pendingFrames && CanSelect())
             custommapui::SyncSelection(DvarString("NSQLTTMRMP").c_str());
         if (!g_receivedOverlay) {

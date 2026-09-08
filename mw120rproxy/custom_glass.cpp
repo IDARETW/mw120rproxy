@@ -1,3 +1,4 @@
+#include "custom_doors.h"
 #include "custom_glass.h"
 #include "glass_file.h"
 #include "custom_physics.h"
@@ -120,6 +121,8 @@ void PhysicsBullet(int world,
                    int phase) {
     g_physicsBullet.load()(world, trace, start, end, bounds, skip, count, children, mask,
                            locational, priority, phase);
+    if (world >= 0 && world < 5)
+        customdoors::Trace(trace, start, end, bounds, mask, locational && mask == 0x2806191);
     // The exact Replay binary has only weapon-bullet and melee callers here.
     if ((world == 0 || world == 1) && locational)
         Shot(start, end, trace, mask == 0x2806191 ? "melee" : "bullet");
@@ -139,8 +142,10 @@ void PhysicsLegacy(int world,
     const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_base;
     g_physicsLegacy.load()(world, trace, start, end, bounds, skip, count, children, mask,
                            locational, priority, phase);
-    if (world >= 0 && world < 5)
+    if (world >= 0 && world < 5) {
         customsurfaces::Apply(trace, start, end);
+        customdoors::Trace(trace, start, end, bounds, mask, locational && mask == 0x2806191);
+    }
     if ((world == 0 || world == 1) && locational &&
         (caller == 0x11D545B || (caller >= 0xFC0550 && caller < 0xFC0800 && mask == 0x2806191)))
         Shot(start, end, trace, mask == 0x2806191 ? "melee" : "bullet");
@@ -171,6 +176,7 @@ void TraceSlide(void* self,
                 int mask,
                 bool cheap) {
     g_slide.load()(self, pm, result, start, end, bounds, pass, ignore, count, mask, cheap);
+    customdoors::Trace(result, start, end, bounds, mask);
     const auto state = Active();
     if (!state || !(mask & 1))
         return;
@@ -214,6 +220,7 @@ void TraceLegacy(void* self,
                  int mask) {
     g_legacy.load()(self, pm, result, start, end, bounds, pass, mask);
     customsurfaces::Apply(result, start, end);
+    customdoors::Trace(result, start, end, bounds, mask);
     const auto state = Active();
     if (!state || mask != 16)
         return;
@@ -352,8 +359,11 @@ hook::Status Install(uintptr_t base) {
                            replay::PhysicsBulletTrace.size, g_physicsBullet);
     if (status != hook::Status::Installed)
         return status;
-    return hook::Install(reinterpret_cast<void*>(base + replay::PhysicsLegacyTrace.rva),
-                         &PhysicsLegacy, replay::PhysicsLegacyTrace.bytes,
-                         replay::PhysicsLegacyTrace.size, g_physicsLegacy);
+    status = hook::Install(reinterpret_cast<void*>(base + replay::PhysicsLegacyTrace.rva),
+                           &PhysicsLegacy, replay::PhysicsLegacyTrace.bytes,
+                           replay::PhysicsLegacyTrace.size, g_physicsLegacy);
+    if (status == hook::Status::Installed)
+        customdoors::Initialize(base, g_physicsLegacy.load());
+    return status;
 }
 }

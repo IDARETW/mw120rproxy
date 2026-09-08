@@ -27,6 +27,7 @@
 #include "custom_audio.h"
 #include "custom_surfaces.h"
 #include "custom_ambient.h"
+#include "custom_door_ui.h"
 #include "custom_ladders.h"
 #include "custom_glass.h"
 #include "noclip.h"
@@ -89,6 +90,8 @@ bool DoInstallHooks() {
         status = customladders::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customglass::Install(g_base);
+    if (status == hook::Status::Installed && g_config.customMapLoader)
+        status = customdoorui::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customaudio::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
@@ -165,7 +168,9 @@ DWORD WINAPI InitThread(LPVOID) {
     try {
         g_config = config::Load(g_self);
         log120r::Init(g_self, g_config.console);
-        LOG_INFO("Core", "mw120rproxy custom-map-authoring-v29; target 1.20.4.7623265-replay");
+        LOG_INFO(
+            "Core",
+            "mw120rproxy custom-map-authoring-v31-door-input-hud; target 1.20.4.7623265-replay");
         LOG_INFO(
             "Diagnostics",
             "exception call chains: mw120rproxy.exceptions.log and per-run mw120rproxy.crash.*.log; native errors: mw120rproxy.engine.log");

@@ -57,6 +57,8 @@ target("mw120rproxy")
         "custom_collision.cpp",
         "custom_ladders.cpp",
         "custom_glass.cpp",
+        "custom_doors.cpp",
+        "custom_door_ui.cpp",
         "custom_map_ui.cpp",
         "custom_images.cpp",
         "custom_audio.cpp",

@@ -94,6 +94,16 @@ if ($manifest.ambient -eq 'sh-probe-v1') {
 if ($manifest.footsteps -eq 'triangles-v1') {
     $names += 'footsteps.bin'
 }
+if ($manifest.doors) {
+    if ($manifest.doors -cne 'brush-poses-v1') {
+        throw 'Unsupported door package.'
+    }
+    & python -B (Join-Path $PSScriptRoot 'door_data.py') --validate (Join-Path $packageSource 'doors.bin')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Door sidecar validation failed.'
+    }
+    $names += 'doors.bin'
+}
 if ($manifest.glass) {
     $names += 'glass.bin'
 }

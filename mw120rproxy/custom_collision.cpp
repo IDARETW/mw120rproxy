@@ -1,3 +1,4 @@
+#include "custom_doors.h"
 #include "custom_collision.h"
 #include "custom_physics.h"
 #include "custom_maps.h"
@@ -99,6 +100,7 @@ uintptr_t Shutdown(int world) {
     Destroy(world);
     if (world == 0) {
         customglass::Clear();
+        customdoors::Clear();
         customsurfaces::Clear();
     }
     SetLastError(saved);
@@ -125,6 +127,7 @@ uintptr_t Create(int world) {
             customladders::Load(path.parent_path());
             if (world == 0) {
                 customglass::Load(path.parent_path());
+                customdoors::Load(path.parent_path());
                 customsurfaces::Load(path.parent_path());
             }
             std::error_code pathError;

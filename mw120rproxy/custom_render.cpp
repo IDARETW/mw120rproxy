@@ -1,3 +1,4 @@
+#include "custom_doors.h"
 #include "custom_render.h"
 #include "custom_maps.h"
 #include "replay_bindings.h"
@@ -124,6 +125,7 @@ void QueryVisibility(const void* command) {
         // masks unused tail bits; downstream draw and frustum processing stay native.
         reinterpret_cast<void (*)(unsigned)>(g_base + replay::UmbraSetAllVisible.rva)(view);
         customglass::HideBroken(world, view);
+        customdoors::Visibility(world, view);
         if (!g_reported.exchange(true))
             LOG_INFO(
                 "Render",

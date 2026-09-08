@@ -60,6 +60,7 @@ Office, Nuketown, `mp_test`, and Super Mario 64 have been tested. These maps are
 
 - [Convert an IW3 map to IW8](docs/IW3_TO_IW8.md) — extract a downloaded CoD4 map, convert it, and install it in Replay.
 - [Build a map from Radiant](docs/MAP_BUILDING.md#radiant-source-map) — compile your own map source and static models.
+- [Imported doors](docs/DOORS.md) — open, close, and bash compatible brush doors.
 
 ## Controls and configuration
 
@@ -81,9 +82,12 @@ Stale safe-mode markers are cleared at startup to prevent the safe-mode prompt a
 - Baked lighting and static shadows, the map's sun direction, and ambient lighting based on the skybox.
 - Transparent foliage, blended decals, climbable ladders, ladder sounds, and footsteps matched to floor materials.
 - Breakable glass with sound and debris effects when shot, hit with melee, or mantled through.
+- Imported brush doors with Use to open/close, melee and sprint bashing, moving collision, and the game's interaction popup. Existing packages need to be rebuilt to include door data.
 - Custom map names, menu previews, and loading-screen images.
 
 CoD4 scripts, general destructible objects, bot navigation, player shadows on custom geometry, and full normal/specular material conversion are not supported. Model physics is not imported automatically; use clip brushes for solid props. Test converted maps in-game, especially maps with unusual materials or scripted objects.
+
+Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Opening, closing, and the interaction prompt have been tested on Super Mario 64. Indoor lighting remains a work in progress: bright rooms and dark native weapons can still occur because world lightmaps and dynamic-object lighting use different paths.
 
 ## Troubleshooting
 

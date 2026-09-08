@@ -358,5 +358,20 @@
     "name": "MovementTrace",
     "rva": "0xcd24c0",
     "bytes": "40555657415441564157488dac2468ffffff"
+  },
+  {
+    "name": "InteractionPopup",
+    "rva": "0x1b09090",
+    "bytes": "4c8bdc5341564881ecc8000000488b0554b3f403"
+  },
+  {
+    "name": "InteractionString",
+    "rva": "0x1b09790",
+    "bytes": "4053555657415641574881ec08010000"
+  },
+  {
+    "name": "InteractionRange",
+    "rva": "0x1b09730",
+    "bytes": "4863c1488d0d0662760d488b04c1"
   }
 ]
