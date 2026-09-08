@@ -1,0 +1,36 @@
+# Build products and local tools
+.xmake/
+xmake-out/
+build/
+test-out/
+external/
+_vendor/
+.venv/
+__pycache__/
+*.pyc
+.vs/
+.vscode/
+*.user
+*.obj
+*.pdb
+*.lib
+*.exp
+*.ilk
+*.exe
+*.dll
+# Owner game files, generated packages and diagnostics
+custom_map_sources/
+evidence/
+.proxy/
+*.log
+*.dmp
+*.i64
+*.id0
+*.id1
+*.id2
+*.ff
+*.iwd
+*.iwi
+*.d3dbsp
+*.identity.ini
+local.env.ps1

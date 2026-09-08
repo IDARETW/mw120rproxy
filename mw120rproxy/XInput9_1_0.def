@@ -1,0 +1,10 @@
+; Export every real XInput9_1_0.dll name AND ordinal so both name- and
+; ordinal-imports resolve against us. Ordinals match System32\XInput9_1_0.dll
+; (base 1): DllMain@1, XInputGetCapabilities@2, XInputGetDSoundAudioDeviceGuids@3,
+; XInputGetState@4, XInputSetState@5.
+EXPORTS
+    DllMain=Proxy_DllMain @1
+    XInputGetCapabilities=Proxy_XInputGetCapabilities @2
+    XInputGetDSoundAudioDeviceGuids=Proxy_XInputGetDSoundAudioDeviceGuids @3
+    XInputGetState=Proxy_XInputGetState @4
+    XInputSetState=Proxy_XInputSetState @5

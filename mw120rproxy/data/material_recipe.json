@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "source": "tw/rubber_trim_black_baseboard_01",
+  "info": "010000000000d000000000000000210000021000030401000000010100000000",
+  "techset": "tw/mw120r_graybox_v1",
+  "textures": [
+    {
+      "header": "0000000000000000",
+      "image": "$gray"
+    },
+    {
+      "header": "0900000000000000",
+      "image": "$identitynormalmap"
+    },
+    {
+      "header": "3b00000000000000",
+      "image": "$black"
+    }
+  ],
+  "constants": "0000000007000000003c0080003c003c0000000009000000ffffffffc02fff0000bc0000000000003600000009000000801b7e000000804f00000000480000000000803f010000004e36d93f4e36d93f",
+  "bufferIndices": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "buffers": [
+    [
+      "",
+      "",
+      "",
+      "0000803f010000004e36d93f4e36d93f07000000003c0080003c003c00000000ffffffffc02fff0000bc00000000000009000000801b7e000000804f00000000"
+    ]
+  ],
+  "techsetDefinition": "mp_test.d3dbsp.techset.json"
+}

@@ -1,0 +1,148 @@
+#include "custom_glass.h"
+#include "glass_file.h"
+#include "custom_physics.h"
+#include "custom_surfaces.h"
+#include "replay_bindings.h"
+#include "logger.h"
+#include "safemem.h"
+#include <atomic>
+#include <memory>
+#include <intrin.h>
+#include <mutex>
+namespace {
+struct Event {glassfile::Vec origin,normal;unsigned pane;};
+struct State {std::vector<glassfile::Pane> panes;unsigned surfaces=0;std::atomic<unsigned> broken[1024]{};std::mutex mutex;std::vector<Event> events;};
+std::atomic<std::shared_ptr<State>> g_state;
+uintptr_t g_base=0;
+using Bullet=bool(*)(void*,const void*,bool,void*,void*,int,bool);
+using SlideTrace=void(*)(void*,void*,void*,const float*,const float*,const float*,int,unsigned*,unsigned,int,bool);
+using LegacyTrace=void(*)(void*,void*,void*,const float*,const float*,const float*,int,int);
+std::atomic<Bullet> g_bullet{nullptr};std::atomic<SlideTrace> g_slide{nullptr};std::atomic<LegacyTrace> g_legacy{nullptr};
+using PhysicsTrace=void(*)(int,void*,const float*,const float*,const float*,const int*,int,int,int,int,const unsigned char*,int);
+std::atomic<PhysicsTrace> g_physicsBullet{nullptr},g_physicsLegacy{nullptr};
+std::atomic<unsigned> g_shotSamples{0};
+std::shared_ptr<State> Active(){return customphysics::OwnsEmptyWorld()?g_state.load():nullptr;}
+void Break(const std::shared_ptr<State>& state,unsigned i,const char* cause,const float* start,const float* end,float fraction,const glassfile::Vec& normal){
+    if(state->broken[i].exchange(1))return;
+    Event event{{},normal,i};for(unsigned k=0;k<3;++k)event.origin[k]=start[k]+fraction*(end[k]-start[k]);
+    // Mantle overlap originates at the player, so project onto the actual pane.
+    const auto& p=state->panes[i];float d=glassfile::Dot(glassfile::Sub(event.origin,p.vertices[0]),p.normal);
+    for(unsigned k=0;k<3;++k)event.origin[k]-=d*p.normal[k];
+    {std::lock_guard lock(state->mutex);if(state->events.size()<1024)state->events.push_back(event);}
+    LOG_INFO("Glass","pane=%u broken cause=%s surfaces=%zu impact=(%.1f %.1f %.1f)",i,cause,p.surfaces.size(),event.origin[0],event.origin[1],event.origin[2]);
+}
+void Shot(const float* start,const float* end,const void* trace,const char* cause){
+    const auto state=Active();if(!state)return;
+    float limit;memcpy(&limit,trace,4);if(!std::isfinite(limit)||limit<0||limit>1)return;
+    const float point[6]{};unsigned hits=0;
+    for(unsigned i=0;i<state->panes.size();++i)if(!state->broken[i]){
+        float fraction;glassfile::Vec n;
+        if(glassfile::Hit(state->panes[i],start,end,point,limit,fraction,n)){Break(state,i,cause,start,end,fraction,n);++hits;}}
+    if(g_shotSamples.fetch_add(1)<12)LOG_INFO("Glass","%s trace start=(%.1f %.1f %.1f) end=(%.1f %.1f %.1f) fraction=%.6f breaks=%u",cause,start[0],start[1],start[2],end[0],end[1],end[2],limit,hits);
+}
+void PhysicsBullet(int world,void* trace,const float* start,const float* end,const float* bounds,const int* skip,int count,int children,int mask,int locational,const unsigned char* priority,int phase){
+    g_physicsBullet.load()(world,trace,start,end,bounds,skip,count,children,mask,locational,priority,phase);
+    // The exact Replay binary has only weapon-bullet and melee callers here.
+    if((world==0||world==1) && locational)Shot(start,end,trace,mask==0x2806191?"melee":"bullet");
+}
+void PhysicsLegacy(int world,void* trace,const float* start,const float* end,const float* bounds,const int* skip,int count,int children,int mask,int locational,const unsigned char* priority,int phase){
+    const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress())-g_base;
+    g_physicsLegacy.load()(world,trace,start,end,bounds,skip,count,children,mask,locational,priority,phase);
+    if(world>=0&&world<5)customsurfaces::Apply(trace,start,end);
+    if((world==0||world==1) && locational && (caller==0x11D545B || (caller>=0xFC0550 && caller<0xFC0800 && mask==0x2806191)))Shot(start,end,trace,mask==0x2806191?"melee":"bullet");
+}
+bool TraceBullet(void* bp,const void* weapon,bool alternate,void* attacker,void* br,int previous,bool self) {
+    float start[3],end[3];memcpy(start,static_cast<char*>(bp)+0x68,12);memcpy(end,static_cast<char*>(bp)+0x74,12);
+    const auto result=g_bullet.load()(bp,weapon,alternate,attacker,br,previous,self);
+    Shot(start,end,br,"bullet-wrapper");
+    return result;
+}
+void TraceSlide(void* self,void* pm,void* result,const float* start,const float* end,const float* bounds,int pass,unsigned* ignore,unsigned count,int mask,bool cheap) {
+    g_slide.load()(self,pm,result,start,end,bounds,pass,ignore,count,mask,cheap);const auto state=Active();
+    if(!state || !(mask&1))return;
+    float limit;memcpy(&limit,result,4);if(!std::isfinite(limit)||limit<0||limit>1)return;
+    unsigned best=~0u;glassfile::Vec normal{};
+    for(unsigned i=0;i<state->panes.size();++i)if(!state->broken[i]){
+        float f;glassfile::Vec n;if(glassfile::Hit(state->panes[i],start,end,bounds,limit,f,n)){best=i;limit=f;normal=n;}}
+    if(best==~0u)return;
+    // Exact Replay trace_t: fraction 0, normal 4, flags 1C, contents 20,
+    // hitType 24, hitId 2C; total 48h (BulletTraceResults.hitEnt begins at 48h).
+    memset(result,0,0x48);auto* bytes=static_cast<unsigned char*>(result);memcpy(bytes,&limit,4);memcpy(bytes+4,normal.data(),12);
+    const unsigned contents=1,type=1;const unsigned short entity=2046;
+    memcpy(bytes+0x20,&contents,4);memcpy(bytes+0x24,&type,4);memcpy(bytes+0x2C,&entity,2);
+}
+void TraceLegacy(void* self,void* pm,void* result,const float* start,const float* end,const float* bounds,int pass,int mask){
+    g_legacy.load()(self,pm,result,start,end,bounds,pass,mask);customsurfaces::Apply(result,start,end);const auto state=Active();
+    if(!state||mask!=16)return;
+    // The exact Replay Mantle_Move glass-only overlap query returns here.
+    if(reinterpret_cast<uintptr_t>(_ReturnAddress())-g_base!=0x11076AE)return;
+    for(unsigned i=0;i<state->panes.size();++i)if(!state->broken[i]){
+        float fraction;glassfile::Vec n;if(glassfile::Hit(state->panes[i],start,end,bounds,1,fraction,n,true))Break(state,i,"mantle",start,end,fraction,n);}
+}
+}
+namespace customglass {
+void PumpEffects(){
+    const auto state=Active();if(!state)return;
+    // Called on the existing client/main-thread overlay seam. Physics/server
+    // callbacks only enqueue events; particle asset access stays on this thread.
+    std::vector<Event> events;
+    {std::lock_guard lock(state->mutex);const auto count=(std::min)(size_t(4),state->events.size());
+     events.assign(state->events.begin(),state->events.begin()+count);state->events.erase(state->events.begin(),state->events.begin()+count);}
+    for(const auto& event:events){
+        // This definition is serialized in common_mp (five emitters), unlike
+        // the vehicle-window name which is only a script reference there.
+        const char* name="vfx/core/impacts/small_glass";
+        auto* effect=reinterpret_cast<void*(*)(int,const char*,int)>(g_base+replay::FindAsset.rva)(44,name,0);
+        uintptr_t assetName=0;char text[160]{};
+        const bool found=effect && safemem::ReadBytes(effect,&assetName,8) && assetName &&
+            safemem::ReadString(reinterpret_cast<const char*>(assetName),text,sizeof(text)) && strcmp(text,name)==0;
+        unsigned handle=0;int connected=0,deltaTime=1,time=0;uintptr_t cg=0;
+        // Preserve Glass_PlayEffect's local-client gates, but retain the actual
+        // particle handle instead of incorrectly reporting name lookup as a spawn.
+        if(found && safemem::ReadBytes(reinterpret_cast<void*>(g_base+0xEEF1288),&connected,4) && connected==9 &&
+           safemem::ReadBytes(reinterpret_cast<void*>(g_base+0xF26F940),&cg,8) && cg &&
+           safemem::ReadBytes(reinterpret_cast<void*>(cg+0x2F20),&deltaTime,4) && !deltaTime &&
+           safemem::ReadBytes(reinterpret_cast<void*>(cg+0x65A4),&time,4)){
+            float axis[9];memcpy(axis,event.normal.data(),12);
+            reinterpret_cast<void(*)(const float*,float*,float*)>(g_base+replay::NormalBasis.rva)(axis,axis+3,axis+6);
+            // Offset off the surface to avoid spawning all debris inside its
+            // thickness. Collision was already removed for the broken pane.
+            auto origin=event.origin;for(unsigned k=0;k<3;++k)origin[k]+=event.normal[k]*2;
+            handle=reinterpret_cast<unsigned(*)(int,void*,int,const float*,const float*)>(g_base+replay::PlayOrientedEffect.rva)(0,&effect,time,origin.data(),axis);
+        }
+        auto* alias=reinterpret_cast<void*(*)(const char*)>(g_base+replay::SoundAliasByName.rva)("glass_pane_breakout");
+        unsigned aliasId=0;if(alias)safemem::ReadBytes(static_cast<char*>(alias)+8,&aliasId,4);
+        if(aliasId)reinterpret_cast<void(*)(unsigned,int,int,const float*)>(g_base+replay::SoundAtPosition.rva)(aliasId,0,2046,event.origin.data());
+        LOG_INFO("Glass","pane=%u shatter asset=%d particleHandle=%08X client=%d time=%d positional sound=%d",event.pane,int(found),handle,connected,time,int(aliasId!=0));
+    }
+}
+void Load(const std::filesystem::path& directory){
+    auto state=std::make_shared<State>();const auto path=directory/"glass.bin";
+    if(std::filesystem::exists(path)&&!glassfile::Load(path,state->panes,state->surfaces)){LOG_ERR("Glass","invalid glass.bin; refusing pane data");g_state.store(nullptr);return;}
+    LOG_INFO("Glass","loaded %zu independently breakable panes",state->panes.size());g_shotSamples=0;g_state.store(std::move(state));
+}
+void Clear(){g_state.store(nullptr);}
+void HideBroken(uintptr_t world,unsigned view){
+    const auto state=g_state.load();if(!state||view>=33)return;
+    unsigned count=0;uintptr_t visibility=0;
+    if(!safemem::ReadBytes(reinterpret_cast<void*>(world+0xC8),&count,4)||count!=state->surfaces||
+       !safemem::ReadBytes(reinterpret_cast<void*>(world+0x40B8+8*view),&visibility,8)||!visibility)return;
+    auto* words=reinterpret_cast<unsigned*>(visibility);
+    for(unsigned i=0;i<state->panes.size();++i)if(state->broken[i].load())for(unsigned surface:state->panes[i].surfaces)words[surface>>5]&=~(0x80000000u>>(surface&31));
+}
+hook::Status Install(uintptr_t base){
+    g_base=base;
+    for(const auto* b:{&replay::PlayOrientedEffect,&replay::NormalBasis,&replay::SoundAliasByName,&replay::SoundAtPosition}){
+        unsigned char bytes[64]{};if(!safemem::ReadBytes(reinterpret_cast<void*>(base+b->rva),bytes,b->size)||memcmp(bytes,b->bytes,b->size))return hook::Status::NotReady;
+    }
+    auto status=hook::Install(reinterpret_cast<void*>(base+replay::BulletTrace.rva),&TraceBullet,replay::BulletTrace.bytes,replay::BulletTrace.size,g_bullet);
+    if(status!=hook::Status::Installed)return status;
+    status=hook::Install(reinterpret_cast<void*>(base+replay::LegacySlideTrace.rva),&TraceSlide,replay::LegacySlideTrace.bytes,replay::LegacySlideTrace.size,g_slide);
+    if(status!=hook::Status::Installed)return status;
+    status=hook::Install(reinterpret_cast<void*>(base+replay::LegacyTrace.rva),&TraceLegacy,replay::LegacyTrace.bytes,replay::LegacyTrace.size,g_legacy);
+    if(status!=hook::Status::Installed)return status;
+    status=hook::Install(reinterpret_cast<void*>(base+replay::PhysicsBulletTrace.rva),&PhysicsBullet,replay::PhysicsBulletTrace.bytes,replay::PhysicsBulletTrace.size,g_physicsBullet);
+    if(status!=hook::Status::Installed)return status;
+    return hook::Install(reinterpret_cast<void*>(base+replay::PhysicsLegacyTrace.rva),&PhysicsLegacy,replay::PhysicsLegacyTrace.bytes,replay::PhysicsLegacyTrace.size,g_physicsLegacy);
+}
+}

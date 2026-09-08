@@ -1,0 +1,362 @@
+[
+  {
+    "name": "Overlay",
+    "rva": "0x15e1340",
+    "bytes": "8bcae979390100"
+  },
+  {
+    "name": "KeyEvent",
+    "rva": "0x15beb80",
+    "bytes": "48895c241048896c242056574154"
+  },
+  {
+    "name": "AddConsoleText",
+    "rva": "0x15c1c20",
+    "bytes": "48895c24084889742410574883ec20"
+  },
+  {
+    "name": "DiskOpen",
+    "rva": "0x13f4d50",
+    "bytes": "48895c2408574883ec408bda488bf9"
+  },
+  {
+    "name": "DrawText",
+    "rva": "0x15aaaa0",
+    "bytes": "4c8bdc49896b084989731049897b18"
+  },
+  {
+    "name": "DrawConsole",
+    "rva": "0x15ae0b0",
+    "bytes": "40534883ec208b15e0fd970d"
+  },
+  {
+    "name": "ToggleConsole",
+    "rva": "0x15b18c0",
+    "bytes": "4883ec28488d0d05488f0de8b088cfff"
+  },
+  {
+    "name": "ToggleOutput",
+    "rva": "0x15b1930",
+    "bytes": "803d55c88e0d000f94054ec88e0dc3"
+  },
+  {
+    "name": "ConsoleActive",
+    "rva": "0x15b0ef0",
+    "bytes": "4883ec28ba01000000e832f20000"
+  },
+  {
+    "name": "IsMainThread",
+    "rva": "0x12cf280",
+    "bytes": "4883ec28ff15562208013b0590012b0c0f94c04883c428c3"
+  },
+  {
+    "name": "IsFrontEnd",
+    "rva": "0x10c6bd0",
+    "bytes": "833dd952420b050f9dc0c3"
+  },
+  {
+    "name": "GetString",
+    "rva": "0x13e69b0",
+    "bytes": "4883ec28e807fdffff8bc8e800f9ffff"
+  },
+  {
+    "name": "GetBool",
+    "rva": "0x13e6820",
+    "bytes": "4883ec28e897feffff8bc8e890faffff"
+  },
+  {
+    "name": "EnterCritical",
+    "rva": "0x13f54f0",
+    "bytes": "48895c24084889742410574883ec20"
+  },
+  {
+    "name": "LeaveCritical",
+    "rva": "0x13f55f0",
+    "bytes": "8b051ad8ac114863d165488b0c2558000000"
+  },
+  {
+    "name": "DrawPic",
+    "rva": "0x1964cd0",
+    "bytes": "488b442450488b0d74967e0f4885c0"
+  },
+  {
+    "name": "FindAsset",
+    "rva": "0x11aa890",
+    "bytes": "48895c2410488974241848897c2420"
+  },
+  {
+    "name": "PrintMessage",
+    "rva": "0x12b0660",
+    "bytes": "48895c24104889742418574883ec30"
+  },
+  {
+    "name": "DiscError",
+    "rva": "0xd86f00",
+    "bytes": "48895c241048896c241856574156"
+  },
+  {
+    "name": "ComErrorInternal",
+    "rva": "0x12ab1c0",
+    "bytes": "48895c2408574883ec304c8bca4c89442420"
+  },
+  {
+    "name": "FatalText",
+    "rva": "0x12b36a0",
+    "bytes": "4883ec28803dc5b40d0c00488d15beb40d0c"
+  },
+  {
+    "name": "ResetReader",
+    "rva": "0xd871e0",
+    "bytes": "40534883ec204c8b81b0000000488bd9"
+  },
+  {
+    "name": "InitInflator",
+    "rva": "0xd88120",
+    "bytes": "48895c240848896c24104889742418"
+  },
+  {
+    "name": "LinkAssetEntry",
+    "rva": "0x11ac760",
+    "bytes": "48895c2418574154415541564157"
+  },
+  {
+    "name": "AddShapeList",
+    "rva": "0x161ab50",
+    "bytes": "48895c24084889742410574883ec60"
+  },
+  {
+    "name": "MapShapeCall",
+    "rva": "0x1490c40",
+    "bytes": "4881c1500100004c8b06e8e19cbfff"
+  },
+  {
+    "name": "ClipShapeCall",
+    "rva": "0x1490a94",
+    "bytes": "4c8b01488d91b80000004881c1c000000041b917000000e8809ebfff"
+  },
+  {
+    "name": "SetMainShapeList",
+    "rva": "0x162a540",
+    "bytes": "40534883ec20488bd9488d0d98c0a10d"
+  },
+  {
+    "name": "OmnvarClear",
+    "rva": "0xcd5500",
+    "bytes": "4883ec2833d2488d0d7330f70441b800400100"
+  },
+  {
+    "name": "OmnvarLoad",
+    "rva": "0xcd5c80",
+    "bytes": "48895c24084889742420574881ec40040000"
+  },
+  {
+    "name": "FrontendOmnvarCall",
+    "rva": "0x137b1bf",
+    "bytes": "0fb6c8488d57404c8bc7e8b2aa95ff"
+  },
+  {
+    "name": "WorldCollisionCreate",
+    "rva": "0x1491180",
+    "bytes": "48895c241848896c24205741544155"
+  },
+  {
+    "name": "WorldCollisionShutdown",
+    "rva": "0x1491ac0",
+    "bytes": "4053554883ec2848897c2448488d3d1d28130d"
+  },
+  {
+    "name": "CreateShapeAabb",
+    "rva": "0x161cfb0",
+    "bytes": "40534881eca0000000488b0538744304"
+  },
+  {
+    "name": "InstantiateStaticBody",
+    "rva": "0x108ff40",
+    "bytes": "4053574881ec98000000488b05a7449c04"
+  },
+  {
+    "name": "DestroyPhysicsInstance",
+    "rva": "0x108ddb0",
+    "bytes": "48895c24084889742410574883ec20"
+  },
+  {
+    "name": "RemoveHavokReference",
+    "rva": "0x1c8e480",
+    "bytes": "66837910004c8bc1745f418b4010"
+  },
+  {
+    "name": "UmbraQueryStaticVisibilityCmd",
+    "rva": "0x18cdd20",
+    "bytes": "48895c2418488974242055574154"
+  },
+  {
+    "name": "UmbraSetAllVisible",
+    "rva": "0x18f1ee0",
+    "bytes": "48895c240848896c24104889742418"
+  },
+  {
+    "name": "AddBspDrawSurfacesCamera",
+    "rva": "0x18d19c0",
+    "bytes": "48895c240855488d6c24a94881ecb0000000"
+  },
+  {
+    "name": "DrawBspSurf",
+    "rva": "0x18f9460",
+    "bytes": "4889742418574883ec40488bf1488b4a08"
+  },
+  {
+    "name": "CreateShapeConvex",
+    "rva": "0x161cbf0",
+    "bytes": "48895c240848896c24104889742420"
+  },
+  {
+    "name": "CreateShapeCompound",
+    "rva": "0x161c770",
+    "bytes": "40554155488d6c24b14881ecb8000000"
+  },
+  {
+    "name": "LoadMapInfoList",
+    "rva": "0x10c7e70",
+    "bytes": "41554883ec504533ed44892d345a430b"
+  },
+  {
+    "name": "GetLadderInfo",
+    "rva": "0xcc4470",
+    "bytes": "40555356574154415541564157488dac2458fdffff"
+  },
+  {
+    "name": "LegacyPlayerTrace",
+    "rva": "0xcf0980",
+    "bytes": "48895c24084889742410574881ec90000000"
+  },
+  {
+    "name": "CheckLadderMove",
+    "rva": "0xcc5db0",
+    "bytes": "405556574155488dac2448ffffff"
+  },
+  {
+    "name": "BulletTrace",
+    "rva": "0x11d5390",
+    "bytes": "405355565741564883ec60488b05f608c80d"
+  },
+  {
+    "name": "LegacySlideTrace",
+    "rva": "0xcf0ac0",
+    "bytes": "48895c24084889742410574881ec90000000"
+  },
+  {
+    "name": "LegacyTrace",
+    "rva": "0xcf0c10",
+    "bytes": "40534883ec60803ddd6e7401004d8bd1"
+  },
+  {
+    "name": "PhysicsBulletTrace",
+    "rva": "0x1097520",
+    "bytes": "4883ec788b8424d8000000c644246801"
+  },
+  {
+    "name": "PhysicsLegacyTrace",
+    "rva": "0x109b540",
+    "bytes": "4883ec788b8424d8000000c644246800"
+  },
+  {
+    "name": "GlassPlayEffect",
+    "rva": "0x150dde0",
+    "bytes": "4053554883ec78488b050a665404"
+  },
+  {
+    "name": "SoundAliasByName",
+    "rva": "0x13934c0",
+    "bytes": "4883ec28813d3296e10c45342312"
+  },
+  {
+    "name": "SoundAtPosition",
+    "rva": "0x1b709d0",
+    "bytes": "8b05f2d70311448bd2448bd983f820"
+  },
+  {
+    "name": "ClientCommand",
+    "rva": "0x120b6a0",
+    "bytes": "4c8bdc555641564157498dab78fcffff"
+  },
+  {
+    "name": "ServerArgv",
+    "rva": "0x1298b40",
+    "bytes": "4863055991f70b4c8bd2488d154f91f70b"
+  },
+  {
+    "name": "NoclipMovementFlags",
+    "rva": "0x11e801b",
+    "bytes": "8b86d05d0000a801740cc7460c02000000"
+  },
+  {
+    "name": "ImageLoadPixels",
+    "rva": "0x19387d0",
+    "bytes": "488bc44889580848897010574881ecb0000000"
+  },
+  {
+    "name": "UpdateFallbackProbe",
+    "rva": "0x188e5a0",
+    "bytes": "405741564881ec08010000488b05465e1c04"
+  },
+  {
+    "name": "GetComputeState",
+    "rva": "0x18bde20",
+    "bytes": "488bc1c3cccccccccccccccccccc"
+  },
+  {
+    "name": "SetComputeShader",
+    "rva": "0x18be910",
+    "bytes": "48895c2408574883ec2048837a1000"
+  },
+  {
+    "name": "UploadComputeConstants",
+    "rva": "0x18bef10",
+    "bytes": "488bc4488958084889681048897018"
+  },
+  {
+    "name": "SetComputeRWViews",
+    "rva": "0x18be750",
+    "bytes": "4c8bdc53555657415541574881ec88000000"
+  },
+  {
+    "name": "ComputeDispatch",
+    "rva": "0x18bd3e0",
+    "bytes": "48895c240848896c24104889742418"
+  },
+  {
+    "name": "LockGfxImmediate",
+    "rva": "0xec7830",
+    "bytes": "483b0d412fdb0f750ab937000000"
+  },
+  {
+    "name": "UnlockGfxImmediate",
+    "rva": "0xec7860",
+    "bytes": "483b0d112fdb0f750ab937000000"
+  },
+  {
+    "name": "PlayOrientedEffect",
+    "rva": "0x181a670",
+    "bytes": "48895c240848896c24104889742418"
+  },
+  {
+    "name": "NormalBasis",
+    "rva": "0x150e810",
+    "bytes": "48895c24084889742410574883ec20"
+  },
+  {
+    "name": "PickSoundAlias",
+    "rva": "0x1b78a50",
+    "bytes": "4055535741544157488dac2450fcffff"
+  },
+  {
+    "name": "LadderGrabSound",
+    "rva": "0x169dae0",
+    "bytes": "48895c241844884c24205556574154"
+  },
+  {
+    "name": "MovementTrace",
+    "rva": "0xcd24c0",
+    "bytes": "40555657415441564157488dac2468ffffff"
+  }
+]
