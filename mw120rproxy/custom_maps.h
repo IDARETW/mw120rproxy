@@ -13,6 +13,8 @@ struct Package {
     std::string description;
     // Optional installed Replay shader dependency; no stock world is loaded.
     std::string shaderSource;
+    std::string visibility;
+    std::string worldFormat;
     std::wstring directory;
     std::string error;
     bool valid = false;
@@ -37,4 +39,5 @@ bool ActiveZoneQPath(const char* request, char* qpathOut, size_t qpathOutSize);
 // Match only canonical stock zone request locations for the selected family.
 bool ResolveDiskRead(const char* request, std::string& pathOut);
 bool IsKnownMap(const char* mapName);
+bool ActiveWorldContract();
 }

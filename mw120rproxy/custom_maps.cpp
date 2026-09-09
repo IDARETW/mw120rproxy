@@ -410,6 +410,16 @@ void ValidatePackage(custommaps::Package& package, const std::filesystem::path& 
         package.error = "installed Replay shader dependency is missing or invalid";
         return;
     }
+    if (!OptionalString(text, "visibility", package.visibility) ||
+        (!package.visibility.empty() && package.visibility != "all-visible-v1")) {
+        package.error = "unsupported visibility contract";
+        return;
+    }
+    if (!OptionalString(text, "world", package.worldFormat) ||
+        (!package.worldFormat.empty() && package.worldFormat != "replay-1.20-native-v1")) {
+        package.error = "unsupported world format";
+        return;
+    }
 
     for (const std::string& zone : ZoneNames(package.id)) {
         const std::filesystem::path fastfile = directory / (zone + ".ff");
@@ -428,7 +438,8 @@ void ValidatePackage(custommaps::Package& package, const std::filesystem::path& 
     }
     std::string collision;
     if (!OptionalString(text, "collision", collision) ||
-        (!collision.empty() && collision != "boxes-v1" && collision != "convex-v2")) {
+        (!collision.empty() && collision != "boxes-v1" && collision != "convex-v2" &&
+         collision != "convex-v3")) {
         package.error = "unsupported collision format";
         return;
     }
@@ -654,6 +665,18 @@ bool IsKnownMap(const char* mapName) {
     });
 }
 
+bool ActiveWorldContract() {
+    std::lock_guard<std::mutex> lock(g_lock);
+    const auto package =
+        std::find_if(g_packages.begin(), g_packages.end(), [](const Package& item) {
+            return item.valid && item.id == g_selected;
+        });
+    if (package == g_packages.end())
+        return false;
+    return (package->visibility.empty() || package->visibility == "all-visible-v1") &&
+           (package->worldFormat.empty() || package->worldFormat == "replay-1.20-native-v1");
+}
+
 bool ResolveDiskRead(const char* request, std::string& pathOut) {
     pathOut.clear();
     if (!request || !*request)
@@ -686,7 +709,7 @@ bool ResolveDiskRead(const char* request, std::string& pathOut) {
             if (_wcsicmp(full.c_str(), expected.c_str()) != 0)
                 continue;
             const auto target = ZonePath(*package, zone, extension).lexically_normal();
-
+            // Recheck links at the handoff; the files remain owned by the native reader.
             if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES ||
                 (GetFileAttributesW(target.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
                 (GetFileAttributesW(package->directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) !=

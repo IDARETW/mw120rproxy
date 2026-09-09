@@ -12,7 +12,6 @@
 #include "custom_map_ui.h"
 #include "custom_images.h"
 #include "custom_audio.h"
-#include "custom_ambient.h"
 #include "custom_ladders.h"
 #include "ladder_file.h"
 #include "custom_glass.h"
@@ -21,9 +20,13 @@
 #include "compound_collision.h"
 #include "replay_compound_fixture.h"
 #include "replay_convex_fixture.h"
+#include "replay_bullet_fixture.h"
+#include "replay_client_bullet_fixture.h"
+#include "replay_trace_hit_fixture.h"
+#include "replay_trace_conversion_fixture.h"
 #include "replay_metadata_fixture.h"
 #include "replay_ladder_ik_fixture.h"
-#include "../../iw8-zonetool/src/iw8/replay_netconst.h"
+#include "../../../iw8-zonetool/src/iw8/replay_netconst.h"
 #include <cstdarg>
 #include "replay_physics_fixture.h"
 #include "log.h"
@@ -103,6 +106,7 @@ void PackageTests() {
     MakePackage(id);
     MakePackage(id + "_nested");
     MakePackage(id + "_large");
+    MakePackage(id + "_contract");
     Text(
         packageRoot / (id + "_nested") / "manifest.json",
         "{\"nested\":{\"schema\":1,\"id\":\"mp_proxy_nested\",\"title\":\"Wrong scope\",\"gametypes\":[\"tdm\"]}}");
@@ -112,12 +116,17 @@ void PackageTests() {
     const uint32_t high = 1;
     large.write(reinterpret_cast<const char*>(&high), 4);
     large.close();
+    Text(packageRoot / (id + "_contract") / "manifest.json",
+         "{\"schema\":1,\"id\":\"" + id +
+             "_contract\",\"title\":\"Fixture\",\"gametypes\":[\"tdm\"],\"visibility\":\"unknown\"}");
     custommaps::Initialize(GetModuleHandleW(nullptr));
     Check(custommaps::Select(id.c_str()), "valid structural package selected");
     Check(!custommaps::Select((id + "_nested").c_str()),
           "nested manifest keys cannot satisfy top-level schema");
     Check(!custommaps::Select((id + "_large").c_str()),
           "64-bit inflated size cannot evade block-size validation");
+    Check(!custommaps::Select((id + "_contract").c_str()),
+          "unknown generated-world contracts are rejected");
     std::string target;
     Check(custommaps::ResolveDiskRead(("zone/" + id + ".ff").c_str(), target),
           "selected root zone resolves");
@@ -575,18 +584,45 @@ void RenderTests() {
                     reinterpret_cast<const void*>(&NativeBspDispatch));
     Check(customrender::Install(reinterpret_cast<uintptr_t>(image)) == hook::Status::Installed,
           "checked visibility hook installed");
+    Check(!memcmp(image + replay::AddBspDrawSurfacesCamera.rva,
+                  replay::AddBspDrawSurfacesCamera.bytes, replay::AddBspDrawSurfacesCamera.size) &&
+              !memcmp(image + replay::DrawBspSurf.rva, replay::DrawBspSurf.bytes,
+                      replay::DrawBspSurf.size),
+          "BSP draw entry points remain unpatched");
     reinterpret_cast<void (*)(const void*)>(image + replay::AddBspDrawSurfacesCamera.rva)(nullptr);
     Check(nativeDrawCalls == 1 && GetLastError() == 0x3456,
-          "BSP diagnostic forwards native call and LastError");
+          "native BSP call preserves LastError");
     uintptr_t context[2]{};
     reinterpret_cast<void (*)(void*, const void*)>(image + replay::DrawBspSurf.rva)(nullptr,
                                                                                     context);
     Check(nativeDrawCalls == 2 && GetLastError() == 0x4567,
-          "BSP dispatch diagnostic forwards native call and LastError");
+          "native BSP dispatch preserves LastError");
     std::array<unsigned char, 0x4590> world{};
     std::array<unsigned char, 0xA0> command{};
     const char* name = "maps/mp/mp_test.d3dbsp";
     memcpy(world.data(), &name, 8);
+    const auto worldPointer = reinterpret_cast<uintptr_t>(world.data());
+    const auto put32 = [&](size_t offset, unsigned value) {
+        memcpy(world.data() + offset, &value, sizeof(value));
+    };
+    const auto putPointer = [&](size_t offset, uintptr_t value) {
+        memcpy(world.data() + offset, &value, sizeof(value));
+    };
+    put32(0x10, 243);
+    put32(0x14, 1);
+    put32(0x18, 2);
+    for (const size_t offset : {0x1C, 0x24, 0x2C, 0x34})
+        put32(offset, 2);
+    put32(0x90, 1);
+    put32(0xC8, 1);
+    put32(0xCC, 1);
+    put32(0x7CC, 1);
+    put32(0x3DF0, 1);
+    put32(0x3F9C, 1);
+    put32(0x3FA0, 1);
+    for (const size_t offset : {0xA8, 0xB0, 0xB8, 0xC0, 0xF0, 0xF8, 0x100, 0x108,
+                                0x7D0, 0x3D68, 0x3DF8, 0x3EF0, 0x3EF8, 0x41C0})
+        putPointer(offset, worldPointer);
     auto ptr = world.data();
     memcpy(image + 0x10C77870, &ptr, 8);
     MakePackage("mp_test");
@@ -599,6 +635,9 @@ void RenderTests() {
     };
     expectedVisibility = 1;
     run();
+    put32(0xC8, 4097);
+    run();
+    put32(0xC8, 1);
     command[0x7C] = 1;
     run();
     command[0x7C] = 0;
@@ -612,8 +651,8 @@ void RenderTests() {
     memcpy(world.data(), &name, 8);
     custommaps::ClearSelection();
     run();
-    Check(visibilityCalls == 1 && queryCalls == 5,
-          "only first job of selected custom world without a tome uses fallback");
+    Check(visibilityCalls == 1 && queryCalls == 6,
+          "only a validated first job of the selected no-tome world uses fallback");
     MakePackage("mp_4doffice");
     MakePackage("mp_nuketown");
     custommaps::Refresh();
@@ -628,7 +667,7 @@ void RenderTests() {
     memcpy(world.data(), &name, 8);
     expectedVisibility = 3;
     run();
-    Check(visibilityCalls == 3 && queryCalls == 8,
+    Check(visibilityCalls == 3 && queryCalls == 9,
           "visibility follows selected map and rejects stale world");
     custommaps::ClearSelection();
     fs::remove_all(packageRoot / "mp_4doffice");
@@ -637,7 +676,7 @@ void RenderTests() {
     fs::remove_all(packageRoot / "mp_test");
     custommaps::Refresh();
     puts(
-        "PASS: native visibility hook ABI and completion order; later jobs, real tomes, stock worlds and unselected maps pass through");
+        "PASS: native visibility hook ABI, generated-world contract and completion order; malformed worlds, later jobs, real tomes, stock worlds and unselected maps pass through");
 }
 unsigned deserializeCalls = 0, clearMainCalls = 0, setMainCalls = 0, physicsLocks = 0;
 void* lastRaw = nullptr;
@@ -781,7 +820,7 @@ void CompoundNativeTests() {
     Check(build(&array) == nullptr && compoundBuildCalls == 1, "empty compound does not allocate");
     Check(compoundcollision::BodyCount(325) == 325 && compoundcollision::BodyCount(16965) == 67 &&
               compoundcollision::BodyCount(10740) == 42,
-          "large maps fit native body counts without dropping hulls");
+          "large maps fit small native body counts without dropping hulls");
     puts(
         "PASS: exact Replay compound wrapper and aligned 112-byte instances; Office 16965 hulls -> 67 bodies, Nuketown 10740 -> 42 (allocator/constructor mocked)");
 }
@@ -828,9 +867,9 @@ void LadderHandTargetTests() {
     put(0x88, -1);
     target(hand, quat, out, 0, node.data());
     Check(std::abs(std::abs(std::remainder(out[2] - wristZ - rung, 24.f)) - 12) < .001f,
-          "Replay IK detects a half-rung hand offset");
+          "actual Replay IK reproduces v20 half-rung hand miss");
     puts(
-        "PASS: Replay ladder hand-target instructions validate rung alignment and reject a 12-unit offset (identity transforms and CRT helpers supplied)");
+        "PASS: actual Replay ladder hand-target machine code reproduces v20 12-unit miss and validates corrected rung phase (identity transforms and CRT helpers supplied)");
 }
 unsigned long long observedLadderButtons = 0;
 void LadderCheck(void* pm, void*) {
@@ -858,6 +897,80 @@ void LadderTrace(void*,
     memcpy(result, &fraction, 4);
     ++ladderTraces;
 }
+float conversionHeight = 0;
+bool conversionFloor = true;
+bool ConversionHasHit(void*) { return true; }
+unsigned ConversionRef(void*, int) { return 0; }
+unsigned short ConversionShape(void*, int) { return 0xFFFF; }
+float ConversionFraction(void*, int) { return .5f; }
+void ConversionPosition(void*, int, float* out) {
+    const float p[]{16, 16, conversionHeight};
+    memcpy(out, p, sizeof(p));
+}
+void ConversionNormal(void*, int, float* out) {
+    const float n[]{conversionFloor ? 0.f : 1.f, 0, conversionFloor ? 1.f : 0.f};
+    memcpy(out, n, sizeof(n));
+}
+unsigned ConversionContents(void*, int) { return 1; }
+unsigned short ConversionWorld(unsigned) { return 2046; }
+void TraceLayoutTests() {
+    NativeBytes(0x108C3F0, ReplayTraceConversionCode);
+    NativeBytes(0x23C4154, ReplayTraceWalkableThreshold);
+    for (const auto& [rva, target] : std::vector<std::pair<uintptr_t, const void*>>{
+             {0x1618520, reinterpret_cast<const void*>(&ConversionHasHit)},
+             {0x16179E0, reinterpret_cast<const void*>(&ConversionRef)},
+             {0x16177E0, reinterpret_cast<const void*>(&ConversionShape)},
+             {0x16178D0, reinterpret_cast<const void*>(&ConversionFraction)},
+             {0x1617990, reinterpret_cast<const void*>(&ConversionPosition)},
+             {0x1617960, reinterpret_cast<const void*>(&ConversionNormal)},
+             {0x1617A50, reinterpret_cast<const void*>(&ConversionRef)},
+             {0x16177C0, reinterpret_cast<const void*>(&ConversionContents)},
+             {0x16178F0, reinterpret_cast<const void*>(&ConversionRef)},
+             {0x108E850, reinterpret_cast<const void*>(&ConversionWorld)}}) {
+        Commit(rva);
+        Jump(image + rva, target);
+    }
+    FlushInstructionCache(GetCurrentProcess(), image, 0x1324B000);
+    using Convert = void (*)(void*, void*, void*, void*);
+    auto convert = reinterpret_cast<Convert>(image + 0x108C3F0);
+    unsigned material[5]{1, 0, 0, 0, 0};
+    for (float height : {-128.f, 0.f, 136.f}) {
+        conversionHeight = height;
+        for (bool floor : {true, false}) {
+            conversionFloor = floor;
+            std::array<unsigned char, 0x48> result{};
+            convert(nullptr, nullptr, material, result.data());
+            float position[3], normal[3];
+            memcpy(position, result.data() + replaytrace::Position, 12);
+            memcpy(normal, result.data() + replaytrace::Normal, 12);
+            Check(position[0] == 16 && position[1] == 16 && position[2] == height &&
+                      normal[0] == (floor ? 0 : 1) && normal[2] == (floor ? 1 : 0) &&
+                      (result[0x3E] != 0) == floor,
+                  "native conversion separates hit position from normal and walkable state");
+            auto authored = std::make_shared<customsurfaces::Data>();
+            authored->triangles.push_back(
+                {{{0, 0, height}, {0, 64, height}, {64, 0, height}}, 3});
+            authored->cells[customsurfaces::Key(0, 0)].push_back(0);
+            customsurfaces::data.store(authored);
+            const auto original = result;
+            const float start[]{16, 16, height + 2}, end[]{16, 16, height - 2};
+            customsurfaces::Apply(result.data(), start, end);
+            unsigned flags;
+            memcpy(&flags, result.data() + 0x1C, 4);
+            Check(flags == (floor ? 3u << 19 : 0),
+                  "carpet tagging uses slope, independent of basement, ground or roof height");
+            memcpy(result.data() + 0x1C, original.data() + 0x1C, 4);
+            Check(result == original, "surface tagging preserves native contact and movement data");
+            std::array<unsigned char, 0x48> synthetic{};
+            replaytrace::WriteContact(synthetic.data(), .5f, start, end, normal);
+            Check(memcmp(synthetic.data(), original.data(), 0x1C) == 0 &&
+                      synthetic[0x3E] == original[0x3E],
+                  "door, glass and bullet contact writer matches native trace geometry");
+        }
+    }
+    customsurfaces::Clear();
+    puts("PASS: exact Replay trace conversion at three elevations; floor/wall classification and synthetic contact layout (query accessors supplied)");
+}
 unsigned movementTraceCalls = 0;
 bool movementMiss = false;
 void MovementTraceStock(void* handler,
@@ -880,7 +993,7 @@ void MovementTraceStock(void* handler,
     unsigned type = 1;
     unsigned short entity = 2046;
     memcpy(result, &fraction, 4);
-    memcpy(static_cast<char*>(result) + 12, &normal, 4);
+    memcpy(static_cast<char*>(result) + 0x18, &normal, 4);
     memcpy(static_cast<char*>(result) + 0x24, &type, 4);
     memcpy(static_cast<char*>(result) + 0x2C, &entity, 2);
 }
@@ -927,7 +1040,7 @@ void LadderTests() {
         unsigned type = 1, flags = 8;
         unsigned short world = 2046;
         memcpy(ground.data(), &fraction, 4);
-        memcpy(ground.data() + 12, &normal, 4);
+        memcpy(ground.data() + 0x18, &normal, 4);
         memcpy(ground.data() + 0x24, &type, 4);
         memcpy(ground.data() + 0x2C, &world, 2);
         memcpy(ground.data() + 0x1C, &flags, 4);
@@ -1109,6 +1222,7 @@ void PhysicsTests() {
           "empty selected clipMap uses native nullable SetMainShapeList branch");
     LadderTests();
     MovementSurfaceTests();
+    TraceLayoutTests();
     AudioTests();
     GlassTests();
     SharedCollisionTests();
@@ -1283,55 +1397,44 @@ void NetConstTests(const char* package) {
     auto gate = reinterpret_cast<void (*)()>(image + metadatafixture::BuildStringMapRva);
     gate();
     Check(missingNcs == 41 && findNcsCalls == 41,
-          "empty metadata triggers all missing level assets through native gate");
+          "v8 omission reproduces all missing level assets through native gate");
+    fs::path path;
+    for (const auto& entry : fs::directory_iterator(package))
+        if (entry.path().filename().string().starts_with("srv_") &&
+            entry.path().extension() == ".ff") {
+            Check(path.empty(), "one server fastfile per package");
+            path = entry.path();
+        }
+    std::ifstream file(path, std::ios::binary);
+    std::vector<char> bytes((std::istreambuf_iterator<char>(file)), {});
+    Check(bytes.size() > 41 * 46, "read v9 server package");
     std::vector<std::string> names;
     names.reserve(41);
     ncsAssets.reserve(41);
-    if (package && *package) {
-        fs::path path;
-        for (const auto& entry : fs::directory_iterator(package))
-            if (entry.path().filename().string().starts_with("srv_") &&
-                entry.path().extension() == ".ff") {
-                Check(path.empty(), "one server fastfile per package");
-                path = entry.path();
-            }
-        std::ifstream file(path, std::ios::binary);
-        std::vector<char> bytes((std::istreambuf_iterator<char>(file)), {});
-        Check(bytes.size() > 41 * 46, "read server package metadata");
-        size_t pos = bytes.size() - 41 * 46;
-        for (unsigned i = 0; i < 41; ++i) {
-            NcsAsset asset{};
-            memcpy(&asset, bytes.data() + pos, 32);
-            pos += 32;
-            names.emplace_back(bytes.data() + pos, 13);
-            pos += 14;
-            asset.name = names.back().c_str();
-            Check(asset.type == i && asset.source == 2 && asset.flags == 0 && asset.count == 0 &&
-                      asset.strings == nullptr,
-                  "serialized NCS type/source/count layout");
-            ncsAssets.push_back(asset);
-        }
-    } else {
-        for (unsigned i = 0; i < replayncs::Count; ++i) {
-            names.emplace_back(std::string("ncs_") + replayncs::Tags[i] + "_level");
-            NcsAsset asset{};
-            asset.name = names.back().c_str();
-            asset.type = i;
-            asset.source = 2;
-            ncsAssets.push_back(asset);
-        }
+    size_t pos = bytes.size() - 41 * 46;
+    for (unsigned i = 0; i < 41; ++i) {
+        NcsAsset asset{};
+        memcpy(&asset, bytes.data() + pos, 32);
+        pos += 32;
+        names.emplace_back(bytes.data() + pos, 13);
+        pos += 14;
+        asset.name = names.back().c_str();
+        Check(asset.type == i && asset.source == 2 && asset.flags == 0 && asset.count == 0 &&
+                  asset.strings == nullptr,
+              "serialized NCS type/source/count layout");
+        ncsAssets.push_back(asset);
     }
     missingNcs = findNcsCalls = 0;
     gate();
     Check(missingNcs == 0 && findNcsCalls == 41,
-          "all supplied NCS assets satisfy exact native required-assets loop");
+          "all serialized v9 NCS assets satisfy exact native required-assets loop");
     auto removed = ncsAssets.front();
     ncsAssets.erase(ncsAssets.begin());
     missingNcs = 0;
     gate();
     Check(missingNcs == 1, "removing model level metadata restores missing-asset failure");
     puts(
-        "PASS: Replay NCS presence loop rejects missing metadata and accepts all 41 level metadata fixtures; missing-model negative case verified");
+        "PASS: exact Replay NCS presence loop rejects v8 omission and accepts all 41 v9 serialized level assets; missing-model negative case verified");
 }
 
 }
@@ -1423,7 +1526,6 @@ void CollisionFileTests() {
 
 #include "replay_noclip_tests.h"
 #include "custom_image_tests.h"
-#include "custom_ambient_tests.h"
 #include "custom_surface_tests.h"
 
 void RunFixture(void (*test)(), const char* name) {
@@ -1474,9 +1576,8 @@ int main(int argc, char** argv) {
                                                          {CompoundNativeTests, "compound"},
                                                          {OmnvarTests, "omnvars"}})
         RunFixture(test.first, test.second);
-    NetConstTests(argc > 1 ? argv[1] : nullptr);
+    NetConstTests(argc > 1 ? argv[1] : "custom_map_sources/mp_test/replay_package_v9");
     RunFixture(CustomImageTests, "custom images");
-    RunFixture(CustomAmbientTests, "custom ambient");
     RunFixture(CustomSurfaceTests, "custom surfaces");
     for (int packageIndex = 1; packageIndex < argc; ++packageIndex)
         if (fs::exists(fs::path(argv[packageIndex]) / "collision.bin")) {
@@ -1509,7 +1610,8 @@ int main(int argc, char** argv) {
             }
         }
     // Only the three process-specific directories created by this test are removed.
-    for (const auto& name : {id, std::string(id + "_nested"), std::string(id + "_large")})
+    for (const auto& name : {id, std::string(id + "_nested"), std::string(id + "_large"),
+                             std::string(id + "_contract")})
         fs::remove_all(packageRoot / name);
     return 0;
 }

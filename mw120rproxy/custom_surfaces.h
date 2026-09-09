@@ -2,6 +2,7 @@
 #include "custom_physics.h"
 #include "inline_hook.h"
 #include "logger.h"
+#include "replay_trace.h"
 #include <algorithm>
 #include <cstdint>
 #include <array>
@@ -16,6 +17,7 @@
 
 namespace customsurfaces {
 hook::Status Install(uintptr_t base);
+void ObserveMovement(const void* pm);
 struct Triangle {
     float p[3][3];
     unsigned type;
@@ -27,11 +29,13 @@ struct Data {
 };
 inline std::atomic<std::shared_ptr<const Data>> data;
 inline std::atomic<unsigned> samples{0};
+inline std::atomic<unsigned> movementEpoch{0};
 inline uint64_t Key(int x, int y) {
     return uint64_t(uint32_t(x)) << 32 | uint32_t(y);
 }
 inline void Clear() {
     data.store(nullptr);
+    ++movementEpoch;
 }
 inline void Load(const std::filesystem::path& directory) {
     Clear();
@@ -113,7 +117,7 @@ inline void Apply(void* trace, const float* start, const float* end) {
     unsigned flags, hitType;
     unsigned short entity;
     memcpy(&fraction, b, 4);
-    memcpy(&normalZ, b + 12, 4);
+    memcpy(&normalZ, b + replaytrace::NormalZ, 4);
     memcpy(&flags, b + 0x1C, 4);
     memcpy(&hitType, b + 0x24, 4);
     memcpy(&entity, b + 0x2C, 2);
@@ -121,7 +125,8 @@ inline void Apply(void* trace, const float* start, const float* end) {
     // Imported bodies currently share PM_Concrete; replace that generic type
     // with authored face data. Preserve other native types and entity hits.
     const unsigned nativeType = (flags >> 19) & 63;
-    if (!std::isfinite(fraction) || fraction < 0 || fraction >= 1 || normalZ < .35f ||
+    if (!std::isfinite(fraction) || fraction < 0 || fraction >= 1 ||
+        !std::isfinite(normalZ) || normalZ < .35f ||
         hitType != 1 || entity != 2046 || (nativeType && nativeType != 5))
         return;
     float p[3];
@@ -134,5 +139,25 @@ inline void Apply(void* trace, const float* start, const float* end) {
     if (samples.fetch_add(1) < 4)
         LOG_INFO("Footsteps", "world ground surface=%u at (%.1f %.1f %.1f)", type, p[0], p[1],
                  p[2]);
+}
+inline void ApplyShot(void* trace, const float* start, const float* end) {
+    if (!customphysics::OwnsEmptyWorld())
+        return;
+    auto* b = static_cast<unsigned char*>(trace);
+    float fraction;
+    unsigned flags, hitType;
+    unsigned short entity;
+    memcpy(&fraction, b, 4);
+    memcpy(&flags, b + 0x1C, 4);
+    memcpy(&hitType, b + 0x24, 4);
+    memcpy(&entity, b + 0x2C, 2);
+    if (!std::isfinite(fraction) || fraction < 0 || fraction >= 1 || hitType != 1 ||
+        entity != 2046 || ((flags >> 19) & 63))
+        return;
+    // Shape tags from generated hulls do not carry a surface type. Give every
+    // world hit a valid impact/penetration material, then recover authored floors.
+    flags |= 5u << 19;
+    memcpy(b + 0x1C, &flags, 4);
+    Apply(trace, start, end);
 }
 }

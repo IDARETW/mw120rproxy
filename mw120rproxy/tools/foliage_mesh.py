@@ -65,7 +65,7 @@ def mask_geometry(rectangles, size):
         import shapely
     except ImportError as exc:
         raise RuntimeError(
-            "Install foliage build dependencies: python -m pip install -r requirements.txt"
+            "Install foliage build dependencies: python -m pip install --target mw120rproxy/tools/_vendor -r mw120rproxy/tools/requirements-foliage.txt"
         ) from exc
     geometry = shapely.union_all([shapely.box(*r) for r in rectangles])
     return shapely.simplify(geometry, 0.75 / max(size), preserve_topology=True)

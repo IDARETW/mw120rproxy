@@ -63,7 +63,6 @@ target("mw120rproxy")
         "custom_images.cpp",
         "custom_audio.cpp",
         "custom_surfaces.cpp",
-        "custom_ambient.cpp",
         "custom_render.cpp",
         "custom_omnvars.cpp",
         "custom_maps.cpp",

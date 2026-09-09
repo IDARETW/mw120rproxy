@@ -2,6 +2,7 @@
 #include "door_file.h"
 #include "custom_physics.h"
 #include "replay_bindings.h"
+#include "replay_trace.h"
 #include "safemem.h"
 #include "logger.h"
 #include <atomic>
@@ -295,8 +296,7 @@ void Trace(
         Operate(*state, best, {start[0], start[1], start[2]}, true);
     std::memset(result, 0, 0x48);
     auto bytes = static_cast<char*>(result);
-    std::memcpy(bytes, &limit, 4);
-    std::memcpy(bytes + 4, normal.data(), 12);
+    replaytrace::WriteContact(bytes, limit, start, end, normal.data());
     const unsigned flags = 21u << 19, contents = 1, hitType = 1;
     const unsigned short entity = 2046;
     std::memcpy(bytes + 0x1C, &flags, 4);

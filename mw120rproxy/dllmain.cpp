@@ -1,4 +1,4 @@
-
+// MW2019 Replay 1.20 startup and custom-map integration.
 #include <windows.h>
 #include <mutex>
 #include "proxy.h"
@@ -26,7 +26,6 @@
 #include "custom_images.h"
 #include "custom_audio.h"
 #include "custom_surfaces.h"
-#include "custom_ambient.h"
 #include "custom_door_ui.h"
 #include "custom_ladders.h"
 #include "custom_glass.h"
@@ -82,8 +81,6 @@ bool DoInstallHooks() {
         status = customcollision::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customrender::Install(g_base);
-    if (status == hook::Status::Installed && g_config.customMapLoader)
-        status = customambient::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customomnvars::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
@@ -150,9 +147,11 @@ DWORD WINAPI StartupMonitor(LPVOID) {
     }
     for (int i = 0; i < 6; ++i) {
         Sleep(5000);
-        LOG_INFO("Startup", "post-splash=%ds hook_state=%d bool_calls=%llu variant_calls=%llu",
-                 (i + 1) * 5, state::hookState.load(), state::boolDvarsSeen.load(),
-                 state::dvarsSeen.load());
+        LOG_INFO(
+            "Startup",
+            "post-splash=%ds hook_state=%d bool_calls=%llu variant_calls=%llu (menu state is not checked here)",
+            (i + 1) * 5, state::hookState.load(), state::boolDvarsSeen.load(),
+            state::dvarsSeen.load());
         if (g_config.offlineAuth)
             offlineauth::LogSnapshot();
     }
@@ -170,7 +169,7 @@ DWORD WINAPI InitThread(LPVOID) {
         log120r::Init(g_self, g_config.console);
         LOG_INFO(
             "Core",
-            "mw120rproxy custom-map-authoring-v31-door-input-hud; target 1.20.4.7623265-replay");
+            "mw120rproxy custom-map-authoring-v46-trace-layout 2026-09-09; target 1.20.4.7623265-replay");
         LOG_INFO(
             "Diagnostics",
             "exception call chains: mw120rproxy.exceptions.log and per-run mw120rproxy.crash.*.log; native errors: mw120rproxy.engine.log");

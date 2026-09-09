@@ -23,6 +23,16 @@ struct Pane {
     std::vector<unsigned> surfaces;
     float halfThickness = .125f;
 };
+inline const char* ShatterEffect(const Pane& pane) {
+    float spanSquared = 0;
+    for (const auto& a : pane.vertices)
+        for (const auto& b : pane.vertices) {
+            const auto delta = Sub(a, b);
+            spanSquared = (std::max)(spanSquared, Dot(delta, delta));
+        }
+    return spanSquared > 48 * 48 ? "vfx/code/glass/glass_shatter_64x64"
+                                 : "vfx/code/glass/glass_shatter_32x32";
+}
 inline bool
 Load(const std::filesystem::path& path, std::vector<Pane>& out, unsigned& surfaceCount) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);

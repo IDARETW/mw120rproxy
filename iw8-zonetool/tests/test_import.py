@@ -1,7 +1,6 @@
 import base64
 import io
 import json
-import os
 import struct
 import subprocess
 import sys
@@ -31,8 +30,7 @@ from mapimport.mesh import node_matrix, read_gltf, read_obj
 from mapimport.replay import packed_normal, spawns, split_surfaces
 from mapimport.source import displacement_indices, read_source
 
-FIXTURES = Path(os.environ.get("IW8_IMPORT_FIXTURES", str(ROOT / "test-out/import-fixtures")))
-DOWNLOADS = FIXTURES / "downloads"
+DOWNLOADS = ROOT / "evidence/multi_engine_20260908/downloads"
 
 
 def q3_fixture(patch=False):
@@ -54,12 +52,17 @@ def q3_fixture(patch=False):
     chunks[8] = struct.pack("<3i", 0, 6, 0)
     chunks[9] = b"".join(struct.pack("<2i", i, 0) for i in range(6))
     verts = (
-        [(x * 32, y * 32, 16 if x == 1 and y == 1 else 0) for y in range(3) for x in range(3)]
+        [
+            (x * 32, y * 32, 16 if x == 1 and y == 1 else 0)
+            for y in range(3)
+            for x in range(3)
+        ]
         if patch
         else [(0, 0, 0), (32, 0, 0), (0, 32, 0)]
     )
     chunks[10] = b"".join(
-        struct.pack("<10f4B", *p, 0, 0, 0, 0, 0, 0, 1, 255, 255, 255, 255) for p in verts
+        struct.pack("<10f4B", *p, 0, 0, 0, 0, 0, 0, 1, 255, 255, 255, 255)
+        for p in verts
     )
     chunks[11] = b"" if patch else struct.pack("<3i", 0, 1, 2)
     face = (
@@ -84,7 +87,9 @@ class ImportTests(unittest.TestCase):
         triangles = [indices[i : i + 3] for i in range(0, len(indices), 3)]
         self.assertEqual(len(triangles), 8)
         self.assertTrue(all(4 in t for t in triangles))
-        edges = {tuple(sorted((t[i], t[(i + 1) % 3]))) for t in triangles for i in range(3)}
+        edges = {
+            tuple(sorted((t[i], t[(i + 1) % 3]))) for t in triangles for i in range(3)
+        }
         self.assertTrue({(0, 4), (2, 4), (4, 6), (4, 8)} <= edges)
         self.assertFalse({(1, 3), (1, 5), (3, 7), (5, 7)} & edges)
 
@@ -103,7 +108,9 @@ class ImportTests(unittest.TestCase):
 
     def test_entities_comments_and_escapes(self):
         self.assertEqual(
-            entities('// test\n {"classname" "worldspawn" "message" "a\\"b"}')[0]["message"],
+            entities('// test\n {"classname" "worldspawn" "message" "a\\"b"}')[0][
+                "message"
+            ],
             'a"b',
         )
 
@@ -163,7 +170,9 @@ class ImportTests(unittest.TestCase):
         s = read_q3(self.file("patch.bsp", q3_fixture(True)), 4)
         s.validate()
         self.assertEqual(s.stats["triangles"], 32)
-        self.assertAlmostEqual(max(v["position"][2] for v in s.surfaces[0]["vertices"]), 4)
+        self.assertAlmostEqual(
+            max(v["position"][2] for v in s.surfaces[0]["vertices"]), 4
+        )
         self.assertEqual(len(s.hulls), 33)
 
     def test_q3_bad_directory(self):
@@ -211,14 +220,18 @@ class ImportTests(unittest.TestCase):
             read_obj(self.file("bad.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2"))
 
     def test_obj_zero_area_is_counted(self):
-        s = read_obj(self.file("mesh.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 1 2\nf 1 2 3"))
+        s = read_obj(
+            self.file("mesh.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 1 2\nf 1 2 3")
+        )
         self.assertEqual(s.stats["degenerate_faces_removed"], 1)
         s.validate()
         self.assertEqual(s.stats["triangles"], 1)
 
     def test_obj_zero_normal_repair_is_counted(self):
         s = read_obj(
-            self.file("normals.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 0\nf 1//1 2//1 3//1")
+            self.file(
+                "normals.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 0\nf 1//1 2//1 3//1"
+            )
         )
         self.assertEqual(s.stats["zero_normals_rebuilt"], 3)
         s.validate()
@@ -228,7 +241,9 @@ class ImportTests(unittest.TestCase):
             read_obj(self.file("bad.obj", "mtllib ../escape.mtl"))
 
     def test_obj_v_flipped(self):
-        s = read_obj(self.file("uv.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt .1 .2\nf 1/1 2/1 3/1"))
+        s = read_obj(
+            self.file("uv.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt .1 .2\nf 1/1 2/1 3/1")
+        )
         self.assertAlmostEqual(s.surfaces[0]["vertices"][0]["uv"][1], 0.8)
 
     def test_nonfinite_geometry(self):
@@ -299,7 +314,9 @@ class ImportTests(unittest.TestCase):
 
     def test_glb_truncated_length(self):
         with self.assertRaises(ValueError):
-            read_gltf(self.file("bad.glb", b"glTF" + struct.pack("<II", 2, 200) + b"12345678"))
+            read_gltf(
+                self.file("bad.glb", b"glTF" + struct.pack("<II", 2, 200) + b"12345678")
+            )
 
     def test_gltf_reflected_nonuniform_transform(self):
         raw = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 1, 1)
@@ -308,11 +325,14 @@ class ImportTests(unittest.TestCase):
             "buffers": [
                 {
                     "byteLength": len(raw),
-                    "uri": "data:application/octet-stream;base64," + base64.b64encode(raw).decode(),
+                    "uri": "data:application/octet-stream;base64,"
+                    + base64.b64encode(raw).decode(),
                 }
             ],
             "bufferViews": [{"buffer": 0, "byteLength": len(raw)}],
-            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}
+            ],
             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
             "nodes": [{"mesh": 0, "scale": [-2, 3, 4], "translation": [5, 6, 7]}],
             "scenes": [{"nodes": [0]}],
@@ -322,11 +342,13 @@ class ImportTests(unittest.TestCase):
         surface = s.surfaces[0]
         self.assertEqual(surface["vertices"][0]["position"], [5, -7, 6])
         a, b, c = [surface["vertices"][i] for i in surface["indices"]]
-        normal = cross(sub(b["position"], a["position"]), sub(c["position"], a["position"]))
+        normal = cross(
+            sub(b["position"], a["position"]), sub(c["position"], a["position"])
+        )
         self.assertGreater(dot(normal, a["normal"]), 0)
 
     def test_native_oat_iw4_fixture(self):
-        root = FIXTURES / "oat_fixtures/iw4"
+        root = ROOT / "evidence/multi_engine_20260908/oat_fixtures/iw4"
         if not root.exists():
             self.skipTest("Build and run the native OAT export fixture first")
         s = read_cod(root, expected="iw4")
@@ -334,7 +356,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual((s.stats["triangles"], len(s.hulls)), (2, 1))
 
     def test_native_oat_iw5_fixture(self):
-        root = FIXTURES / "oat_fixtures/iw5"
+        root = ROOT / "evidence/multi_engine_20260908/oat_fixtures/iw5"
         if not root.exists():
             self.skipTest("Build and run the native OAT export fixture first")
         s = read_cod(root, expected="iw5")
@@ -342,7 +364,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual((s.stats["triangles"], len(s.hulls)), (2, 1))
 
     def test_oat_wrong_engine_rejected(self):
-        root = FIXTURES / "oat_fixtures/iw4"
+        root = ROOT / "evidence/multi_engine_20260908/oat_fixtures/iw4"
         if not root.exists():
             self.skipTest("Build and run the native OAT export fixture first")
         with self.assertRaises(ValueError):
@@ -351,10 +373,14 @@ class ImportTests(unittest.TestCase):
     def test_failure_report_preserved(self):
         path = self.file("bad.bsp", b"IBSP" + struct.pack("<i", 999))
         output = self.root / "build"
-        args = parser().parse_args([str(path), "mp_bad", "-o", str(output), "--graybox"])
+        args = parser().parse_args(
+            [str(path), "mp_bad", "-o", str(output), "--graybox"]
+        )
         with self.assertRaises(ValueError):
             run(args)
-        self.assertEqual(json.loads((output / "report.json").read_text())["status"], "failed")
+        self.assertEqual(
+            json.loads((output / "report.json").read_text())["status"], "failed"
+        )
 
     def test_existing_output_preserved(self):
         source = self.file("test.bsp", q3_fixture())
@@ -362,7 +388,9 @@ class ImportTests(unittest.TestCase):
         output.mkdir()
         marker = output / "user.txt"
         marker.write_text("keep")
-        args = parser().parse_args([str(source), "mp_bad", "-o", str(output), "--graybox"])
+        args = parser().parse_args(
+            [str(source), "mp_bad", "-o", str(output), "--graybox"]
+        )
         with self.assertRaises(ValueError):
             run(args)
         self.assertEqual(marker.read_text(), "keep")
@@ -374,7 +402,9 @@ class ImportTests(unittest.TestCase):
             z.writestr("unused/readme.txt", "preserve in archive")
         source = self.file("map.pk3", raw.getvalue())
         output = self.root / "archive-import"
-        args = parser().parse_args([str(source), "mp_archive", "-o", str(output), "--graybox"])
+        args = parser().parse_args(
+            [str(source), "mp_archive", "-o", str(output), "--graybox"]
+        )
         self.assertEqual(run(args), 0)
         self.assertFalse((output / "source-input/unused").exists())
         self.assertEqual(
@@ -389,16 +419,14 @@ class ImportTests(unittest.TestCase):
             z.writestr("maps/b.bsp", q3_fixture())
         source = self.file("maps.pk3", raw.getvalue())
         output = self.root / "ambiguous"
-        args = parser().parse_args([str(source), "mp_archive", "-o", str(output), "--graybox"])
+        args = parser().parse_args(
+            [str(source), "mp_archive", "-o", str(output), "--graybox"]
+        )
         with self.assertRaisesRegex(ValueError, "2 matching maps"):
             run(args)
 
     def test_native_argument_boundaries(self):
-        writer = Path(
-            os.environ.get(
-                "IW8_ZONETOOL_WRITER", str(ROOT / "xmake-out/x64/Release/iw8-zonetool.exe")
-            )
-        )
+        writer = ROOT / "xmake-out/x64/Release/iw8-zonetool.exe"
         path = self.file("source with spaces.bsp", q3_fixture())
         output = self.root / "output with spaces"
         title = 'Quoted "map" & $(no shell)'

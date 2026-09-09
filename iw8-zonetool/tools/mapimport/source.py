@@ -44,13 +44,19 @@ def read_source(path):
         raise ValueError("Truncated Source BSP")
     version = struct.unpack_from("<i", data, 4)[0]
     if version not in (19, 20):
-        raise ValueError(f"Unsupported Source BSP version {version}; supported: 19 and 20")
+        raise ValueError(
+            f"Unsupported Source BSP version {version}; supported: 19 and 20"
+        )
     lumps = []
     versions = []
     spans = []
     for i in range(64):
         offset, size, v, unpacked = struct.unpack_from("<iiiI", data, 8 + 16 * i)
-        if min(offset, size) < 0 or offset + size > len(data) or (size and offset < 1036):
+        if (
+            min(offset, size) < 0
+            or offset + size > len(data)
+            or (size and offset < 1036)
+        ):
             raise ValueError(f"Invalid Source lump {i}")
         if size:
             spans.append((offset, offset + size))
@@ -59,7 +65,11 @@ def read_source(path):
             if len(raw) < 17 or raw[:4] != b"LZMA":
                 raise ValueError("Invalid Source compressed lump")
             actual, compressed = struct.unpack_from("<II", raw, 4)
-            if actual != unpacked or actual > 128 * 1024 * 1024 or compressed != len(raw) - 17:
+            if (
+                actual != unpacked
+                or actual > 128 * 1024 * 1024
+                or compressed != len(raw) - 17
+            ):
                 raise ValueError("Source LZMA size mismatch")
             prop = raw[12]
             lc = prop % 9
@@ -124,8 +134,13 @@ def read_source(path):
         ent = placements.get(mi, {})
         if mi and ent.get("classname", "").startswith("trigger_"):
             continue
-        if mi and (ent.get("angles", "0 0 0") != "0 0 0" or ent.get("origin", "0 0 0") != "0 0 0"):
-            raise ValueError("Source brush entity transforms require baking before import")
+        if mi and (
+            ent.get("angles", "0 0 0") != "0 0 0"
+            or ent.get("origin", "0 0 0") != "0 0 0"
+        ):
+            raise ValueError(
+                "Source brush entity transforms require baking before import"
+            )
         for f in checked(faces, model[10], model[11], "Source model faces"):
             ti = item(info, f[5], "Source texinfo")
             td = item(texdata, ti[17], "Source texdata")
@@ -142,11 +157,15 @@ def read_source(path):
             width, height = td[4:6]
             if width <= 0 or height <= 0:
                 raise ValueError("Invalid Source texture dimensions")
-            scene.materials.setdefault(name, {"texture": "materials/" + name, "source_vmt": True})
+            scene.materials.setdefault(
+                name, {"texture": "materials/" + name, "source_vmt": True}
+            )
             ps = []
             for e in checked(surfedges, f[3], f[4], "Source surface edges"):
                 edge = item(edges, abs(e), "Source edge")
-                ps.append(list(item(vertices, edge[0 if e >= 0 else 1], "Source vertex")))
+                ps.append(
+                    list(item(vertices, edge[0 if e >= 0 else 1], "Source vertex"))
+                )
             plane = item(planes, f[0], "Source face plane")
             normal = mul(plane[:3], -1 if f[1] else 1)
             if f[6] >= 0:
@@ -158,7 +177,9 @@ def read_source(path):
                 )
                 if len(ps) != 4 or power not in (2, 3, 4):
                     raise ValueError("Unsupported displacement control surface")
-                nearest = min(range(4), key=lambda i: dot(sub(ps[i], start), sub(ps[i], start)))
+                nearest = min(
+                    range(4), key=lambda i: dot(sub(ps[i], start), sub(ps[i], start))
+                )
                 if dot(sub(ps[nearest], start), sub(ps[nearest], start)) > 0.01:
                     raise ValueError("Displacement start is not a face corner")
                 ps = ps[nearest:] + ps[:nearest]

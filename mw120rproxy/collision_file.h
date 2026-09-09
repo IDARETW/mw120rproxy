@@ -8,15 +8,22 @@
 #include <array>
 #include <algorithm>
 namespace collisionfile {
+inline constexpr uint32_t Solid = 0x1, MissileClip = 0x80, VehicleClip = 0x200, ItemClip = 0x400,
+                          AiNoSight = 0x1000, ShotClip = 0x2000, PlayerClip = 0x10000,
+                          AiClip = 0x20000;
+inline constexpr uint32_t SupportedContents =
+    Solid | MissileClip | VehicleClip | ItemClip | AiNoSight | ShotClip | PlayerClip | AiClip;
 struct Brush {
     float mins[3]{}, maxs[3]{};
     std::vector<std::array<float, 3>> vertices;
+    uint32_t contents = Solid;
 };
 inline bool Parse(const std::vector<uint8_t>& data, std::vector<Brush>& result) {
     result.clear();
     if (data.size() < 12)
         return false;
-    const bool convex = memcmp(data.data(), "MWCOLL02", 8) == 0;
+    const bool typed = memcmp(data.data(), "MWCOLL03", 8) == 0;
+    const bool convex = typed || memcmp(data.data(), "MWCOLL02", 8) == 0;
     if (!convex && memcmp(data.data(), "MWCOLL01", 8))
         return false;
     uint32_t count = 0;
@@ -32,6 +39,14 @@ inline bool Parse(const std::vector<uint8_t>& data, std::vector<Brush>& result) 
             uint32_t n;
             memcpy(&n, data.data() + cursor, 4);
             cursor += 4;
+            if (typed) {
+                if (cursor + 4 > data.size())
+                    return false;
+                memcpy(&b.contents, data.data() + cursor, 4);
+                cursor += 4;
+                if (!b.contents || (b.contents & ~SupportedContents))
+                    return false;
+            }
             if (n < 4 || n > 252 || cursor + size_t(n) * 12 > data.size())
                 return false;
             b.vertices.resize(n);
@@ -89,7 +104,7 @@ inline bool Load(const std::filesystem::path& path, std::vector<Brush>& result) 
     if (!file)
         return false;
     const auto size = file.tellg();
-    if (size < 12 || size > 12 + 32768 * (4 + 252 * 12))
+    if (size < 12 || size > 12 + 32768 * (8 + 252 * 12))
         return false;
     std::vector<uint8_t> data(static_cast<size_t>(size));
     file.seekg(0);

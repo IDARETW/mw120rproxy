@@ -8,6 +8,50 @@ from pathlib import Path
 from radiant_source import blocks, properties, vector
 from cod4_assets import rotation
 
+SOLID = 0x1
+MISSILE_CLIP = 0x80
+VEHICLE_CLIP = 0x200
+ITEM_CLIP = 0x400
+AI_NO_SIGHT = 0x1000
+SHOT_CLIP = 0x2000
+PLAYER_CLIP = 0x10000
+AI_CLIP = 0x20000
+SUPPORTED_CONTENTS = (
+    SOLID
+    | MISSILE_CLIP
+    | VEHICLE_CLIP
+    | ITEM_CLIP
+    | AI_NO_SIGHT
+    | SHOT_CLIP
+    | PLAYER_CLIP
+    | AI_CLIP
+)
+
+
+def contents(hull):
+    """Keep collision classes shared by IW3 and Replay; discard compiler-only flags."""
+    if "contents" in hull:
+        value = hull["contents"]
+        if not isinstance(value, int) or not 0 <= value <= 0xFFFFFFFF:
+            raise ValueError("Invalid source collision contents")
+        return value & SUPPORTED_CONTENTS
+    tool_contents = {
+        "clip": PLAYER_CLIP | AI_CLIP,
+        "clip_player": PLAYER_CLIP,
+        "clip_monster": AI_CLIP,
+        "clip_missile": MISSILE_CLIP,
+        "clip_vehicle": VEHICLE_CLIP,
+        "clip_item": ITEM_CLIP,
+        "clip_shot": SHOT_CLIP,
+        "clip_nosight": PLAYER_CLIP | AI_CLIP | AI_NO_SIGHT,
+        "clip_nosight_metal": PLAYER_CLIP | AI_CLIP | AI_NO_SIGHT,
+    }
+    selected = [tool_contents[t] for t in hull.get("textures", []) if t in tool_contents]
+    result = 0
+    for value in selected:
+        result |= value
+    return result or SOLID
+
 
 def dot(a, b):
     return sum(x * y for x, y in zip(a, b))
@@ -115,22 +159,46 @@ def collect(source, map_root):
 
 
 def encode(hulls):
-    data = b"MWCOLL02" + struct.pack("<I", len(hulls))
+    data = b"MWCOLL03" + struct.pack("<I", len(hulls))
     for h in hulls:
         points = h["vertices"]
-        data += struct.pack("<I", len(points)) + b"".join(struct.pack("<3f", *p) for p in points)
+        value = contents(h)
+        if not value:
+            raise ValueError("Hull has no supported collision contents")
+        data += struct.pack("<II", len(points), value) + b"".join(
+            struct.pack("<3f", *p) for p in points
+        )
     validate(data)
     return data
 
 
-def add_compiled_triangles(hulls, geometry):
+def add_compiled_triangles(hulls, geometry, report=None):
     vertices = geometry["vertices"]
+    source_contents = geometry.get("triangle_contents")
+    if source_contents is not None and len(source_contents) != len(geometry["triangles"]):
+        raise ValueError("Collision triangle contents count mismatch")
     added = 0
+    skipped_contents = 0
+    default_solid = 0
+    degenerate = 0
+    unreferenced = 0
     for i, tri in enumerate(geometry["triangles"]):
+        value = source_contents[i] if source_contents is not None else None
+        if source_contents is None:
+            value = SOLID
+            default_solid += 1
+        elif value is None:
+            unreferenced += 1
+            continue
+        collision_contents = contents({"contents": value})
+        if not collision_contents:
+            skipped_contents += 1
+            continue
         points = [vertices[j] for j in tri]
         n = cross(sub(points[1], points[0]), sub(points[2], points[0]))
         length = math.sqrt(dot(n, n))
         if length < 1e-6:
+            degenerate += 1
             continue
         # Havok requires a volume, so retain the exact triangle and give it a
         # quarter-unit thickness centered on the compiled collision surface.
@@ -141,27 +209,54 @@ def add_compiled_triangles(hulls, geometry):
                     [p[k] + sign * offset[k] for k in range(3)] for sign in (-1, 1) for p in points
                 ],
                 "textures": [],
+                "contents": collision_contents,
                 "source": f"compiled_collision_triangle[{i}]",
             }
         )
         added += 1
     if len(hulls) > 32768:
         raise ValueError("Compiled collision exceeds 32768 hulls; simplify collision geometry")
+    if report is not None:
+        report.update(
+            source_triangles=len(geometry["triangles"]),
+            emitted_hulls=added,
+            skipped_contents=skipped_contents,
+            degenerate=degenerate,
+            default_solid=default_solid,
+            unreferenced_triangles=unreferenced,
+        )
     return added
 
 
 def validate(data):
-    if len(data) < 12 or data[:8] != b"MWCOLL02":
+    if len(data) < 12 or data[:8] not in (b"MWCOLL01", b"MWCOLL02", b"MWCOLL03"):
         raise ValueError("Bad convex collision header")
     count = struct.unpack_from("<I", data, 8)[0]
     pos = 12
     if not 1 <= count <= 32768:
         raise ValueError("Bad convex hull count")
+    if data[:8] == b"MWCOLL01":
+        if len(data) != 12 + count * 24:
+            raise ValueError("Bad box collision length")
+        for row in struct.iter_unpack("<6f", data[12:]):
+            if any(not math.isfinite(x) or abs(x) > 100000 for x in row) or any(
+                row[k] >= row[k + 3] for k in range(3)
+            ):
+                raise ValueError("Invalid box collision bounds")
+        return count
+    typed = data[:8] == b"MWCOLL03"
     for _ in range(count):
         if pos + 4 > len(data):
             raise ValueError("Truncated convex hull count")
         n = struct.unpack_from("<I", data, pos)[0]
         pos += 4
+        if typed:
+            if pos + 4 > len(data):
+                raise ValueError("Truncated collision contents")
+            value = struct.unpack_from("<I", data, pos)[0]
+            pos += 4
+            if not value or value & ~SUPPORTED_CONTENTS:
+                raise ValueError("Invalid collision contents")
         if not 4 <= n <= 252 or pos + n * 12 > len(data):
             raise ValueError("Bad convex hull length")
         points = list(struct.iter_unpack("<3f", data[pos : pos + n * 12]))

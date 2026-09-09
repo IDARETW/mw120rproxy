@@ -1,6 +1,7 @@
 float glassStockFraction = 1;
+const int* glassExpectedSkip = nullptr;
 unsigned glassFxCalls = 0, glassSoundCalls = 0;
-const char* glassEffectName = "vfx/core/impacts/small_glass";
+const char* glassEffectName = "vfx/code/glass/glass_shatter_64x64";
 struct GlassAlias {
     const char* name = "glass_pane_breakout";
     unsigned id = 1234;
@@ -45,9 +46,31 @@ void GlassStockPhysics(int world,
                        int locational,
                        const unsigned char* priority,
                        int phase) {
-    Check(world == 1 && !skip && count == 0 && children == 0 && mask == 0x2806931 &&
-              locational == 1 && !priority && phase == 0,
+    Check(world == 1 && skip == glassExpectedSkip && count == 0 && children == 0 &&
+              mask == 0x2806931 && locational == 1 && !priority && phase == 0,
           "physics bullet trace retains all twelve arguments");
+    memset(result, 0, 0x48);
+    memcpy(result, &glassStockFraction, 4);
+}
+int clientExpectedPhase = 0;
+bool clientExpectedInside = true;
+void GlassStockClientPhysics(int world,
+                             void* result,
+                             const float*,
+                             const float*,
+                             const float*,
+                             const int* skip,
+                             int count,
+                             int children,
+                             int mask,
+                             int locational,
+                             const unsigned char* priority,
+                             int phase,
+                             bool detectInside) {
+    Check(world == 4 && skip == glassExpectedSkip && count == 0 && children == 0 &&
+              mask == 0x2806931 && locational == 1 && !priority && phase == clientExpectedPhase &&
+              detectInside == clientExpectedInside,
+          "client weapon query retains all thirteen arguments");
     memset(result, 0, 0x48);
     memcpy(result, &glassStockFraction, 4);
 }
@@ -113,6 +136,10 @@ void GlassTests() {
         Commit(b->rva);
         PrologueFixture(*b, {0x48, 0x83, 0xC4, 0x78}, reinterpret_cast<void*>(&GlassStockPhysics));
     }
+    Commit(replay::PhysicsClientBulletTrace.rva);
+    PrologueFixture(replay::PhysicsClientBulletTrace,
+                    {0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5F, 0x5E, 0x5B, 0x5D},
+                    reinterpret_cast<void*>(&GlassStockClientPhysics));
     for (auto rva : {replay::BulletTrace.rva, replay::LegacySlideTrace.rva, replay::LegacyTrace.rva,
                      uintptr_t(0xEE55C98), uintptr_t(0x2437AFA)})
         Commit(rva);
@@ -153,6 +180,18 @@ void GlassTests() {
           "wall occlusion prevents breaking glass behind the hit");
     Check(bullet(bp.data(), nullptr, true, nullptr, trace.data(), 19, true),
           "native bullet result retained");
+    connected = 8;
+    memcpy(image + 0xEEF1288, &connected, 4);
+    customglass::PumpEffects();
+    Check(glassFxCalls == 0 && glassSoundCalls == 0, "unready client retains shatter event");
+    connected = 9;
+    memcpy(image + 0xEEF1288, &connected, 4);
+    int deltaTime = 1;
+    memcpy(cg.data() + 0x2F20, &deltaTime, 4);
+    customglass::PumpEffects();
+    Check(glassFxCalls == 0, "prediction gate retains shatter event");
+    deltaTime = 0;
+    memcpy(cg.data() + 0x2F20, &deltaTime, 4);
     customglass::PumpEffects();
     customglass::PumpEffects();
     Check(glassFxCalls == 1 && glassSoundCalls == 1,
@@ -197,6 +236,11 @@ void GlassTests() {
     visibility = 0xF0000000;
     customglass::HideBroken(reinterpret_cast<uintptr_t>(world.data()), 0);
     Check(visibility == 0xF0000000, "ordinary glass queries do not shatter panes");
+    float vehicleRoofLanding[]{10, 0, 10};
+    mantle(nullptr, nullptr, trace.data(), vehicleRoofLanding, vehicleRoofLanding, bounds, 7, 16);
+    customglass::HideBroken(reinterpret_cast<uintptr_t>(world.data()), 0);
+    Check(visibility == 0xF0000000,
+          "broad mantle capsule does not shatter nearby vehicle side glass");
     mantle(nullptr, nullptr, trace.data(), overlap, overlap, bounds, 7, 16);
     customglass::HideBroken(reinterpret_cast<uintptr_t>(world.data()), 0);
     Check(visibility == 0x70000000, "native mantle overlap breaks just the touched pane");
@@ -238,7 +282,11 @@ void GlassTests() {
     Check(visibility == 0x30000000, "all faces of a grouped window disappear together");
     glassStockFraction = 1;
     customglass::Clear();
+    glassfile::Pane smallPane;
+    smallPane.vertices = {{0, 0, 0}, {0, 32, 0}, {0, 32, 32}, {0, 0, 32}};
+    Check(!strcmp(glassfile::ShatterEffect(smallPane), "vfx/code/glass/glass_shatter_32x32"),
+          "small panes select stock model-debris effect at their scale");
     fs::remove(dir / "glass.bin");
     puts(
-        "PASS: exact glass hook prologues and 7/8/11/12-argument ABIs; occluded shots, low-level weapon traces, pane thickness, whole-window visibility, shot/mantle native FX and spatial audio queue, no duplicate events, reload reset (engine traces and playback mocked)");
+        "PASS: exact glass hook prologues and 7/8/11/12-argument ABIs; occluded shots, narrow-core mantle damage, vehicle-side rejection, pane thickness, grouped visibility, native model-debris effects, deferred client/prediction gates, spatial audio, no duplicate events and reload reset (engine traces and playback mocked)");
 }

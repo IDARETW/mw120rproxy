@@ -26,7 +26,9 @@ def read_cod(root, source_map=None, expected=None):
         root.glob("maps/**/*.replay-world.json")
     )
     if source_map:
-        candidates = [p for p in candidates if p.name.startswith(source_map + ".d3dbsp.")]
+        candidates = [
+            p for p in candidates if p.name.startswith(source_map + ".d3dbsp.")
+        ]
     if len(candidates) != 1:
         raise ValueError(
             f"Expected exactly one OAT map world, found {len(candidates)}; use --source-map. IW4/IW5 require tools/install_oat_exporters.py and a rebuilt Unlinker."
@@ -35,9 +37,13 @@ def read_cod(root, source_map=None, expected=None):
     world = json.loads(read_bytes(path))
     if world.get("schema") != 1:
         raise ValueError("Unsupported OAT world schema")
-    engine = world.get("engine", "iw3" if path.name.endswith(".replay-world.json") else None)
+    engine = world.get(
+        "engine", "iw3" if path.name.endswith(".replay-world.json") else None
+    )
     if engine not in ("iw3", "iw4", "iw5") or (expected and engine != expected):
-        raise ValueError(f"OAT engine mismatch: expected {expected}, file declares {engine}")
+        raise ValueError(
+            f"OAT engine mismatch: expected {expected}, file declares {engine}"
+        )
     scene = Scene(engine)
     scene.dependencies[str(path)] = sha256(path)
     name = world["name"]
@@ -47,7 +53,8 @@ def read_cod(root, source_map=None, expected=None):
     scene.entities = entities(read_bytes(entity_path).decode("utf-8-sig"))
     scene.dependencies[str(entity_path)] = sha256(entity_path)
     collision_path = Path(
-        str(stem) + (".replay-collision.json" if engine == "iw3" else ".iw8-collision.json")
+        str(stem)
+        + (".replay-collision.json" if engine == "iw3" else ".iw8-collision.json")
     )
     collision = json.loads(read_bytes(collision_path))
     if collision.get("schema") != 1 or collision["name"] != name:
@@ -64,18 +71,25 @@ def read_cod(root, source_map=None, expected=None):
         # Submodel geometry must have an authored visible entity; do not emit
         # trigger volumes or script-only hidden states as opaque architecture.
         selected = list(
-            checked(world["surfaces"], models[0]["start"], models[0]["count"], "world model")
+            checked(
+                world["surfaces"], models[0]["start"], models[0]["count"], "world model"
+            )
         )
         for i, m in enumerate(models[1:], 1):
             ent = brush_entities.get(i)
             if not ent or ent.get("classname", "").startswith("trigger"):
                 continue
-            if ent.get("angles", "0 0 0") != "0 0 0" or ent.get("origin", "0 0 0") != "0 0 0":
+            if (
+                ent.get("angles", "0 0 0") != "0 0 0"
+                or ent.get("origin", "0 0 0") != "0 0 0"
+            ):
                 scene.warn(
                     "Transformed CoD brush entities are omitted from the generic importer; use the authored-map pipeline to bake dynamic brush states."
                 )
                 continue
-            selected.extend(checked(world["surfaces"], m["start"], m["count"], "brush model"))
+            selected.extend(
+                checked(world["surfaces"], m["start"], m["count"], "brush model")
+            )
     for s in selected:
         if not s["indices"]:
             continue
@@ -137,7 +151,9 @@ def read_cod(root, source_map=None, expected=None):
             for v in s["vertices"]:
                 out["vertices"].append(
                     {
-                        "position": add(mul(transform(engine_vec(v["position"])), scale), origin),
+                        "position": add(
+                            mul(transform(engine_vec(v["position"])), scale), origin
+                        ),
                         "normal": transform(engine_vec(v["normal"])),
                         "uv": v["uv"],
                     }
@@ -155,7 +171,11 @@ def read_cod(root, source_map=None, expected=None):
             continue
         m = json.loads(read_bytes(materialpath))
         color = next(
-            (t.get("image") for t in m.get("textures", []) if t.get("semantic") in ("colorMap", 2)),
+            (
+                t.get("image")
+                for t in m.get("textures", [])
+                if t.get("semantic") in ("colorMap", 2)
+            ),
             None,
         )
         scene.materials[name] = {"texture": "images/" + color} if color else {}

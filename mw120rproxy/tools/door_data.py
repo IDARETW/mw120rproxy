@@ -6,7 +6,8 @@ import re
 import struct
 from cod4_assets import rotation
 from radiant_source import vector
-from imported_map_assets import unpack_normal, packed_normal
+from imported_map_assets import packed_normal
+from replay_mesh_math import unpack_frame
 
 STEPS = 24
 
@@ -135,8 +136,11 @@ def poses(surfaces, doors):
             s["doorFrame"] = frame
             for v in s["vertices"]:
                 v["position"] = point(v["position"], door, phase)
+                normal, tangent, sign = unpack_frame(v["normal"])
                 v["normal"] = packed_normal(
-                    rotate(unpack_normal(v["normal"]), door["angle"] * phase)
+                    rotate(normal, door["angle"] * phase),
+                    rotate(tangent, door["angle"] * phase),
+                    sign,
                 )
             output.append(s)
     return output

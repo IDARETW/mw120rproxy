@@ -48,7 +48,7 @@ def pack(q, sign):
     return ints[0] | ints[1] << 10 | ints[2] << 20 | (sign < 0) << 29 | largest << 30
 
 
-def unpack_normal(packed):
+def unpack_frame(packed):
     largest = packed >> 30
     values = [
         ((packed & 1023) / 1023 * 2 - 1) / math.sqrt(2),
@@ -58,4 +58,10 @@ def unpack_normal(packed):
     q = values[:]
     q.insert(largest, math.sqrt(max(0, 1 - sum(v * v for v in values))))
     x, y, z, w = q
-    return [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)]
+    normal = [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)]
+    tangent = [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)]
+    return normal, tangent, -1 if packed & (1 << 29) else 1
+
+
+def unpack_normal(packed):
+    return unpack_frame(packed)[0]

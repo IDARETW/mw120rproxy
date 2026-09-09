@@ -1,7 +1,7 @@
 """Bounded CoD4 v25 raw-model reader for static Radiant props.
 
 Format cross-checked against mauserzjeh/cod-asset-importer assets/xmodel.rs and
-xmodelsurf.rs and CoD4 Mod Tools files. No Blender/runtime dependency.
+xmodelsurf.rs and Mod Tools files. No Blender/runtime dependency.
 Positions in v25 surfaces are model-space bind positions; no animation is run.
 """
 
@@ -135,6 +135,7 @@ def load_surfaces(path):
                 {
                     "position": position,
                     "normal": normal,
+                    "color": list(color),
                     "uv": uv,
                     "tangent": tangent,
                     "binormal": binormal,
@@ -224,6 +225,8 @@ def rotation(angles):
 
 
 def transformed(surface, origin, angles, scale):
+    from vertex_attributes import color
+
     matrix = rotation(angles)
     rotate = lambda v: [sum(row[k] * v[k] for k in range(3)) for row in matrix]
     out = []
@@ -240,6 +243,7 @@ def transformed(surface, origin, angles, scale):
                 "position": [pos[k] * scale + origin[k] for k in range(3)],
                 "uv": v["uv"],
                 "normal": pack(q, sign),
+                "color": color(v),
             }
         )
     return {"vertices": out, "indices": surface["indices"], "material": surface["material"]}

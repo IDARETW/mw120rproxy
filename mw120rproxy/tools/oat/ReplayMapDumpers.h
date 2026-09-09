@@ -25,10 +25,55 @@ inline void Save(AssetDumpingContext& context, const std::string& path, const Js
         throw std::runtime_error("Cannot write Replay intermediate");
     *file << data.dump();
 }
+inline void LightGrid(AssetDumpingContext& context, const IW3::GfxWorld& world) {
+    const auto& grid = world.lightGrid;
+    if (!grid.entryCount && !grid.colorCount) {
+        Save(context, std::string(world.name) + ".lightgrid.json",
+             {{"schema", 1}, {"name", world.name}, {"available", false}});
+        return;
+    }
+    if (grid.rowAxis >= 3 || grid.colAxis >= 3 || grid.rowAxis == grid.colAxis ||
+        grid.maxs[grid.rowAxis] < grid.mins[grid.rowAxis] ||
+        grid.rawRowDataSize > 64u * 1024 * 1024 || grid.entryCount > 8u * 1024 * 1024 ||
+        grid.colorCount > 65536)
+        throw std::runtime_error("Invalid IW3 light-grid metadata");
+    const size_t rows = grid.maxs[grid.rowAxis] - grid.mins[grid.rowAxis] + 1;
+    const std::string stem = std::string(world.name) + ".lightgrid";
+    auto binary = [&](const char* suffix, const void* data, size_t bytes) {
+        if (bytes && !data)
+            throw std::runtime_error("Missing IW3 light-grid array");
+        const auto name = stem + suffix;
+        auto file = context.OpenAssetFile(name);
+        if (!file)
+            throw std::runtime_error("Cannot write light-grid array");
+        if (bytes)
+            file->write(static_cast<const char*>(data), bytes);
+        return Json{{"file", name}, {"bytes", bytes}};
+    };
+    Json out = {{"schema", 1},
+                {"name", world.name},
+                {"has_light_regions", grid.hasLightRegions},
+                {"sun_primary_light_index", grid.sunPrimaryLightIndex},
+                {"mins", {grid.mins[0], grid.mins[1], grid.mins[2]}},
+                {"maxs", {grid.maxs[0], grid.maxs[1], grid.maxs[2]}},
+                {"row_axis", grid.rowAxis},
+                {"col_axis", grid.colAxis},
+                {"row_count", rows},
+                {"entry_count", grid.entryCount},
+                {"color_count", grid.colorCount},
+                {"row_starts", binary(".rows.bin", grid.rowDataStart, rows * sizeof(uint16_t))},
+                {"row_data", binary(".raw.bin", grid.rawRowData, grid.rawRowDataSize)},
+                {"entries", binary(".entries.bin", grid.entries,
+                                   grid.entryCount * sizeof(IW3::GfxLightGridEntry))},
+                {"colors", binary(".colors.bin", grid.colors,
+                                  grid.colorCount * sizeof(IW3::GfxLightGridColors))}};
+    Save(context, stem + ".json", out);
+}
 class World final : public AbstractAssetDumper<IW3::AssetGfxWorld> {
     void DumpAsset(AssetDumpingContext& context, const XAssetInfo<IW3::GfxWorld>& asset) override
         try {
         const auto& w = *asset.Asset();
+        LightGrid(context, w);
         std::cerr << "Replay world: " << w.name << " surfaces=" << w.surfaceCount
                   << " verts=" << w.vertexCount << " models=" << w.dpvs.smodelCount << std::endl;
         std::cerr << "pointers: surfaces=" << w.dpvs.surfaces << " vertices=" << w.vd.vertices
@@ -208,6 +253,30 @@ template <class AssetType> class Collision final : public AbstractAssetDumper<As
         for (int i = 0; i < c.triCount; ++i)
             j["triangles"].push_back(
                 {c.triIndices[i * 3], c.triIndices[i * 3 + 1], c.triIndices[i * 3 + 2]});
+        std::vector<uint32_t> triangleContents(c.triCount);
+        std::vector<bool> mappedTriangles(c.triCount);
+        for (int i = 0; i < c.aabbTreeCount; ++i) {
+            const auto& tree = c.aabbTrees[i];
+            if (tree.childCount)
+                continue;
+            if (tree.materialIndex >= c.numMaterials || tree.u.partitionIndex < 0 ||
+                tree.u.partitionIndex >= c.partitionCount)
+                throw std::runtime_error("Invalid collision tree material or partition");
+            const auto& partition = c.partitions[tree.u.partitionIndex];
+            if (partition.firstTri < 0 || partition.firstTri > c.triCount ||
+                partition.triCount > c.triCount - partition.firstTri)
+                throw std::runtime_error("Invalid collision partition triangle span");
+            const auto contents = uint32_t(c.materials[tree.materialIndex].contentFlags);
+            for (int t = partition.firstTri; t < partition.firstTri + partition.triCount; ++t) {
+                triangleContents[t] |= contents;
+                mappedTriangles[t] = true;
+            }
+        }
+        j["triangle_contents_schema"] = "material-partitions-v1";
+        j["triangle_contents"] = Json::array();
+        for (int i = 0; i < c.triCount; ++i)
+            j["triangle_contents"].push_back(mappedTriangles[i] ? Json(triangleContents[i])
+                                                                : Json(nullptr));
         for (unsigned i = 0; i < c.numStaticModels; ++i) {
             const auto& m = c.staticModelList[i];
             j["static_models"].push_back({{"model", m.xmodel->name}, {"origin", V3(m.origin)}});

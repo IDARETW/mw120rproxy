@@ -146,6 +146,9 @@ Material LoadMaterial(const std::string& path, const nlohmann::json& j) {
             for (const auto& im : d.at("imageDefinitions")) {
                 Image image;
                 image.name = im.at("name");
+                image.format = im.value("format", 7u);
+                if (image.format != 6 && image.format != 7)
+                    throw std::runtime_error("Resident RGBA8 image must use linear or sRGB RGBA8 format");
                 const auto width = im.at("width").get<unsigned>(),
                            height = im.at("height").get<unsigned>();
                 const auto pixels = im.at("rgba8").get<std::string>();
@@ -227,6 +230,9 @@ Mesh Load(const std::string& path) {
             m.additionalMaterials.push_back(LoadMaterial(path, definition));
         }
     const auto& list = j.at("surfaces");
+    const unsigned atlasLayout = j.value("atlasVertexLayout", 1u);
+    if (atlasLayout < 1 || atlasLayout > 3)
+        throw std::runtime_error("Unsupported atlas vertex layout");
     if (!list.is_array() || list.empty() || list.size() > 4096)
         throw std::runtime_error("Invalid surface count");
     m.count = unsigned(list.size());
@@ -237,6 +243,7 @@ Mesh Load(const std::string& path) {
     // Native buffers reserve offset zero. Stock first surface starts at byte four.
     m.positions.resize(4);
     m.aux.resize(4);
+    replaybounds::Accumulator sceneBounds, drawBounds;
     for (unsigned i = 0; i < m.count; ++i) {
         const auto& s = list[i];
         const auto& vertices = s.at("vertices");
@@ -254,7 +261,16 @@ Mesh Load(const std::string& path) {
             if (!std::isfinite(flags) || flags < 0 || std::fmod(std::floor(flags), 4.0f) != 1)
                 throw std::runtime_error("Invalid sky UV metadata");
         }
-        const bool opaque = !material || sky;
+        const bool maskedPrepass =
+            material && m.additionalMaterials[material - 1].material.ends_with("_foliage") &&
+            std::any_of(m.additionalMaterials[material - 1].techniques.begin(),
+                        m.additionalMaterials[material - 1].techniques.end(),
+                        [](const Technique& t) {
+                            uint32_t type = ~0u;
+                            std::memcpy(&type, t.header.data() + 8, sizeof(type));
+                            return type == 0;
+                        });
+        const bool opaque = !material || sky || maskedPrepass;
         if (opaque && m.opaqueCount != i)
             throw std::runtime_error("Opaque surfaces must precede transparent surfaces");
         if (opaque)
@@ -270,14 +286,19 @@ Mesh Load(const std::string& path) {
             const auto& pos = v.at("position");
             if (pos.size() != 3)
                 throw std::runtime_error("Invalid position");
+            std::array<float, 3> point;
             for (unsigned k = 0; k < 3; ++k) {
                 const float x = pos[k].get<float>();
                 if (!std::isfinite(x) || std::abs(x) > 100000)
                     throw std::runtime_error("Position out of range");
                 append(m.positions, x);
+                point[k] = x;
                 mins[k] = std::min(mins[k], x);
                 maxs[k] = std::max(maxs[k], x);
             }
+            drawBounds.Add(point);
+            if (!sky)
+                sceneBounds.Add(point);
             append(m.aux, v.at("normal").get<uint32_t>());
         }
         const unsigned uvOffset = unsigned(m.aux.size());
@@ -291,18 +312,63 @@ Mesh Load(const std::string& path) {
                     throw std::runtime_error("Nonfinite UV");
                 append(m.aux, x);
             }
+            if (atlasLayout >= 2) {
+                if (!v.contains("lightmapUV") || v.at("lightmapUV").size() != 2)
+                    throw std::runtime_error("Atlas metadata requires two components");
+                for (unsigned k = 0; k < 2; ++k) {
+                    const double value = v.at("lightmapUV").at(k).get<double>();
+                    if (!std::isfinite(value) || value < 0 || value >= 65536)
+                        throw std::runtime_error("Atlas metadata is outside supported range");
+                    append(m.aux, float(std::floor(value)));
+                }
+                if (atlasLayout == 3) {
+                    const auto parameters =
+                        s.value("materialParameters", nlohmann::json::array({.8, 4.0, 2.5, .625}));
+                    if (!parameters.is_array() || parameters.size() != 4)
+                        throw std::runtime_error("Material parameters require four components");
+                    for (const auto& parameter : parameters) {
+                        const float value = parameter.get<float>();
+                        if (!std::isfinite(value) || std::abs(value) > 1e6f)
+                            throw std::runtime_error(
+                                "Material parameter is outside supported range");
+                        append(m.aux, value);
+                    }
+                }
+            }
         }
         const unsigned lmOffset = unsigned(m.aux.size());
         // Owned textured shaders may use this otherwise unused channel to select
         // an atlas tile. Preserve zeroes for the existing graybox packages.
         for (const auto& v : vertices)
             for (unsigned k = 0; k < 2; ++k) {
-                const float x =
-                    v.contains("lightmapUV") ? v.at("lightmapUV").at(k).get<float>() : 0.0f;
+                double value =
+                    v.contains("lightmapUV") ? v.at("lightmapUV").at(k).get<double>() : 0;
+                if (atlasLayout >= 2)
+                    value = (value - std::floor(value)) * 4 - 1;
+                const float x = float(value);
                 if (!std::isfinite(x))
                     throw std::runtime_error("Nonfinite lightmap UV");
                 append(m.aux, x);
             }
+        const unsigned colorOffset = unsigned(m.aux.size());
+        for (const auto& v : vertices) {
+            uint32_t rgba = 0xffffffff;
+            if (v.contains("color")) {
+                const auto& color = v.at("color");
+                if (!color.is_array() || color.size() != 4)
+                    throw std::runtime_error("Vertex color must contain four RGBA bytes");
+                rgba = 0;
+                for (unsigned k = 0; k < 4; ++k) {
+                    if (!color[k].is_number_integer())
+                        throw std::runtime_error("Vertex color component must be an integer");
+                    const auto channel = color[k].get<int64_t>();
+                    if (channel < 0 || channel > 255)
+                        throw std::runtime_error("Vertex color component is outside RGBA8 range");
+                    rgba |= uint32_t(channel) << (k * 8);
+                }
+            }
+            append(m.aux, rgba);
+        }
         const unsigned baseIndex = unsigned(m.indices.size() / 2);
         float maxEdge = 0;
         for (size_t ix = 0; ix < indices.size(); ++ix) {
@@ -336,12 +402,15 @@ Mesh Load(const std::string& path) {
             put(bounds, 12 + 4 * k, (maxs[k] - mins[k]) * 0.5f + 1.0f);
         }
         auto* gpu = m.surfData.data() + 88 * i;
-        put(gpu, 4, uint32_t(1));
+        put(gpu, 4, uint32_t(atlasLayout == 3 ? 4 : atlasLayout));
         put(gpu, 8, posOffset);
         put(gpu, 12, normalOffset);
         put(gpu, 16, lmOffset);
+        put(gpu, 20, colorOffset);
         put(gpu, 24, uvOffset);
     }
+    m.sceneBounds = sceneBounds.Finish();
+    m.drawBounds = drawBounds.Finish();
     return m;
 }
 void StampWorld(std::vector<uint8_t>& w, const Mesh& m) {
@@ -445,7 +514,7 @@ void RegisterMaterialDefinition(ZoneWriter& w,
                 out.align(15);
                 uint8_t h[0xE8]{};
                 put(h, 0, PTR_FOLLOWS);
-                put(h, 0x14, uint32_t(7)); // native R8G8B8A8 sRGB
+                put(h, 0x14, uint32_t(image.format));
                 put(h, 0x18,
                     uint32_t(image.mipCount > 1 ? 1 : 3)); // no picmip; bit 1 disables mipmapping
                 put(h, 0x1C, uint32_t(image.pixels.size()));

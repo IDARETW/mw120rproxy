@@ -227,3 +227,16 @@ Check the spawn positions, floors, stairs, ladders, glass, foliage, and lighting
 | Loading error or crash | Check `convert.log` and `layout.log`, then the game's engine and exception logs. Keep the first error and stack trace. |
 
 Map conversion supports static geometry, materials, collision, supported glass and ladders, and TDM spawns. CoD4 scripts, general destructible objects, and embedded model physics aren't automatically converted. Credit the map's author and check their redistribution terms before sharing a converted package.
+
+## Update an existing conversion
+
+Rebuild from the extracted source to get the latest geometry, collision, and material changes. To update lighting and texture filtering on a retained build, run:
+
+```powershell
+python mw120rproxy/tools/rebuild_map_lighting.py `
+    --build "custom_map_sources/mp_4doffice/builds/<previous-build>" `
+    --lighting-profile source --sun-intensity-scale 7 `
+    --refresh-source-textures
+```
+
+Install the new package with the same deployment command above. Replace the complete package and update the DLL together.

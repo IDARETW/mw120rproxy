@@ -94,7 +94,11 @@ def read_obj(path, material_libraries=True):
             output = []
             for r, p in zip(refs, points):
                 uv = uvs[obj_index(r[1], len(uvs))] if len(r) > 1 and r[1] else [0, 0]
-                n = normals[obj_index(r[2], len(normals))] if len(r) > 2 and r[2] else fallback
+                n = (
+                    normals[obj_index(r[2], len(normals))]
+                    if len(r) > 2 and r[2]
+                    else fallback
+                )
                 if dot(n, n) < 1e-12:
                     n = fallback
                     scene.stats["zero_normals_rebuilt"] = (
@@ -106,7 +110,9 @@ def read_obj(path, material_libraries=True):
                 else:
                     n = unit(n)
                 # Canonical images use a top-left origin; OBJ uses bottom-left.
-                output.append({"position": list(p), "normal": list(n), "uv": [uv[0], 1 - uv[1]]})
+                output.append(
+                    {"position": list(p), "normal": list(n), "uv": [uv[0], 1 - uv[1]]}
+                )
             if active is None:
                 active = {"material": material, "vertices": [], "indices": []}
                 scene.surfaces.append(active)
@@ -114,7 +120,9 @@ def read_obj(path, material_libraries=True):
             active["vertices"].extend(output)
             active["indices"].extend(start + i for i in indices)
         elif op in ("curv", "curv2", "surf", "vp", "cstype"):
-            raise ValueError("OBJ free-form curves/surfaces must be tessellated before import")
+            raise ValueError(
+                "OBJ free-form curves/surfaces must be tessellated before import"
+            )
         elif op not in ("o", "g", "s", "l", "p", "#"):
             scene.warn(f"OBJ directive {op!r} is not converted.")
     scene.warn(
@@ -146,7 +154,9 @@ def read_mtl(path, scene):
             elif key == "map_Kd":
                 name = line.strip()[len(key) :].strip().strip('"')
                 if name.startswith("-"):
-                    raise ValueError("MTL texture options require baking; use a plain map_Kd path")
+                    raise ValueError(
+                        "MTL texture options require baking; use a plain map_Kd path"
+                    )
                 texture = safe_path(path.parent, name)
                 current["texture_path"] = str(texture)
             elif key in ("map_Bump", "bump", "norm", "map_Ks"):
@@ -156,7 +166,9 @@ def read_mtl(path, scene):
 
 
 def matmul(a, b):
-    return [[sum(a[r][k] * b[k][c] for k in range(4)) for c in range(4)] for r in range(4)]
+    return [
+        [sum(a[r][k] * b[k][c] for k in range(4)) for c in range(4)] for r in range(4)
+    ]
 
 
 IDENTITY = [[float(r == c) for c in range(4)] for r in range(4)]
@@ -182,7 +194,9 @@ def node_matrix(node):
         [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
     ]
-    return [[r[i][j] * s[j] for j in range(3)] + [t[i]] for i in range(3)] + [[0, 0, 0, 1]]
+    return [[r[i][j] * s[j] for j in range(3)] + [t[i]] for i in range(3)] + [
+        [0, 0, 0, 1]
+    ]
 
 
 def read_gltf(path):
@@ -219,7 +233,8 @@ def read_gltf(path):
         raise ValueError("Only glTF 2.0 is supported")
     if doc.get("extensionsRequired"):
         raise ValueError(
-            "glTF required extensions are unsupported: " + str(doc["extensionsRequired"])
+            "glTF required extensions are unsupported: "
+            + str(doc["extensionsRequired"])
         )
     scene = Scene("gltf")
     buffers = []
@@ -286,10 +301,13 @@ def read_gltf(path):
         ):
             raise ValueError("glTF accessor out of bounds")
         values = [
-            list(struct.unpack_from("<" + fmt * n, data, offset + j * stride)) for j in range(count)
+            list(struct.unpack_from("<" + fmt * n, data, offset + j * stride))
+            for j in range(count)
         ]
         if a.get("normalized"):
-            maximum = {5120: 127, 5121: 255, 5122: 32767, 5123: 65535}.get(a["componentType"])
+            maximum = {5120: 127, 5121: 255, 5122: 32767, 5123: 65535}.get(
+                a["componentType"]
+            )
             if not maximum:
                 raise ValueError("Invalid normalized glTF component type")
             values = [[max(-1, v / maximum) for v in row] for row in values]
@@ -301,7 +319,9 @@ def read_gltf(path):
         if "baseColorTexture" in pbr:
             ref = pbr["baseColorTexture"]
             if ref.get("texCoord", 0) != 0 or ref.get("extensions"):
-                raise ValueError("glTF texture transforms/alternate UV sets require baking")
+                raise ValueError(
+                    "glTF texture transforms/alternate UV sets require baking"
+                )
             from .bsp import item
 
             texture = item(doc.get("textures", []), ref["index"], "texture")
@@ -332,9 +352,13 @@ def read_gltf(path):
         if abs(det) < 1e-12:
             raise ValueError("Singular glTF world transform")
         # Cofactor matrix / determinant = inverse transpose, for nonuniform scales.
-        normal_matrix = [[x / det for x in row] for row in (cross(b, c), cross(c, a), cross(a, b))]
+        normal_matrix = [
+            [x / det for x in row] for row in (cross(b, c), cross(c, a), cross(a, b))
+        ]
         if "mesh" in node:
-            for primitive in item(doc.get("meshes", []), node["mesh"], "mesh")["primitives"]:
+            for primitive in item(doc.get("meshes", []), node["mesh"], "mesh")[
+                "primitives"
+            ]:
                 if primitive.get("mode", 4) != 4 or primitive.get("targets"):
                     raise ValueError("glTF primitive must be static TRIANGLES")
                 attrs = primitive["attributes"]
@@ -347,7 +371,9 @@ def read_gltf(path):
                     else [[0, 0] for p in pos]
                 )
                 normals = accessor(attrs["NORMAL"]) if "NORMAL" in attrs else None
-                if len(uv) != len(pos) or (normals is not None and len(normals) != len(pos)):
+                if len(uv) != len(pos) or (
+                    normals is not None and len(normals) != len(pos)
+                ):
                     raise ValueError("glTF attribute counts differ")
                 indices = (
                     [v[0] for v in accessor(primitive["indices"])]
@@ -371,7 +397,9 @@ def read_gltf(path):
                     n = vec(n)
                     output.append(
                         {
-                            "position": [dot(row[:3], p) + row[3] for row in matrix[:3]],
+                            "position": [
+                                dot(row[:3], p) + row[3] for row in matrix[:3]
+                            ],
                             "normal": unit([dot(row, n) for row in normal_matrix]),
                             "uv": vec(t, 2),
                         }

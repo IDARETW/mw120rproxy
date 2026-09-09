@@ -1,6 +1,7 @@
 from local_paths import UNLINKER
 
 """Extract a downloaded CoD4 FF/IWD into a fresh offline Replay import directory."""
+
 import argparse
 import hashlib
 import json
@@ -95,5 +96,9 @@ if __name__ == "__main__":
     p.add_argument("--source", type=Path, required=True)
     p.add_argument("--map", required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--unlinker", type=Path, default=UNLINKER)
+    p.add_argument(
+        "--unlinker",
+        type=Path,
+        default=UNLINKER,
+    )
     extract(p.parse_args())

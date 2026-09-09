@@ -1,6 +1,6 @@
 # MW120R Custom Maps
 
-This project is made open source with the goal of providing a modding base for others who want to play, experiement with, and iterate on the code. Later iterations will be updated in this repo as the days progress.
+This project is made open source with the goal of providing a modding base for others who want to play, experiment with, and iterate on the code. Later iterations will be updated in this repo as the days progress.
 
 Load custom maps in **MW2019 Replay 1.20.4.7623265**. Includes normal Local Play map selection, a game console, CoD4 conversion tools, an offline importer for additional map and mesh formats, and a Radiant build workflow.
 
@@ -81,15 +81,15 @@ Stale safe-mode markers are cleared at startup to prevent the safe-mode prompt a
 ## Supported features and limits
 
 - CoD4 world geometry, static models, collision, TDM spawns, and loadout selection.
-- Baked lighting and static shadows, the map's sun direction, and ambient lighting based on the skybox. The optional lighting rebuild adds native sun-shadow reception and ambient occlusion on opaque surfaces, with separate sky rendering and baked-light exposure controls.
-- Transparent foliage, blended decals, climbable ladders, ladder sounds, and footsteps matched to floor materials.
-- Breakable glass with sound and debris effects when shot, hit with melee, or mantled through.
+- Source sun direction and color, adjustable sunlight intensity, directional baked lightmaps, and native sun-shadow reception. Source static shadows remain visible beyond the nearby realtime shadow range. The skybox is visual and does not override scene lighting.
+- Transparent foliage and decals, normal/specular material channels, climbable ladders, ladder sounds, and footsteps matched to floor materials.
+- Breakable glass with sound when shot, hit with melee, or mantled through. Glass debris is still being investigated.
 - Imported brush doors with Use to open/close, melee and sprint bashing, moving collision, and the game's interaction popup. Existing packages need to be rebuilt to include door data.
 - Custom map names, menu previews, and loading-screen images.
 
-CoD4 scripts, general destructible objects, bot navigation, player shadows on custom geometry, and full normal/specular material conversion are not supported. Model physics is not imported automatically; use clip brushes for solid props. Test converted maps in-game, especially maps with unusual materials or scripted objects.
+CoD4 scripts, general destructible objects, and bot navigation are not supported. Model physics is not imported automatically; use clip brushes for solid props. Test converted maps in-game, especially maps with unusual materials or scripted objects.
 
-Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Opening, closing, and the interaction prompt have been tested on Super Mario 64. Indoor lighting remains a work in progress: bright rooms and dark native weapons can still occur because world lightmaps and dynamic-object lighting use different paths.
+Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Opening, closing, and the interaction prompt have been tested on Super Mario 64. Dynamic-object lighting remains incomplete, so native weapons can still appear dark. Distant realtime shadows on props without source lightmaps, walking leg animation, and glass debris need further work.
 
 ## Troubleshooting
 

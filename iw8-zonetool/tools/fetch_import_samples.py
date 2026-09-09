@@ -99,7 +99,9 @@ def fetch(out):
     out.mkdir(parents=True, exist_ok=True)
     records = []
     for local, repo, commit, path in FIXTURES:
-        url = f"https://raw.githubusercontent.com/{repo}/{commit}/" + quote(path, safe="/")
+        url = f"https://raw.githubusercontent.com/{repo}/{commit}/" + quote(
+            path, safe="/"
+        )
         target = out / local
         if not target.exists():
             with urlopen(

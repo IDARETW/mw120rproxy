@@ -230,7 +230,7 @@ def main():
             "IW8 world rendering and material conversion",
             "Havok collision including brush solids",
             "IW8 spawn classes and map scripts",
-            "in-game testing",
+            "live match",
         ],
     )
     (out / "source_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

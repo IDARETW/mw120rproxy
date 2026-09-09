@@ -35,7 +35,12 @@ class BSP:
         spans = []
         for i in range(count):
             offset, size = struct.unpack_from("<ii", self.data, 8 + 8 * i)
-            if offset < 0 or size < 0 or offset + size > len(self.data) or (size and offset < end):
+            if (
+                offset < 0
+                or size < 0
+                or offset + size > len(self.data)
+                or (size and offset < end)
+            ):
                 raise ValueError(f"Invalid BSP lump {i} range")
             if size:
                 spans.append((offset, offset + size, i))
@@ -47,7 +52,9 @@ class BSP:
     def rows(self, index, fmt):
         size = struct.calcsize(fmt)
         if len(self.lumps[index]) % size:
-            raise ValueError(f"BSP lump {index} is not a multiple of record size {size}")
+            raise ValueError(
+                f"BSP lump {index} is not a multiple of record size {size}"
+            )
         return list(struct.iter_unpack(fmt, self.lumps[index]))
 
 
@@ -107,7 +114,9 @@ def read_q3(path, patch_steps=6):
         from .core import add, vec
 
         origin = vec(ent.get("origin", "0 0 0")) if mi else [0, 0, 0]
-        if mi and (ent.get("angles", "0 0 0") != "0 0 0" or ent.get("angle", "0") != "0"):
+        if mi and (
+            ent.get("angles", "0 0 0") != "0 0 0" or ent.get("angle", "0") != "0"
+        ):
             raise ValueError(
                 "Rotated Quake brush entities require baking transforms in the source map"
             )
@@ -155,7 +164,9 @@ def read_q3(path, patch_steps=6):
                                 )
                                 values = [
                                     sum(
-                                        source[(py + j) * width + px + i][k] * wx[i] * wy[j]
+                                        source[(py + j) * width + px + i][k]
+                                        * wx[i]
+                                        * wy[j]
                                         for j in range(3)
                                         for i in range(3)
                                     )
@@ -262,7 +273,9 @@ def read_q2(path):
             continue  # SKY / NODRAW
         # Texture resolution is resolved during image lookup; WAL defaults are
         # never guessed. Keep texel coordinates until packaging.
-        scene.materials.setdefault(name, {"texture": "textures/" + name, "uv_texels": True})
+        scene.materials.setdefault(
+            name, {"texture": "textures/" + name, "uv_texels": True}
+        )
         points = []
         for e in checked(surfedges, face[2], face[3], "face edges"):
             edge = item(edges, abs(e), "edge")

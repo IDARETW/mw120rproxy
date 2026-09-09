@@ -94,7 +94,9 @@ def validate(args):
             evidence,
         ] + extra
         with (out / (label + ".log")).open("w") as log:
-            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
+            subprocess.run(
+                command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300
+            )
         report = json.loads((build / "report.json").read_text())
         with (build / "native-collision.log").open("w") as log:
             subprocess.run(
@@ -163,7 +165,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--samples",
         type=Path,
-        default=ROOT / "test-out/import-fixtures/downloads",
+        default=ROOT / "evidence/multi_engine_20260908/downloads",
     )
     p.add_argument(
         "--replay-exe",
@@ -182,9 +184,13 @@ if __name__ == "__main__":
     except (Exception, KeyboardInterrupt) as error:
         if not existed and args.output.is_dir():
             result = args.output / "validation.json"
-            previous = json.loads(result.read_text()) if result.exists() else {"cases": []}
+            previous = (
+                json.loads(result.read_text()) if result.exists() else {"cases": []}
+            )
             previous.update(
-                status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+                status="interrupted"
+                if isinstance(error, KeyboardInterrupt)
+                else "failed",
                 error=str(error),
                 game_tested=False,
             )

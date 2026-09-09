@@ -66,10 +66,12 @@ void* AddShapeList(char** data, unsigned* size, const char* name, int type) {
         EmptySelected(data, size, name, type, reinterpret_cast<uintptr_t>(_ReturnAddress()))) {
         if (type == 23)
             g_emptyWorld.store(true);
-
+        // These two verified callers accept a null shape list. Their native
+        // registration/global updates still run. This represents no collision;
+        // it does not fabricate a Havok object or swallow deserialization errors.
         LOG_INFO(
             "Maps",
-            "selected map '%s' type=%d: no serialized Havok shapes; custom brush bodies initialize at WorldCollision creation",
+            "selected prototype '%s' type=%d: no serialized Havok shapes; custom brush bodies initialize at WorldCollision creation",
             name, type);
         if (assetcontext::current.active)
             assetcontext::current.phase = "empty custom physics: no shapes";

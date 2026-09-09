@@ -1,18 +1,16 @@
 param(
-    [Parameter(Mandatory = $true)][string]$PackageDir,
-    [Parameter(Mandatory = $true)][string]$GameRoot,
+    [string]$PackageDir = (Join-Path $PSScriptRoot '..\..\custom_map_sources\mp_test\replay_package_v13'),
     [string]$Map = 'mp_test'
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$gameRoot = (Resolve-Path -LiteralPath $GameRoot).Path
-New-Item -ItemType Directory -Path (Join-Path $repoRoot 'evidence') -Force | Out-Null
+$gameRoot = 'D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)'
 $gameExe = Join-Path $gameRoot 'game_dx12_ship_replay.exe'
 if ($Map -notmatch '^mp_[a-z0-9_]{1,60}$') {
     throw 'Invalid map id.'
 }
 $packageSource = (Resolve-Path -LiteralPath $PackageDir).Path
-$converter = Join-Path $repoRoot 'iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
+$converter = Join-Path $repoRoot '..\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
 & $converter validate-package $packageSource $Map
 if ($LASTEXITCODE -ne 0) {
     throw 'Source package validation failed.'
@@ -91,6 +89,12 @@ if ($manifest.preview -eq 'rgba8-v1') {
 if ($manifest.ambient -eq 'sh-probe-v1') {
     $names += 'ambient.bin'
 }
+if ($manifest.ambient_grid) {
+    if ($manifest.ambient_grid -cne 'spatial-dc-v1') {
+        throw 'Unsupported spatial ambient package.'
+    }
+    $names += 'ambient_grid.bin'
+}
 if ($manifest.footsteps -eq 'triangles-v1') {
     $names += 'footsteps.bin'
 }
@@ -99,16 +103,14 @@ if ($manifest.doors) {
         throw 'Unsupported door package.'
     }
     & python -B (Join-Path $PSScriptRoot 'door_data.py') --validate (Join-Path $packageSource 'doors.bin')
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Door sidecar validation failed.'
-    }
+    if ($LASTEXITCODE -ne 0) { throw 'Door sidecar validation failed.' }
     $names += 'doors.bin'
 }
 if ($manifest.glass) {
     $names += 'glass.bin'
 }
 if ($manifest.collision) {
-    if ($manifest.collision -cnotin @('boxes-v1', 'convex-v2')) {
+    if ($manifest.collision -cnotin @('boxes-v1', 'convex-v2', 'convex-v3')) {
         throw 'Unsupported collision package.'
     }
     $names += 'collision.bin'

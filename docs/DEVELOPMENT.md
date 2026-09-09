@@ -41,3 +41,8 @@ python -m black mw120rproxy/tools mw120rproxy/tests
 ```
 
 Leave bundled third-party code in its original style.
+
+The additional tests under `mw120rproxy/tools/test_*.py` include checks against
+local CoD4 assets and extracted Office/Nuketown maps. Those fixtures and the
+OpenAssetTools ImageConverter must be available to run the full discovery suite.
+They are not included in the repository.

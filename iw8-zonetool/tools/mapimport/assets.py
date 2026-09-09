@@ -36,7 +36,11 @@ class Assets:
                 ):
                     key = name.split(b"\0", 1)[0].decode("utf-8").lower()
                     safe_path(root.parent, key)
-                    if key in entries or min(start, length) < 0 or start + length > len(raw):
+                    if (
+                        key in entries
+                        or min(start, length) < 0
+                        or start + length > len(raw)
+                    ):
                         raise ValueError("Invalid or duplicate Quake PAK entry")
                     entries[key] = raw[start : start + length]
                 self.archives.append((str(root), entries))
@@ -124,7 +128,11 @@ class Assets:
                 if len(raw) < 100:
                     raise ValueError("Truncated WAL texture")
                 w, h, offset = struct.unpack_from("<III", raw, 32)
-                if not 1 <= w <= 4096 or not 1 <= h <= 4096 or offset + w * h > len(raw):
+                if (
+                    not 1 <= w <= 4096
+                    or not 1 <= h <= 4096
+                    or offset + w * h > len(raw)
+                ):
                     raise ValueError("Invalid WAL texture")
                 palette = self.read("pics/colormap.pcx")
                 if palette is None:
@@ -158,7 +166,12 @@ def decode(raw):
             )
         fmt, flags = raw[4:6]
         w, h, depth = struct.unpack_from("<3H", raw, 6)
-        if flags & 12 or depth not in (0, 1) or not 1 <= w <= 4096 or not 1 <= h <= 4096:
+        if (
+            flags & 12
+            or depth not in (0, 1)
+            or not 1 <= w <= 4096
+            or not 1 <= h <= 4096
+        ):
             raise ValueError("Unsupported IWI cube/volume/dimensions")
         if struct.unpack_from("<I", raw, 12)[0] != len(raw):
             raise ValueError("Invalid IWI file size")
@@ -223,7 +236,9 @@ def decode(raw):
         if lw and lh and lowfmt != 13:
             raise ValueError("Unsupported VTF thumbnail format")
         offset = header + (((lw + 3) // 4) * ((lh + 3) // 4) * 8 if lw and lh else 0)
-        offset += sum(size(max(1, w >> level), max(1, h >> level)) for level in range(1, mips))
+        offset += sum(
+            size(max(1, w >> level), max(1, h >> level)) for level in range(1, mips)
+        )
         payload = raw[offset : offset + size(w, h)]
         if len(payload) != size(w, h):
             raise ValueError("Truncated VTF top mip")

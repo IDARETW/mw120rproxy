@@ -160,30 +160,26 @@ def prepare(scene, out, mapid, args):
     stem = mapid + ".d3dbsp"
     numeric, count = spawns(scene, args.spawn)
     (out / "dump" / (mapid + "_iw8_ents.txt")).write_text(numeric, encoding="ascii")
-    (folder / (stem + ".ents")).write_text('{ "classname" "worldspawn" }\n', encoding="ascii")
+    (folder / (stem + ".ents")).write_text(
+        '{ "classname" "worldspawn" }\n', encoding="ascii"
+    )
     names = sorted({s["material"] for s in scene.surfaces})
     tiles = {name: i for i, name in enumerate(names)}
     tools = args.replay_tools
     textured = not args.graybox
-    if textured and (tools is None or not (tools / "compile_graybox_shader.py").is_file()):
+    if textured and (
+        tools is None or not (tools / "compile_graybox_shader.py").is_file()
+    ):
         raise ValueError(
             "Textured Replay export needs --replay-tools <mw120rproxy/tools>; use --graybox for a standalone package with a stock material"
         )
     resolved = []
     missing = []
     if textured:
-        templates = tools.resolve().parents[1] / "custom_map_sources/mp_test"
-        for relative in (
-            "dump/maps/mp/mp_test.d3dbsp.material.json",
-            "shaders/replay_static_world_techset.json",
-        ):
-            if not (templates / relative).is_file():
-                raise ValueError(
-                    "Missing local Replay shader templates. See docs/MAP_BUILDING.md#local-replay-shader-templates; "
-                    "use --graybox to convert without source textures."
-                )
         if len(names) > 1024:
-            raise ValueError("More than 1024 atlas materials; split or consolidate the source map")
+            raise ValueError(
+                "More than 1024 atlas materials; split or consolidate the source map"
+            )
         columns = 1
         while columns * columns < len(names):
             columns *= 2
@@ -207,13 +203,17 @@ def prepare(scene, out, mapid, args):
                 color = material.get("color", [0.5, 0.5, 0.5])
                 if any(not math.isfinite(c) or not 0 <= c <= 1 for c in color):
                     raise ValueError("Invalid material base color")
-                im = Image.new("RGBA", (64, 64), tuple(round(c * 255) for c in color) + (255,))
+                im = Image.new(
+                    "RGBA", (64, 64), tuple(round(c * 255) for c in color) + (255,)
+                )
                 if name in missing:
                     draw = ImageDraw.Draw(im)
                     for y in range(0, 64, 16):
                         for x in range(0, 64, 16):
                             if (x + y) // 16 % 2:
-                                draw.rectangle((x, y, x + 15, y + 15), fill=(150, 65, 150, 255))
+                                draw.rectangle(
+                                    (x, y, x + 15, y + 15), fill=(150, 65, 150, 255)
+                                )
             else:
                 resolved.append(name)
                 if "color" in material:
@@ -228,7 +228,9 @@ def prepare(scene, out, mapid, args):
                         for byte in range(256):
                             srgb = byte / 255
                             linear = (
-                                srgb / 12.92 if srgb <= 0.04045 else ((srgb + 0.055) / 1.055) ** 2.4
+                                srgb / 12.92
+                                if srgb <= 0.04045
+                                else ((srgb + 0.055) / 1.055) ** 2.4
                             )
                             linear *= factor
                             srgb = (
@@ -262,7 +264,9 @@ def prepare(scene, out, mapid, args):
             )
         repo = tools.resolve().parents[1]
         base = repo / "custom_map_sources/mp_test"
-        material = json.loads((base / "dump/maps/mp/mp_test.d3dbsp.material.json").read_text())
+        material = json.loads(
+            (base / "dump/maps/mp/mp_test.d3dbsp.material.json").read_text()
+        )
         levels = max(1, int(math.log2(size)) - 1)
         chain = [atlas.tobytes()]
         mip = atlas
@@ -286,11 +290,9 @@ def prepare(scene, out, mapid, args):
         (folder / (mapid + "_atlas.rgba")).write_bytes(pixels)
         atlas.resize((1024, 1024)).save(out / "atlas.png")
         shader = (
-            (tools / "map_surface.hlsl")
+            (tools / "map_surface_realtime.hlsl")
             .read_text()
             .replace("ATLAS_COLUMNS", str(columns))
-            .replace("SUN_DIRECTION", "float3(.3,.4,.8660254)")
-            .replace("SUN_COLOR", "float3(1,1,1)")
         )
         (out / "map.hlsl").write_text(shader)
         with (out / "shader.log").open("w") as log:
@@ -349,7 +351,10 @@ def preview(scene, path):
         h = hashlib.sha256(surface["material"].encode()).digest()
         color = tuple(80 + x // 2 for x in h[:3])
         for i in range(0, len(surface["indices"]), 3):
-            ps = [surface["vertices"][j]["position"] for j in surface["indices"][i : i + 3]]
+            ps = [
+                surface["vertices"][j]["position"]
+                for j in surface["indices"][i : i + 3]
+            ]
             projected = [
                 (
                     p[0] - 0.65 * p[1],
@@ -374,7 +379,9 @@ def preview(scene, path):
     im = Image.new("RGB", (1024, 576), (18, 20, 29))
     draw = ImageDraw.Draw(im)
     for _, tri, color in sorted(triangles, key=lambda t: t[0], reverse=True):
-        points = [(52 + (p[0] - mn[0]) * scale, 60 + (p[1] - mn[1]) * scale) for p in tri]
+        points = [
+            (52 + (p[0] - mn[0]) * scale, 60 + (p[1] - mn[1]) * scale) for p in tri
+        ]
         draw.polygon(points, fill=color)
     draw.text(
         (24, 18),

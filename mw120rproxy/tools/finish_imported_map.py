@@ -11,11 +11,12 @@ from radiant_source import blocks, properties
 import radiant_collision
 
 
-def finish(out, mapid, title, credit, source):
+def finish(out, mapid, title, credit, source, dump=None):
     if not re.fullmatch(r"mp_[a-z0-9_]{1,60}", mapid):
         raise ValueError("Invalid map id")
     out = out.resolve()
     source = source.resolve()
+    dump = (dump or out / "dump").resolve()
     package = out / "package"
     manifest = json.loads((package / "manifest.json").read_text())
     if manifest["id"] != mapid:
@@ -27,7 +28,9 @@ def finish(out, mapid, title, credit, source):
     manifest.update(
         title=title,
         description="Imported CoD4 map: static world and props, TDM. " + credit,
-        collision="convex-v2",
+        collision="convex-v3" if data[:8] == b"MWCOLL03" else "convex-v2",
+        visibility="all-visible-v1",
+        world="replay-1.20-native-v1",
     )
     if (out / "ladders.bin").exists():
         import ladder_data
@@ -68,11 +71,36 @@ def finish(out, mapid, title, credit, source):
         REPO,
         out / "layout.log",
     )
+    acts = REPO / "external/atian-cod-tools/build/bin/Release/acts.exe"
+    acts_report = out / "acts-validation.json"
+    if acts.is_file():
+        run(
+            [
+                sys.executable,
+                TOOLS / "validate_replay_package_acts.py",
+                "--acts",
+                acts,
+                "--game",
+                REPLAY,
+                "--package",
+                package,
+                "--map",
+                mapid,
+                "--output-dir",
+                out / "acts-validation",
+                "--log",
+                out / "acts-loader.log",
+                "--out",
+                acts_report,
+            ],
+            REPO,
+            out / "acts-validation-wrapper.log",
+        )
     if (out / "import_report.json").exists():
         report = json.loads((out / "import_report.json").read_text())
     else:
-
-        mesh = json.loads((out / f"dump/maps/mp/{mapid}.d3dbsp.render.json").read_text())
+        # Recovery for early builds that predate the pre-packaging checkpoint.
+        mesh = json.loads((dump / f"maps/mp/{mapid}.d3dbsp.render.json").read_text())
         report = {
             "surfaces": len(mesh["surfaces"]),
             "vertices": sum(len(s["vertices"]) for s in mesh["surfaces"]),
@@ -89,7 +117,7 @@ def finish(out, mapid, title, credit, source):
     if "color_images" in report and "materials" in report:
         from footstep_data import generate
 
-        mesh = json.loads((out / f"dump/maps/mp/{mapid}.d3dbsp.render.json").read_text())
+        mesh = json.loads((dump / f"maps/mp/{mapid}.d3dbsp.render.json").read_text())
         report["footsteps"] = generate(package, source, report, mesh)
         manifest = json.loads((package / "manifest.json").read_text())
         manifest["footsteps"] = "triangles-v1"
@@ -108,10 +136,18 @@ def finish(out, mapid, title, credit, source):
             if p.is_file()
         },
     )
+    if acts_report.is_file():
+        report["native_loader_validation"] = json.loads(acts_report.read_text())
+    else:
+        report["native_loader_validation"] = {
+            "success": False,
+            "skipped": True,
+            "reason": "AtianCodToolsCLI was not available",
+        }
     report["limitations"] = [
         "CoD4 scripts and general dynamic destruction are not executed.",
         "Collision uses compiled brushes and collision triangles; embedded prop physics is not imported.",
-        "Planar windows use imported pane collision and native Replay shatter effects/audio on shot, melee and mantle breaks. World lighting preserves CoD4 baked lightmaps and static sun occlusion; moving player shadows are not sampled by the custom shader.",
+        "Planar windows use imported pane collision and native Replay shatter effects/audio on shot, melee and mantle breaks. World lighting combines source indirect lightmaps with Replay sun visibility. Native GPU light grids are not yet generated.",
         "No bot navigation data is generated.",
     ]
     write_json(out / "build_report.json", report)
@@ -134,5 +170,6 @@ if __name__ == "__main__":
     p.add_argument("--map", required=True)
     p.add_argument("--title", required=True)
     p.add_argument("--credit", default="")
+    p.add_argument("--dump", type=Path)
     a = p.parse_args()
-    finish(a.build, a.map, a.title, a.credit, a.source)
+    finish(a.build, a.map, a.title, a.credit, a.source, a.dump)

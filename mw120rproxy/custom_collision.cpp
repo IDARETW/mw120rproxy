@@ -5,6 +5,7 @@
 #include "replay_bindings.h"
 #include "test_brushes.h"
 #include "collision_file.h"
+#include "collision_ray.h"
 #include "compound_collision.h"
 #include "custom_ladders.h"
 #include "custom_glass.h"
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <iterator>
 #include <mutex>
+#include <memory>
 
 namespace {
 uintptr_t g_base = 0;
@@ -33,6 +35,8 @@ bool g_loaded[5]{};
 std::vector<void*> g_shapes;
 std::string g_shapeMap;
 std::recursive_mutex g_shapeMutex;
+std::atomic<std::shared_ptr<const collisionray::World>> g_rays;
+std::atomic<unsigned> g_raySamples[5]{};
 template <class T> T Function(const replay::Binding& b) {
     return reinterpret_cast<T>(g_base + b.rva);
 }
@@ -92,6 +96,7 @@ void Destroy(int world) {
                 Function<void (*)(void*)>(replay::RemoveHavokReference)(shape);
         g_shapes.clear();
         g_shapeMap.clear();
+        g_rays.store(nullptr);
     }
     LOG_INFO("Collision", "custom brush bodies destroyed world=%d count=%u", world, destroyed);
 }
@@ -146,7 +151,8 @@ uintptr_t Create(int world) {
                     return result;
                 }
             } else if (active == "mp_test") {
-
+                // v12/v13 packages predate data-driven authoring. Preserve their
+                // proven arena collision; authored manifests require the file.
                 for (const auto& b : testbrushes::brushes) {
                     collisionfile::Brush out{};
                     memcpy(out.mins, b.mins, 12);
@@ -159,9 +165,9 @@ uintptr_t Create(int world) {
                 return result;
             }
             const bool compound = brushes.size() > compoundcollision::Threshold;
-            const size_t batchSize = compound ? compoundcollision::BatchSize : 1;
+            const auto batches = compoundcollision::Batches(brushes);
             const bool reuse = !g_shapes.empty();
-            const auto bodyCount = compoundcollision::BodyCount(brushes.size());
+            const auto bodyCount = batches.size();
             if (reuse && (g_shapeMap != active || g_shapes.size() != bodyCount)) {
                 LOG_ERR(
                     "Collision",
@@ -170,30 +176,41 @@ uintptr_t Create(int world) {
                 return result;
             }
             if (!reuse) {
+                auto rays = std::make_shared<collisionray::World>();
+                if (!rays->Build(brushes)) {
+                    LOG_ERR("Collision", "cannot build bullet collision hulls for map=%s",
+                            active.c_str());
+                    SetLastError(saved);
+                    return result;
+                }
+                g_rays.store(std::move(rays));
+                for (auto& samples : g_raySamples)
+                    samples = 0;
                 g_shapes.resize(bodyCount);
                 g_shapeMap = active;
             }
-            g_bodies[world].resize(compoundcollision::BodyCount(brushes.size()));
+            g_bodies[world].resize(bodyCount);
             g_loaded[world] = true;
             LOG_INFO("Collision", "initializing map=%s world=%d hulls=%zu bodies=%zu compound=%d",
                      active.c_str(), world, brushes.size(), g_bodies[world].size(), compound);
             const float origin[3]{}, identity[4]{0, 0, 0, 1};
             unsigned count = 0;
-            for (size_t i = 0; i < brushes.size(); i += batchSize) {
+            for (size_t batchIndex = 0; batchIndex < batches.size(); ++batchIndex) {
+                const auto& batch = batches[batchIndex];
+                const size_t i = batch.brushes.front();
                 const auto& brush = brushes[i];
                 // Native hknp constructors use meters; engine world units are inches/32.
-                auto& body = g_bodies[world][i / batchSize];
+                auto& body = g_bodies[world][batchIndex];
                 if (reuse)
-                    body.shape = g_shapes[i / batchSize];
+                    body.shape = g_shapes[batchIndex];
                 else if (!compound)
                     body.shape = MakeShape(brush);
                 else {
-                    const size_t end = (std::min)(i + batchSize, brushes.size());
-                    std::vector<compoundcollision::Instance> instances(end - i);
+                    std::vector<compoundcollision::Instance> instances(batch.brushes.size());
                     bool complete = true;
-                    for (size_t j = i; j < end; ++j) {
-                        instances[j - i].shape = MakeShape(brushes[j]);
-                        if (!instances[j - i].shape) {
+                    for (size_t j = 0; j < batch.brushes.size(); ++j) {
+                        instances[j].shape = MakeShape(brushes[batch.brushes[j]]);
+                        if (!instances[j].shape) {
                             complete = false;
                             break;
                         }
@@ -217,13 +234,14 @@ uintptr_t Create(int world) {
                     break;
                 }
                 if (!reuse)
-                    g_shapes[i / batchSize] = body.shape;
+                    g_shapes[batchIndex] = body.shape;
                 using Instantiate = unsigned (*)(int, const void*, int, const char*, const char*,
                                                  int, const float*, const float*, bool, bool, bool);
-                // WorldGeo reference=0 and CONTENTS_SOLID=1 match the native world path.
+                // A compound's filter belongs to the body, so every child must
+                // share its contents. Player clip must not stop bullets or light.
                 body.instance = Function<Instantiate>(replay::InstantiateStaticBody)(
-                    world, body.shape, 0, "custom-map-brush", "PM_Concrete", 1, origin, identity,
-                    true, true, false);
+                    world, body.shape, 0, "custom-map-brush", "PM_Concrete", int(batch.contents),
+                    origin, identity, true, true, false);
                 if (body.instance == ~0u) {
                     LOG_ERR("Collision", "native body creation failed world=%d brush=%zu", world,
                             i);
@@ -239,11 +257,12 @@ uintptr_t Create(int world) {
             }
             if (count != g_bodies[world].size())
                 Destroy(world);
-            else
+            else {
                 LOG_INFO(
                     "Collision",
                     "native collision initialized world=%d hulls=%zu bodies=%u shared_shapes=%d",
                     world, brushes.size(), count, int(reuse));
+            }
         }
     }
     SetLastError(saved);
@@ -251,6 +270,103 @@ uintptr_t Create(int world) {
 }
 }
 namespace customcollision {
+bool Visible(const float* start, const float* end) {
+    if (!start || !end)
+        return false;
+    const auto rays = g_rays.load();
+    if (!rays)
+        return false;
+    collisionray::Vec a{}, b{};
+    for (unsigned k = 0; k < 3; ++k) {
+        if (!std::isfinite(start[k]) || !std::isfinite(end[k]))
+            return false;
+        a[k] = start[k];
+        b[k] = end[k];
+    }
+    collisionray::Hit hit{1.0};
+    return !rays->Trace(a, b, hit, true, collisionfile::Solid);
+}
+void TraceShot(int world,
+               void* trace,
+               const float* start,
+               const float* end,
+               const float* bounds,
+               int mask,
+               int phase,
+               bool detectInside) {
+    // Bullet and melee callers use All (0). Other phases, swept bounds and
+    // unsupported contents retain the original native query result.
+    if (world < 0 || world >= 5 || phase != 0 || !(mask & collisionfile::SupportedContents) ||
+        !trace || !start || !end || !bounds)
+        return;
+    for (unsigned k = 0; k < 6; ++k)
+        if (bounds[k] != 0)
+            return;
+    collisionray::Vec a{}, b{};
+    for (unsigned k = 0; k < 3; ++k) {
+        if (!std::isfinite(start[k]) || !std::isfinite(end[k]))
+            return;
+        a[k] = start[k];
+        b[k] = end[k];
+    }
+    if (a == b)
+        return;
+    float original;
+    memcpy(&original, trace, 4);
+    if (!std::isfinite(original) || original < 0 || original > 1)
+        return;
+    auto* bytes = static_cast<unsigned char*>(trace);
+    unsigned originalType;
+    unsigned short originalId;
+    memcpy(&originalType, bytes + 0x24, 4);
+    memcpy(&originalId, bytes + 0x2C, 2);
+    const auto rays = g_rays.load();
+    const bool retagged = rays && originalType == 0 && original > 0 && original < 1 && !bytes[0x3D];
+    bool rewritten = false;
+    collisionray::Hit hit{originalType ? original : 1.0};
+    if (!retagged && rays && rays->Trace(a, b, hit, detectInside, uint32_t(mask)) &&
+        !hit.startSolid) {
+        rewritten = true;
+        memset(bytes, 0, 0x48);
+        const float fraction = float(hit.fraction);
+        float normal[3];
+        for (unsigned k = 0; k < 3; ++k) {
+            normal[k] = float(hit.normal[k]);
+        }
+        replaytrace::WriteContact(bytes, fraction, start, end, normal);
+        const unsigned contents = hit.contents, hitType = 1, worldEntity = 2046;
+        memcpy(bytes + 0x20, &contents, 4);
+        memcpy(bytes + 0x24, &hitType, 4);
+        memcpy(bytes + 0x2C, &worldEntity, 4);
+        // allsolid/startsolid offsets are verified against Replay's conversion.
+        bytes[0x3C] = hit.allSolid;
+        bytes[0x3D] = hit.startSolid;
+        bytes[0x3E] = hit.normal[2] >= .7;
+    } else if (retagged) {
+        // Custom Havok bodies deliberately have no stock asset/entity reference.
+        // Their native trace geometry is valid, but Replay encodes the result as
+        // hit type 0 and its weapon consumer discards the impact. Preserve every
+        // native contact field and attach the normal world-entity identity.
+        const unsigned hitType = 1, worldEntity = 2046;
+        memcpy(bytes + 0x24, &hitType, 4);
+        memcpy(bytes + 0x2C, &worldEntity, 4);
+    }
+    customsurfaces::ApplyShot(trace, start, end);
+    if (g_raySamples[world].fetch_add(1) < 12) {
+        float fraction;
+        unsigned flags, finalType;
+        unsigned short finalId;
+        memcpy(&fraction, trace, 4);
+        memcpy(&flags, static_cast<unsigned char*>(trace) + 0x1C, 4);
+        memcpy(&finalType, bytes + 0x24, 4);
+        memcpy(&finalId, bytes + 0x2C, 2);
+        LOG_INFO(
+            "BulletCollision",
+            "world=%d native=%.6f type=%u id=%u final=%.6f type=%u id=%u rewritten=%d retagged=%d surface=%u",
+            world, original, originalType, originalId, fraction, finalType, finalId, int(rewritten),
+            int(retagged), (flags >> 19) & 63);
+    }
+}
 hook::Status Install(uintptr_t base) {
     if (g_create.load() && g_shutdown.load())
         return hook::Status::Installed;

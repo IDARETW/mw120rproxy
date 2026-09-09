@@ -1,12 +1,12 @@
-from local_paths import UNLINKER
-
 """Run the supplied CoD4 light compiler and export its linked lightmaps offline."""
+
 import json, shutil, os
 from pathlib import Path
 
 
 def compile_lighting(game, out, bsp, run, tools):
-
+    # The supplied 64-bit light tool asserts in its allocator on this host.
+    # The supplied x86 compiler completes the same map and model-shadow bake.
     run(
         [
             game / "bin/cod4rad.exe",
@@ -43,7 +43,7 @@ def compile_lighting(game, out, bsp, run, tools):
         dump = out / "lighting"
         run(
             [
-                UNLINKER,
+                tools / "_vendor/OpenAssetTools/build/bin/Release_x86/Unlinker.exe",
                 "--no-color",
                 "--skip-obj",
                 "--include-assets",

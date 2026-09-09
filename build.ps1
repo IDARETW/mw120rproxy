@@ -61,7 +61,7 @@ if ($Tests) {
         if ($LASTEXITCODE -ne 0) {
             throw 'Shader raster test build failed'
         }
-        foreach ($rasterMode in @('biased', 'shadow', 'ao', 'night', 'glass', 'baked', 'baked_half', 'sky_half')) {
+        foreach ($rasterMode in @('biased', 'shadow', 'shadow_tiles', 'shadow_tiles_scaled', 'shadow_tiles_masked', 'source_baked', 'source_flat', 'source_mask_near', 'source_mask_far', 'source_mask_blocked', 'source_mask_other_sun', 'night', 'glass')) {
             & './test-out/render_raster_tests.exe' 'mw120rproxy/tools/map_surface_realtime.hlsl' $rasterMode
             if ($LASTEXITCODE -ne 0) {
                 throw "Shader raster test failed: $rasterMode"

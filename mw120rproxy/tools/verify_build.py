@@ -154,6 +154,23 @@ localize_source = (source_root / "tests/replay_localize_fixture.h").read_text()
 localize_bytes = cpp_byte_array(localize_source, "ReplayLocalizeCode")
 if len(localize_bytes) != 0x6B or target.get_data(0x13CC2A0, len(localize_bytes)) != localize_bytes:
     raise SystemExit("Native localization test fixture differs from Replay")
+bullet_bytes = cpp_byte_array(
+    (source_root / "tests/replay_bullet_fixture.h").read_text(), "ReplayBulletCode"
+)
+if len(bullet_bytes) != 0x29A or target.get_data(0x11D5390, len(bullet_bytes)) != bullet_bytes:
+    raise SystemExit("Native bullet consumer test fixture differs from Replay")
+client_bullet_bytes = cpp_byte_array(
+    (source_root / "tests/replay_client_bullet_fixture.h").read_text(), "ReplayClientBulletCode"
+)
+if (
+    len(client_bullet_bytes) != 0x23F
+    or target.get_data(0x173CD20, len(client_bullet_bytes)) != client_bullet_bytes
+):
+    raise SystemExit("Native client bullet consumer test fixture differs from Replay")
+trace_hit_source = (source_root / "tests/replay_trace_hit_fixture.h").read_text()
+trace_hit_bytes = cpp_byte_array(trace_hit_source, "ReplayTraceHitIdCode")
+if len(trace_hit_bytes) != 0x21 or target.get_data(0x1295A60, len(trace_hit_bytes)) != trace_hit_bytes:
+    raise SystemExit("Native trace hit-id decoder fixture differs from Replay")
 report = {
     "dll": str(args.dll.resolve()),
     "sha256": hashlib.sha256(args.dll.read_bytes()).hexdigest(),
@@ -166,6 +183,9 @@ report = {
     "native_physics_fixtures_checked": physics_fixtures,
     "native_metadata_fixtures_checked": metadata_fixtures,
     "native_image_fixtures_checked": image_fixtures,
+    "native_bullet_consumer_fixture_checked": True,
+    "native_client_bullet_consumer_fixture_checked": True,
+    "native_trace_hit_decoder_fixture_checked": True,
     "game_launched": False,
 }
 args.out.parent.mkdir(parents=True, exist_ok=True)

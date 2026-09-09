@@ -373,5 +373,10 @@
     "name": "InteractionRange",
     "rva": "0x1b09730",
     "bytes": "4863c1488d0d0662760d488b04c1"
+  },
+  {
+    "name": "PhysicsClientBulletTrace",
+    "rva": "0x10992D0",
+    "bytes": "488bc4555356574154415541564157"
   }
 ]

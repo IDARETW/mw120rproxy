@@ -3,6 +3,8 @@
 import json, math, struct
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+from source_atlases import resize_color, resize_data
+from map_lighting import sun_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -52,7 +54,7 @@ def ambient_bytes(fill):
     return b"MWRAMB01" + probe
 
 
-def prepare(folder, mapid, columns, direction, color, sky_faces=None):
+def mipmaps(folder, mapid, columns):
     folder = Path(folder)
     stem = mapid + ".d3dbsp"
     path = folder / (stem + ".material.json")
@@ -64,29 +66,23 @@ def prepare(folder, mapid, columns, direction, color, sky_faces=None):
         im = Image.frombytes("RGBA", (w, h), file.read_bytes()[: w * h * 4])
         chain = [im.tobytes()]
         for level in range(1, levels):
-            im = im.resize((max(1, im.width // 2), max(1, im.height // 2)), Image.Resampling.BOX)
+            size = (max(1, im.width // 2), max(1, im.height // 2))
+            im = (
+                resize_data(im, size, Image.Resampling.BOX)
+                if definition.get("format") == 6
+                else resize_color(im, size, Image.Resampling.BOX)
+            )
             chain.append(im.tobytes())
         file.write_bytes(b"".join(chain))
         definition["mipCount"] = levels
     path.write_text(json.dumps(material, indent=2) + "\n")
-    length = math.sqrt(sum(v * v for v in direction))
-    direction = [v / length for v in direction]
-    # Construct a perpendicular up vector, including maps with a vertical sun.
-    axis = [0, 0, 1] if abs(direction[2]) < 0.99 else [1, 0, 0]
-    dot = sum(a * b for a, b in zip(axis, direction))
-    up = [a - dot * b for a, b in zip(axis, direction)]
-    length = math.sqrt(sum(v * v for v in up))
-    up = [v / length for v in up]
-    peak = max(max(color), 0.001)
-    lighting = {
-        "schema": 1,
-        "intensity": min(1.4, max(0.6, peak * 0.65)),
-        "color": [max(0, min(1, c / peak)) for c in color],
-        "direction": direction,
-        "up": up,
-    }
-    if sky_faces is not None:
-        lighting["ambient"] = sky_ambient(sky_faces)
+
+
+def prepare(folder, mapid, columns, direction, color, sky_faces=None):
+    folder = Path(folder)
+    stem = mapid + ".d3dbsp"
+    mipmaps(folder, mapid, columns)
+    lighting = sun_settings(direction, color)
     (folder / (stem + ".lighting.json")).write_text(json.dumps(lighting, indent=2) + "\n")
 
 
@@ -105,7 +101,7 @@ def preview(package, mapid, source=None):
         )
         provenance = str(candidate)
     else:
-
+        # Orthographic rendering of the compiled map.
         mesh = json.loads((package.parent / f"dump/maps/mp/{mapid}.d3dbsp.render.json").read_text())
         surfaces = [
             s
@@ -139,13 +135,13 @@ def preview(package, mapid, source=None):
                 )
         for _, xy, color in sorted(triangles, key=lambda t: t[0]):
             draw.polygon(xy, fill=color)
-        font = ImageFont.truetype("segoeuib.ttf", 32)
+        font = ImageFont.truetype("C:/Windows/Fonts/segoeuib.ttf", 32)
         draw.text((48, 28), "MP_TEST  /  RADIANT", font=font, fill="white")
         draw.text(
             (48, 72),
             "Custom arena - compiled map overview",
             fill=(173, 192, 211),
-            font=ImageFont.truetype("segoeui.ttf", 18),
+            font=ImageFont.truetype("C:/Windows/Fonts/segoeui.ttf", 18),
         )
         provenance = "Orthographic render of compiled " + mapid + " geometry"
     (package / "preview.rgba").write_bytes(
@@ -154,12 +150,6 @@ def preview(package, mapid, source=None):
     canvas.save(package.parent / "preview.png")
     manifest = json.loads((package / "manifest.json").read_text())
     manifest["preview"] = "rgba8-v1"
-    lighting = package.parent / f"dump/maps/mp/{mapid}.d3dbsp.lighting.json"
-    if lighting.exists():
-        ambient = json.loads(lighting.read_text()).get("ambient")
-        if ambient:
-            (package / "ambient.bin").write_bytes(ambient_bytes(ambient["diffuse_fill"]))
-            manifest["ambient"] = "sh-probe-v1"
     (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (package.parent / "preview_source.json").write_text(
         json.dumps({"source": provenance}, indent=2) + "\n"

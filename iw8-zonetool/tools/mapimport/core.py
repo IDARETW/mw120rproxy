@@ -115,7 +115,9 @@ def entities(text):
         i += 1
         ent = {}
         while i < len(items) and items[i] != "}":
-            if i + 1 >= len(items) or not all(t.startswith('"') for t in items[i : i + 2]):
+            if i + 1 >= len(items) or not all(
+                t.startswith('"') for t in items[i : i + 2]
+            ):
                 raise ValueError("Expected quoted entity key/value")
             unquote = lambda t: t[1:-1].replace('\\"', '"').replace("\\\\", "\\")
             key, value = map(unquote, items[i : i + 2])
@@ -171,7 +173,9 @@ def hull_from_planes(planes):
         det = dot(a, bc)
         if abs(det) < 1e-9:
             continue
-        p = mul(add(add(mul(bc, da), mul(cross(c, a), db)), mul(cross(a, b), dc)), 1 / det)
+        p = mul(
+            add(add(mul(bc, da), mul(cross(c, a), db)), mul(cross(a, b), dc)), 1 / det
+        )
         if all(dot(n, p) <= d + 0.002 for n, d in normalized) and not any(
             dot(sub(p, q), sub(p, q)) < 1e-6 for q in points
         ):
@@ -194,7 +198,9 @@ def triangulate(points):
     xy = [[p[k] for k in range(3) if k != axis] for p in points]
     area = sum(p[0] * q[1] - q[0] * p[1] for p, q in zip(xy, xy[1:] + xy[:1]))
     sign = 1 if area > 0 else -1
-    turn = lambda a, b, c: (sign * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])))
+    turn = lambda a, b, c: (
+        sign * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+    )
     remaining, out = list(range(len(points))), []
     while len(remaining) > 3:
         for j, b in enumerate(remaining):
@@ -249,7 +255,9 @@ class Scene:
             for v in vertices:
                 v["position"] = vec(v["position"])
                 if any(abs(x) > 100000 for x in v["position"]):
-                    raise ValueError("Geometry exceeds Replay coordinate limits; use --scale")
+                    raise ValueError(
+                        "Geometry exceeds Replay coordinate limits; use --scale"
+                    )
                 v["uv"] = vec(v.get("uv", [0, 0]), 2)
                 v["normal"] = unit(vec(v["normal"]))
             if any(type(i) is not int or i < 0 or i >= len(vertices) for i in indices):

@@ -1,4 +1,5 @@
 #include "custom_doors.h"
+#include "custom_collision.h"
 #include "custom_glass.h"
 #include "glass_file.h"
 #include "custom_physics.h"
@@ -54,6 +55,20 @@ using PhysicsTrace = void (*)(int,
                               const unsigned char*,
                               int);
 std::atomic<PhysicsTrace> g_physicsBullet{nullptr}, g_physicsLegacy{nullptr};
+using ClientPhysicsTrace = void (*)(int,
+                                    void*,
+                                    const float*,
+                                    const float*,
+                                    const float*,
+                                    const int*,
+                                    int,
+                                    int,
+                                    int,
+                                    int,
+                                    const unsigned char*,
+                                    int,
+                                    bool);
+std::atomic<ClientPhysicsTrace> g_physicsClient{nullptr};
 std::atomic<unsigned> g_shotSamples{0};
 std::shared_ptr<State> Active() {
     return customphysics::OwnsEmptyWorld() ? g_state.load() : nullptr;
@@ -121,6 +136,8 @@ void PhysicsBullet(int world,
                    int phase) {
     g_physicsBullet.load()(world, trace, start, end, bounds, skip, count, children, mask,
                            locational, priority, phase);
+    if (locational)
+        customcollision::TraceShot(world, trace, start, end, bounds, mask, phase, true);
     if (world >= 0 && world < 5)
         customdoors::Trace(trace, start, end, bounds, mask, locational && mask == 0x2806191);
     // The exact Replay binary has only weapon-bullet and melee callers here.
@@ -142,6 +159,8 @@ void PhysicsLegacy(int world,
     const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_base;
     g_physicsLegacy.load()(world, trace, start, end, bounds, skip, count, children, mask,
                            locational, priority, phase);
+    if (locational)
+        customcollision::TraceShot(world, trace, start, end, bounds, mask, phase, false);
     if (world >= 0 && world < 5) {
         customsurfaces::Apply(trace, start, end);
         customdoors::Trace(trace, start, end, bounds, mask, locational && mask == 0x2806191);
@@ -149,6 +168,29 @@ void PhysicsLegacy(int world,
     if ((world == 0 || world == 1) && locational &&
         (caller == 0x11D545B || (caller >= 0xFC0550 && caller < 0xFC0800 && mask == 0x2806191)))
         Shot(start, end, trace, mask == 0x2806191 ? "melee" : "bullet");
+}
+void PhysicsClient(int world,
+                   void* trace,
+                   const float* start,
+                   const float* end,
+                   const float* bounds,
+                   const int* skip,
+                   int count,
+                   int children,
+                   int mask,
+                   int locational,
+                   const unsigned char* priority,
+                   int phase,
+                   bool detectInside) {
+    g_physicsClient.load()(world, trace, start, end, bounds, skip, count, children, mask,
+                           locational, priority, phase, detectInside);
+    // Multiplayer simulates visible bullet hits through this separate client
+    // query. Its native caller computes impact position/material after return.
+    if (world != 4 || !locational || phase != 0 || mask != 0x2806931)
+        return;
+    customcollision::TraceShot(world, trace, start, end, bounds, mask, phase, detectInside);
+    customdoors::Trace(trace, start, end, bounds, mask);
+    Shot(start, end, trace, "client-bullet");
 }
 bool TraceBullet(void* bp,
                  const void* weapon,
@@ -198,12 +240,9 @@ void TraceSlide(void* self,
         }
     if (best == ~0u)
         return;
-    // Exact Replay trace_t: fraction 0, normal 4, flags 1C, contents 20,
-    // hitType 24, hitId 2C; total 48h (BulletTraceResults.hitEnt begins at 48h).
-    memset(result, 0, 0x48);
+    memset(result, 0, replaytrace::Size);
     auto* bytes = static_cast<unsigned char*>(result);
-    memcpy(bytes, &limit, 4);
-    memcpy(bytes + 4, normal.data(), 12);
+    replaytrace::WriteContact(bytes, limit, start, end, normal.data());
     const unsigned contents = 1, type = 1;
     const unsigned short entity = 2046;
     memcpy(bytes + 0x20, &contents, 4);
@@ -227,13 +266,43 @@ void TraceLegacy(void* self,
     // The exact Replay Mantle_Move glass-only overlap query returns here.
     if (reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_base != 0x11076AE)
         return;
-    for (unsigned i = 0; i < state->panes.size(); ++i)
-        if (!state->broken[i]) {
-            float fraction;
-            glassfile::Vec n;
-            if (glassfile::Hit(state->panes[i], start, end, bounds, 1, fraction, n, true))
-                Break(state, i, "mantle", start, end, fraction, n);
+
+    // Mantle_Move performs a stationary overlap with the player's full
+    // capsule. Using those extents as a damage volume reaches nearby vehicle
+    // windows while the player is landing on the solid roof. Probe a narrow
+    // core around the capsule center instead: it is wide enough to cover
+    // movement between frames, but a pane breaks only when the player's body
+    // crosses it. Intersecting pane fragments produce one stock break.
+    if (!bounds)
+        return;
+    float centerBounds[6]{};
+    glassfile::Vec center{};
+    for (unsigned k = 0; k < 3; ++k) {
+        centerBounds[k] = bounds[k];
+        centerBounds[k + 3] = 4;
+        center[k] = start[k] + bounds[k];
+    }
+    unsigned best = ~0u;
+    float bestDistance = INFINITY;
+    glassfile::Vec bestNormal{};
+    for (unsigned i = 0; i < state->panes.size(); ++i) {
+        if (state->broken[i])
+            continue;
+        float fraction;
+        glassfile::Vec normal;
+        if (!glassfile::Hit(state->panes[i], start, end, centerBounds, 1, fraction, normal, true))
+            continue;
+        const float distance =
+            std::abs(glassfile::Dot(glassfile::Sub(center, state->panes[i].vertices[0]),
+                                    state->panes[i].normal));
+        if (distance < bestDistance) {
+            best = i;
+            bestDistance = distance;
+            bestNormal = normal;
         }
+    }
+    if (best != ~0u)
+        Break(state, best, "mantle", center.data(), center.data(), 0, bestNormal);
 }
 }
 namespace customglass {
@@ -243,6 +312,21 @@ void PumpEffects() {
         return;
     // Called on the existing client/main-thread overlay seam. Physics/server
     // callbacks only enqueue events; particle asset access stays on this thread.
+    {
+        std::lock_guard lock(state->mutex);
+        if (state->events.empty())
+            return;
+    }
+    int connected = 0, deltaTime = 1, time = 0;
+    uintptr_t cg = 0;
+    // Preserve the native Glass_PlayEffect gates without consuming the queue
+    // while the client is transitioning or its predicted time is unavailable.
+    if (!safemem::ReadBytes(reinterpret_cast<void*>(g_base + 0xEEF1288), &connected, 4) ||
+        connected != 9 ||
+        !safemem::ReadBytes(reinterpret_cast<void*>(g_base + 0xF26F940), &cg, 8) || !cg ||
+        !safemem::ReadBytes(reinterpret_cast<void*>(cg + 0x2F20), &deltaTime, 4) || deltaTime ||
+        !safemem::ReadBytes(reinterpret_cast<void*>(cg + 0x65A4), &time, 4))
+        return;
     std::vector<Event> events;
     {
         std::lock_guard lock(state->mutex);
@@ -251,9 +335,9 @@ void PumpEffects() {
         state->events.erase(state->events.begin(), state->events.begin() + count);
     }
     for (const auto& event : events) {
-        // This definition is serialized in common_mp (five emitters), unlike
-        // the vehicle-window name which is only a script reference there.
-        const char* name = "vfx/core/impacts/small_glass";
+        // Both code/glass definitions in Replay common_mp contain a MODEL
+        // emitter (type 7). Use pane shatter debris instead of a tiny impact FX.
+        const char* name = glassfile::ShatterEffect(state->panes[event.pane]);
         auto* effect = reinterpret_cast<void* (*)(int, const char*, int)>(
             g_base + replay::FindAsset.rva)(44, name, 0);
         uintptr_t assetName = 0;
@@ -263,16 +347,7 @@ void PumpEffects() {
             safemem::ReadString(reinterpret_cast<const char*>(assetName), text, sizeof(text)) &&
             strcmp(text, name) == 0;
         unsigned handle = 0;
-        int connected = 0, deltaTime = 1, time = 0;
-        uintptr_t cg = 0;
-        // Preserve Glass_PlayEffect's local-client gates, but retain the actual
-        // particle handle instead of incorrectly reporting name lookup as a spawn.
-        if (found &&
-            safemem::ReadBytes(reinterpret_cast<void*>(g_base + 0xEEF1288), &connected, 4) &&
-            connected == 9 &&
-            safemem::ReadBytes(reinterpret_cast<void*>(g_base + 0xF26F940), &cg, 8) && cg &&
-            safemem::ReadBytes(reinterpret_cast<void*>(cg + 0x2F20), &deltaTime, 4) && !deltaTime &&
-            safemem::ReadBytes(reinterpret_cast<void*>(cg + 0x65A4), &time, 4)) {
+        if (found) {
             float axis[9];
             memcpy(axis, event.normal.data(), 12);
             reinterpret_cast<void (*)(const float*, float*, float*)>(
@@ -285,6 +360,9 @@ void PumpEffects() {
             handle = reinterpret_cast<unsigned (*)(int, void*, int, const float*, const float*)>(
                 g_base + replay::PlayOrientedEffect.rva)(0, &effect, time, origin.data(), axis);
         }
+        if (!found || !handle)
+            LOG_WARN("Glass", "shard spawn failed pane=%u effect='%s' asset=%d handle=%08X",
+                     event.pane, name, int(found), handle);
         auto* alias = reinterpret_cast<void* (*)(const char*)>(
             g_base + replay::SoundAliasByName.rva)("glass_pane_breakout");
         unsigned aliasId = 0;
@@ -295,8 +373,8 @@ void PumpEffects() {
                 g_base + replay::SoundAtPosition.rva)(aliasId, 0, 2046, event.origin.data());
         LOG_INFO(
             "Glass",
-            "pane=%u shatter asset=%d particleHandle=%08X client=%d time=%d positional sound=%d",
-            event.pane, int(found), handle, connected, time, int(aliasId != 0));
+            "pane=%u shatter='%s' asset=%d particleHandle=%08X client=%d time=%d positional sound=%d",
+            event.pane, name, int(found), handle, connected, time, int(aliasId != 0));
     }
 }
 void Load(const std::filesystem::path& directory) {
@@ -357,6 +435,11 @@ hook::Status Install(uintptr_t base) {
     status = hook::Install(reinterpret_cast<void*>(base + replay::PhysicsBulletTrace.rva),
                            &PhysicsBullet, replay::PhysicsBulletTrace.bytes,
                            replay::PhysicsBulletTrace.size, g_physicsBullet);
+    if (status != hook::Status::Installed)
+        return status;
+    status = hook::Install(reinterpret_cast<void*>(base + replay::PhysicsClientBulletTrace.rva),
+                           &PhysicsClient, replay::PhysicsClientBulletTrace.bytes,
+                           replay::PhysicsClientBulletTrace.size, g_physicsClient);
     if (status != hook::Status::Installed)
         return status;
     status = hook::Install(reinterpret_cast<void*>(base + replay::PhysicsLegacyTrace.rva),

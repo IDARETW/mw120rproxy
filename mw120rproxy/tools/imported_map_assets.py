@@ -1,13 +1,16 @@
 from local_paths import COD4
 
 """Read bounded, offline OpenAssetTools IW3 intermediates for Replay conversion."""
+
 import json
 import math
 import re
 from itertools import combinations
 from pathlib import Path
-from replay_mesh_math import pack, quaternion, unpack_normal
+from replay_mesh_math import pack, quaternion, unpack_frame
 from radiant_collision import cross, dot, sub
+from vertex_attributes import color
+from material_channels import describe
 
 
 def packed_normal(n, t=None, sign=1):
@@ -33,13 +36,14 @@ def read_material(root, name):
     if not path.exists():
         from cod4_assets import material_image, BlendedMaterial, ShadowOnlyMaterial
 
-        raw = COD4 / "raw"
+        raw = (COD4 / "raw")
         base = name.removeprefix("mc/").removeprefix("wc/")
         try:
             image, alpha = material_image(raw, base)
         except BlendedMaterial:
             image, _ = material_image(raw, base, allow_blend=True)
             return {
+                **describe(root, name, raw=raw),
                 "image": image,
                 "alpha_test": False,
                 "blended": True,
@@ -49,6 +53,7 @@ def read_material(root, name):
         except ShadowOnlyMaterial:
             return {"skip": "shadow-only stock reference", "techset": "stock raw material"}
         return {
+            **describe(root, name, raw=raw),
             "image": image,
             "alpha_test": alpha,
             "techset": "stock raw material",
@@ -80,21 +85,31 @@ def read_material(root, name):
     )
     offset = {"offset1": 0.03125, "offset2": 0.0625}.get(visible.get("polygonOffset"), 0.0)
     return {
+        **describe(root, name),
         "image": color,
         "alpha_test": alpha and not blended,
         "blended": blended,
         "techset": tech,
         "depth_offset": offset,
+        "alpha_test_mode": next(
+            (
+                s["alphaTest"]
+                for s in j.get("stateBits", [])
+                if s.get("colorWriteRgb") and s.get("alphaTest") in ("gt0", "lt128", "ge128")
+            ),
+            "ge128",
+        ),
     }
 
 
 def read_obj(root, name):
     """Reverse OAT OBJ's Z-up -> Y-up and flipped V transformations."""
     if name.startswith(","):
-
+        # CoD4 fastfiles can reference stock models supplied by common zones.
+        # Recover those from matching Mod Tools raw assets.
         from cod4_assets import load_model, transformed
 
-        raw = COD4 / "raw"
+        raw = (COD4 / "raw")
         return [transformed(s, [0, 0, 0], [0, 0, 0], 1) for s in load_model(raw, name[1:])]
     path = safe_asset(root, "model_export", name, "_lod0.obj")
     positions = []
@@ -150,7 +165,38 @@ def read_obj(root, name):
             current["indices"].extend(tri)
     if not surfaces:
         raise ValueError(f"{name}: empty model")
+    for surface in surfaces:
+        tangent_frames(surface)
     return surfaces
+
+
+def tangent_frames(surface):
+    """Derive each OBJ tangent from its authored UVs, retaining mirrored handedness."""
+    vertices = surface["vertices"]
+    tangents = [[0.0, 0.0, 0.0] for _ in vertices]
+    bitangents = [[0.0, 0.0, 0.0] for _ in vertices]
+    indices = surface["indices"]
+    for offset in range(0, len(indices), 3):
+        ids = indices[offset : offset + 3]
+        a, b, c = [vertices[i] for i in ids]
+        edge1, edge2 = sub(b["position"], a["position"]), sub(c["position"], a["position"])
+        uv1, uv2 = sub(b["uv"], a["uv"]), sub(c["uv"], a["uv"])
+        determinant = uv1[0] * uv2[1] - uv1[1] * uv2[0]
+        if abs(determinant) < 1e-12:
+            continue
+        face = cross(edge1, edge2)
+        weight = math.sqrt(dot(face, face)) / determinant
+        tangent = [(edge1[k] * uv2[1] - edge2[k] * uv1[1]) * weight for k in range(3)]
+        bitangent = [(edge2[k] * uv1[0] - edge1[k] * uv2[0]) * weight for k in range(3)]
+        for i in ids:
+            tangents[i] = [x + y for x, y in zip(tangents[i], tangent)]
+            bitangents[i] = [x + y for x, y in zip(bitangents[i], bitangent)]
+    for vertex, tangent, bitangent in zip(vertices, tangents, bitangents):
+        n = vertex["normal_vec"]
+        if dot(cross(tangent, n), cross(tangent, n)) < 1e-10:
+            tangent = cross([0, 0, 1] if abs(n[2]) < 0.9 else [0, 1, 0], n)
+        vertex["tangent_vec"] = tangent
+        vertex["binormal_sign"] = -1 if dot(cross(n, tangent), bitangent) < 0 else 1
 
 
 def place(surface, origin, axis, scale):
@@ -161,12 +207,20 @@ def place(surface, origin, axis, scale):
     vertices = []
     for v in surface["vertices"]:
         p = rotate(v["position"])
-        n = rotate(v["normal_vec"] if "normal_vec" in v else unpack_normal(v["normal"]))
+        if "normal_vec" in v:
+            n = v["normal_vec"]
+            t = v.get("tangent_vec")
+            sign = v.get("binormal_sign", 1)
+        else:
+            n, t, sign = unpack_frame(v["normal"])
+        n = rotate(n)
+        t = rotate(t) if t is not None else None
         vertices.append(
             {
                 "position": [origin[i] + p[i] * scale for i in range(3)],
                 "uv": v["uv"],
-                "normal": packed_normal(n),
+                "normal": packed_normal(n, t, sign),
+                "color": color(v),
             }
         )
     return {**surface, "vertices": vertices}

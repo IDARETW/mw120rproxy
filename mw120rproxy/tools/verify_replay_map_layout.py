@@ -11,7 +11,148 @@ import json
 from pathlib import Path
 import struct
 import re
+import math
 import pefile
+
+
+def validate_world_model_bounds(world, model):
+    values = struct.unpack_from("<7f", model, 0x38)
+    if not any(values):
+        return  # Legacy packages did not populate this optional culling data.
+    if any(not math.isfinite(v) for v in values) or any(v < 0 for v in values[3:]):
+        raise ValueError("Invalid world-model bounds")
+    bounds = struct.unpack_from("<6f", world, 0x78)
+    expected = (*values[:3], *(v + 1 for v in values[3:6]))
+    if any(abs(a - b) > max(.005, abs(b) * 2e-7) for a, b in zip(bounds, expected)):
+        raise ValueError("Global bounds differ from the padded world model")
+    radius = math.sqrt(sum(v * v for v in values[3:6]))
+    if abs(values[6] - radius) > max(.005, radius * 2e-7):
+        raise ValueError("World-model radius does not enclose its bounds")
+
+
+def validate_render_asset_order(types):
+    """Dependencies precede users; unused shader pruning may change the counts."""
+    cursor = 0
+    for kind, maximum in ((19, 16), (14, 8), (17, 8)):
+        start = cursor
+        while cursor < len(types) and types[cursor] == kind:
+            cursor += 1
+        if cursor - start > maximum or (kind != 19 and cursor == start):
+            raise ValueError("Unexpected render shader/image dependency count")
+    materials = 0
+    while types[cursor : cursor + 2] == [18, 11]:
+        cursor += 2
+        materials += 1
+    if not 1 <= materials <= 4 or types[cursor:] != [31, 25]:
+        raise ValueError("Unexpected render asset dependency order")
+
+
+def validate_coverage_state(techset_name, count, technique_type, technique):
+    """The owned cutout passes must agree on depth, culling, and atlas layout."""
+    masked = b"_foliage_" in techset_name and count in (2, 4)
+    if not masked:
+        return
+    expected = {
+        0: (0xE00, 0xFFFFFF0F00000000),
+        27: (0xE20, 0xFFFFFFFF00000000),
+        28: (0xE20, 0xFFFFFFFF00000000),
+        34: (0x800, 0),
+    }
+    state = struct.unpack_from("<QQ", technique, 0xA0)
+    if technique[0x9C] != 35 or state != expected.get(technique_type):
+        raise ValueError("Masked BSP coverage/depth states disagree")
+    if technique_type in (27, 28) and technique[0x82] != 0:
+        raise ValueError("Masked shadow pass must have no color target")
+
+
+def validate_source_atlas_bindings(bindings, image_formats):
+    """Color is sRGB; normal/specular/lightmap data must interpolate linearly."""
+    if set(bindings) != {0, 9, 59}:
+        raise ValueError("Source-channel material is missing its three atlas semantics")
+    if len(set(bindings.values())) != 3:
+        raise ValueError("Source-channel atlases cannot alias one image")
+    for semantic, expected in ((0, 7), (9, 6), (59, 6)):
+        if image_formats.get(bindings[semantic].lstrip(b",")) != expected:
+            raise ValueError("Source-channel atlas has the wrong linear/sRGB format")
+
+
+def validate_vertex_attributes(gpu, aux, vertex_count, indices=None):
+    """Check the serialized streams consumed by the owned Replay vertex shader."""
+    layers = struct.unpack_from("<I", gpu, 4)[0]
+    if layers not in (1, 2, 4):
+        raise ValueError("Unsupported world vertex texture-coordinate layers")
+    offsets = {off: struct.unpack_from("<I", gpu, off)[0] for off in (12, 16, 20, 24)}
+    spans = []
+    for off, stride in ((12, 4), (16, 8), (20, 4), (24, 8 * layers)):
+        start = offsets[off]
+        if off in (16, 20) and not start:
+            if layers > 1:
+                raise ValueError("Owned atlas vertices require lightmap and color streams")
+            continue
+        end = start + vertex_count * stride
+        if start % 4 or end > len(aux):
+            raise ValueError("Auxiliary attribute exceeds buffer")
+        if any(start < old_end and old_start < end for old_start, old_end in spans):
+            raise ValueError("Auxiliary vertex streams overlap")
+        spans.append((start, end))
+    metadata = []
+    parameters = []
+    for index in range(vertex_count):
+        values = struct.unpack_from(f"<{layers * 2}f", aux, offsets[24] + index * layers * 8)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("Nonfinite world texture-coordinate attribute")
+        if layers > 1:
+            current = values[2:4]
+            if any(value != int(value) or not 0 <= value < 65536 for value in current):
+                raise ValueError("Invalid atlas tile or material flags")
+            if int(current[1]) & ~127:
+                raise ValueError("Unsupported atlas material flags")
+            metadata.append(current)
+        if layers == 4:
+            current = values[4:8]
+            if any(abs(value) > 1e6 for value in current):
+                raise ValueError("Invalid source material parameters")
+            parameters.append(current)
+        if offsets[16]:
+            lm = struct.unpack_from("<2f", aux, offsets[16] + index * 8)
+            if not all(math.isfinite(value) for value in lm):
+                raise ValueError("Nonfinite world lightmap coordinate")
+            if layers > 1 and int(metadata[-1][1]) & 4 and any(not 0 <= value <= 1 for value in lm):
+                raise ValueError("Baked lightmap coordinate exceeds its atlas")
+    if indices is None:
+        indices = range(vertex_count - vertex_count % 3)
+    for triangle in zip(indices[::3], indices[1::3], indices[2::3]):
+        if layers > 1 and any(metadata[index] != metadata[triangle[0]] for index in triangle[1:]):
+            raise ValueError("Atlas material metadata changes within a triangle")
+        if layers == 4 and any(
+            parameters[index] != parameters[triangle[0]] for index in triangle[1:]
+        ):
+            raise ValueError("Source material parameters change within a triangle")
+
+
+def validate_conversion_sidecars(package, manifest):
+    """Require the manifest and runtime sidecar bytes to describe the same format."""
+    from radiant_collision import validate as validate_collision
+
+    contracts = {"boxes-v1": b"MWCOLL01", "convex-v2": b"MWCOLL02", "convex-v3": b"MWCOLL03"}
+    contract = manifest.get("collision")
+    if contract is not None and contract not in contracts:
+        raise ValueError("Unsupported collision manifest")
+    report = {}
+    path = package / "collision.bin"
+    if contract or path.exists():
+        data = path.read_bytes()
+        if contract and data[:8] != contracts[contract]:
+            raise ValueError("Collision manifest differs from sidecar version")
+        report["collision_hulls"] = validate_collision(data)
+    path = package / "ambient_grid.bin"
+    if manifest.get("ambient_grid") or path.exists():
+        from spatial_ambient import validate_grid
+
+        if manifest.get("ambient_grid") != "spatial-dc-v1":
+            raise ValueError("Unsupported spatial ambient manifest")
+        report["ambient_grid"] = validate_grid(path)
+    return report
 
 
 def verify(game, package, map_id):
@@ -33,9 +174,11 @@ def verify(game, package, map_id):
             is not None
         )
 
-    from radiant_source import validate_collision
-
     manifest = json.loads((package / "manifest.json").read_text())
+    if manifest.get("visibility") != "all-visible-v1":
+        raise ValueError("Package must declare the generated no-tome visibility contract")
+    if manifest.get("world") != "replay-1.20-native-v1":
+        raise ValueError("Package must declare the Replay 1.20 native world format")
     if manifest.get("ladders") or (package / "ladders.bin").exists():
         from ladder_data import validate as validate_ladders
 
@@ -48,16 +191,7 @@ def verify(game, package, map_id):
         if manifest.get("glass") not in ("panes-v1", "panes-v2"):
             raise ValueError("Unsupported glass manifest")
         validate_glass((package / "glass.bin").read_bytes())
-    if manifest.get("collision") not in (None, "boxes-v1", "convex-v2"):
-        raise ValueError("Unsupported collision manifest")
-    if manifest.get("collision") or (package / "collision.bin").exists():
-        data = (package / "collision.bin").read_bytes()
-        if manifest.get("collision") == "convex-v2":
-            from radiant_collision import validate
-
-            validate(data)
-        else:
-            validate_collision(data)
+    sidecars = validate_conversion_sidecars(package, manifest)
     exe = game.read_bytes()
     if hashlib.md5(exe).hexdigest() != "1c238fe327f2ecc3b0db924c5b425439":
         raise ValueError("Wrong Replay executable")
@@ -84,11 +218,16 @@ def verify(game, package, map_id):
     for i in range(41):
         ptr = struct.unpack("<Q", pe.get_data(0x4598378 + i * 24, 8))[0]
         tags.append(pe.get_data(ptr - 0x140000000, 32).split(b"\0")[0].decode("ascii"))
-    header = Path(__file__).resolve().parents[3] / "iw8-zonetool/src/iw8/replay_netconst.h"
+    header = Path(__file__).resolve().parents[2] / "iw8-zonetool/src/iw8/replay_netconst.h"
     if re.findall(r'"([a-z0-9]+)"', header.read_text()) != tags:
         raise ValueError("Converter NCS type/tag table differs from Replay")
     expected_name = f"maps/mp/{map_id}.d3dbsp".encode()
-    report = {"native_asset_sizes": sizes, "zones": [], "game_launched": False}
+    report = {
+        "native_asset_sizes": sizes,
+        "zones": [],
+        "game_launched": False,
+        "sidecars": sidecars,
+    }
 
     for prefix, types in (
         ("srv_", [29, 23, 24] + [61] * 41),
@@ -189,6 +328,7 @@ def verify(game, package, map_id):
                     raise ValueError("Unexpected world technique reference")
                 name(ts_name)
                 textures = vtake(48, 7)
+                bindings = {}
                 for i in range(3):
                     if q(textures, i * 16 + 8) != 2**64 - 2:
                         raise ValueError("Missing image reference")
@@ -203,6 +343,11 @@ def verify(game, package, map_id):
                     ) and image not in {b"," + x for x in image_names}:
                         raise ValueError("Missing ordered material image dependency")
                     name(image)
+                    semantic = u(textures, i * 16)
+                    if semantic in bindings:
+                        raise ValueError("Duplicate material texture semantic")
+                    bindings[semantic] = image
+                material_images[reference] = bindings
                 vtake(80, 15)
                 indices = vtake(195, 0)
                 if any(x not in (0, 255) for x in indices):
@@ -230,7 +375,7 @@ def verify(game, package, map_id):
             virtual += len(ents)
             if not ents.endswith(b"\0") or b"worldspawn" not in ents:
                 raise ValueError("Missing complete MapEnts entity string")
-            if manifest.get("collision") in ("boxes-v1", "convex-v2"):
+            if manifest.get("collision") in ("boxes-v1", "convex-v2", "convex-v3"):
                 from replay_entity_validation import validate_baseline_anchor
 
                 validate_baseline_anchor(ents)
@@ -314,7 +459,7 @@ def verify(game, package, map_id):
             types = [14] * 4 + [17] * 4 + [18, 11, 31, 25]
         if prefix == "" and u(root, 16) == 10:
             types = [14] * 3 + [17] * 3 + [18, 11, 31, 25]
-        image_candidate = prefix == "" and 10 <= u(root, 16) <= 18
+        image_candidate = prefix == "" and 6 <= u(root, 16) <= 42
         if image_candidate:
             types = [0] * u(root, 16)
         if u(root, 16) != len(types) or u(root, 0) > 65536:
@@ -342,20 +487,15 @@ def verify(game, package, map_id):
         headers = [header_bytes[i * 16 : (i + 1) * 16] for i in range(len(types))]
         if image_candidate:
             types = [u(h, 0) for h in headers]
-            image_count = types.count(19)
-            if types not in (
-                [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 31, 25],
-                [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 18, 11, 31, 25],
-                [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 18, 11, 18, 11, 31, 25],
-                [19] * image_count + [14] * 3 + [17] * 3 + [18, 11, 18, 11, 18, 11, 18, 11, 31, 25],
-                [14] * 4 + [17] * 4 + [18, 11, 31, 25],
-            ):
-                raise ValueError("Unexpected render asset dependency order")
+            validate_render_asset_order(types)
         if [u(h, 0) for h in headers] != types or any(q(h, 8) != 2**64 - 3 for h in headers):
             raise ValueError("Unexpected asset array")
         ncs_index = 0
         shader_names = set()
+        foliage_has_prepass = False
         image_names = set()
+        image_formats = {}
+        material_images = {}
         for asset_type in types:
             # Native DB_InsertPointer reserves a slot before each top-level body.
             virtual = ((virtual + 7) & ~7) + 8
@@ -382,7 +522,12 @@ def verify(game, package, map_id):
                     raise ValueError("Invalid resident mip count")
                 length = sum(max(1, width >> i) * max(1, height >> i) * 4 for i in range(levels))
                 struct.pack_into("<Q", expected, 0, 2**64 - 2)
-                struct.pack_into("<III", expected, 0x14, 7, 1 if levels > 1 else 3, length)
+                image_format = u(asset, 0x14)
+                if image_format not in (6, 7):
+                    raise ValueError("Resident atlas must use linear or sRGB RGBA8")
+                struct.pack_into(
+                    "<III", expected, 0x14, image_format, 1 if levels > 1 else 3, length
+                )
                 struct.pack_into("<4H", expected, 0x24, width, height, 1, 1)
                 expected[0x2E:0x31] = bytes([1, 1, levels])
                 struct.pack_into("<Q", expected, 0xE0, 2**64 - 2)
@@ -395,12 +540,15 @@ def verify(game, package, map_id):
                 if blocks[1] < len(pixels) + 232:
                     raise ValueError("Resident image exceeds temporary stream reservation")
                 image_names.add(sn)
+                image_formats[sn] = image_format
                 continue
             if asset_type in (14, 17):
                 sn = body[pos : body.index(b"\0", pos)]
                 name(sn)
                 if len(sn) > 128 or not sn:
                     raise ValueError("Invalid shader name")
+                if (asset_type, sn) in shader_names:
+                    raise ValueError("Duplicate shader definition")
                 shader_names.add((asset_type, sn))
                 if q(asset, 8):
                     if q(asset, 8) != 2**64 - 2:
@@ -422,24 +570,35 @@ def verify(game, package, map_id):
                     raise ValueError("Unexpected world technique definition")
                 name(ts_name)
                 if (
-                    q(asset, 24) not in (0x418000009, 0x418000001, 1 << 34)
+                    q(asset, 24) not in (0x418000009, 0x418000001, (1 << 34) | 1, 1 << 34)
                     or any(asset[32:56])
                     or q(asset, 56) != 2**64 - 2
                 ):
                     raise ValueError("Unexpected world technique mask")
                 count = q(asset, 24).bit_count()
+                if count == 2 or (count == 4 and b"_foliage_" in ts_name):
+                    if b"_foliage_" not in ts_name or u(asset, 8) & 0x1000:
+                        raise ValueError("Masked surfaces must retain their atlas-aware prepass")
+                    foliage_has_prepass = True
                 if vtake(count * 8, 7) != struct.pack(
                     "<" + str(count) + "Q", *([2**64 - 2] * count)
                 ):
                     raise ValueError("Missing technique pointers")
                 for expected_type in (
-                    [34] if count == 1 else [0, 27, 28, 34] if count == 4 else [0, 3, 27, 28, 34]
+                    [34]
+                    if count == 1
+                    else (
+                        [0, 34]
+                        if count == 2
+                        else [0, 27, 28, 34] if count == 4 else [0, 3, 27, 28, 34]
+                    )
                 ):
                     te = vtake(184, 7)
                     if q(te, 0) != 2**64 - 2 or u(te, 8) != expected_type or any(te[0x30:0x50]):
                         raise ValueError("Invalid technique header/runtime pointers")
                     if count == 4 and te[0x9C] not in (32, 34, 35):
                         raise ValueError("Static BSP has incompatible shader layout")
+                    validate_coverage_state(ts_name, count, expected_type, te)
                     if count == 1 and (
                         te[0x9C] != 35
                         or (q(te, 0xA0), q(te, 0xA8))
@@ -511,29 +670,61 @@ def verify(game, package, map_id):
                 virtual = ((virtual + 7) & ~7) + 40
             elif asset_type == 24:
                 lights = u(asset, 0x30)
-                if lights not in (1, 2) or q(asset, 0x38) != 2**64 - 2 or take(160) != bytes(160):
+                radii = struct.unpack_from("<5f", asset, 0x18)
+                if (
+                    u(asset, 0x08) != 1
+                    or u(asset, 0x0C) != 1
+                    or u(asset, 0x10) != 3
+                    or u(asset, 0x14) != 0
+                    or radii != (4500.0, 25000.0, 30000.0, 40000.0, 50000.0)
+                    or struct.unpack_from("<f", asset, 0x2C)[0] != 1500.0
+                    or lights != 2
+                    or q(asset, 0x38) != 2**64 - 2
+                    or u(asset, 0x40) != 0
+                    or u(asset, 0x44) != lights
+                    or u(asset, 0x48) != 1
+                    or q(asset, 0x50) != 2**64 - 2
+                    or u(asset, 0x68) != 0
+                    or q(asset, 0x70) != 0
+                    or asset[0x78:0xA8] != bytes([0xFF]) * 0x30
+                    or take(160) != bytes(160)
+                ):
                     raise ValueError("Missing reserved ComPrimaryLight zero")
                 virtual = ((virtual + 7) & ~7) + 160 * lights
-                if lights == 2:
-                    sun = take(160)
-                    direction = struct.unpack_from("<3f", sun, 0x2C)
-                    if (
-                        sun[1] != 1
-                        or q(sun, 0x98)
-                        or struct.unpack_from("<f", sun, 0x10)[0] <= 0
-                        or abs(sum(x * x for x in direction) - 1) > 1e-5
-                        or any(x <= 0 for x in struct.unpack_from("<3f", sun, 0x20))
-                    ):
-                        raise ValueError("Invalid authored sun light")
+                sun = take(160)
+                direction = struct.unpack_from("<3f", sun, 0x2C)
+                if (
+                    sun[1] != 1
+                    or q(sun, 0x98)
+                    or struct.unpack_from("<f", sun, 0x10)[0] <= 0
+                    or abs(sum(x * x for x in direction) - 1) > 1e-5
+                    or any(x <= 0 for x in struct.unpack_from("<3f", sun, 0x20))
+                ):
+                    raise ValueError("Invalid authored sun light")
+                if vtake(2, 1) != struct.pack("<H", 0x8000):
+                    raise ValueError("Invalid resident ComWorld transient table")
             elif asset_type == 31:
                 name()
                 if (
-                    u(asset, 0x18) not in (1, 2)
+                    u(asset, 0x18) != 2
                     or u(asset, 0x14) != u(asset, 0x18) - 1
                     or q(asset, 0x3D68) != 2**64 - 2
                     or blocks[4] < u(asset, 0x18) * 152 + 4
                 ):
                     raise ValueError("Missing reserved runtime GfxLight zero")
+                light_count = u(asset, 0x18)
+                if [u(asset, offset) for offset in (0x1C, 0x24, 0x2C, 0x34)] != [
+                    light_count
+                ] * 4 or any(u(asset, offset) for offset in (0x20, 0x28, 0x30, 0x38)):
+                    raise ValueError("GfxWorld primary-light ranges are inconsistent")
+                if (
+                    u(asset, 0x4440) != 0
+                    or q(asset, 0x4448) != 0
+                    or u(asset, 0x4450) != 0
+                    or q(asset, 0x4458) != 0
+                    or q(asset, 0x4460) != 0
+                ):
+                    raise ValueError("Generated GfxWorld must use the all-visible no-tome contract")
                 if q(asset, 0xB0) != 2**64 - 2 or blocks[4] < 2204:
                     raise ValueError("Missing scene entity cell visibility storage")
                 if (
@@ -586,16 +777,13 @@ def verify(game, package, map_id):
                         material_refs.append(read_material(take(120)))
                         if material_refs[-1] == b"," + sky_material and u(sf, 32) & 1:
                             raise ValueError("Sky surfaces must not cast sun shadows")
-                    transparent = sum(
-                        r in (b"," + glass_material, b"," + foliage_material) for r in material_refs
-                    )
+                    transparent_materials = {b"," + glass_material}
+                    if not foliage_has_prepass:
+                        transparent_materials.add(b"," + foliage_material)
+                    transparent = sum(r in transparent_materials for r in material_refs)
                     opaque = count - transparent
-                    if any(
-                        r in (b"," + glass_material, b"," + foliage_material)
-                        for r in material_refs[:opaque]
-                    ) or any(
-                        r not in (b"," + glass_material, b"," + foliage_material)
-                        for r in material_refs[opaque:]
+                    if any(r in transparent_materials for r in material_refs[:opaque]) or any(
+                        r not in transparent_materials for r in material_refs[opaque:]
                     ):
                         raise ValueError("Cutout/glass must follow opaque surfaces")
                     if [u(asset, o) for o in range(0xD0, 0xF0, 4)] != [
@@ -658,9 +846,12 @@ def verify(game, package, map_id):
                         ix = struct.unpack_from(f"<{tris*3}H", indices, base_index * 2)
                         if max(ix) >= verts:
                             raise ValueError("Triangle index exceeds vertex count")
-                        for off, stride in ((12, 4), (16, 8), (24, 8)):
-                            if u(gpu, off) + verts * stride > len(aux):
-                                raise ValueError("Auxiliary attribute exceeds buffer")
+                        validate_vertex_attributes(gpu, aux, verts, ix)
+                        if u(gpu, 4) == 4:
+                            reference = material_refs[i].lstrip(b",")
+                            validate_source_atlas_bindings(
+                                material_images.get(reference, {}), image_formats
+                            )
                 if (
                     take(4) != b"\x01\0\0\0"
                     or take(8) != b"\xfe" + b"\xff" * 7
@@ -679,10 +870,12 @@ def verify(game, package, map_id):
                     u(asset, 0x3DF0) != 1
                     or q(asset, 0x3DF8) != 2**64 - 2
                     or u(model, 0x58) != count
-                    or any(model[:0x58])
+                    or any(model[:0x38])
+                    or any(model[0x54:0x58])
                     or any(model[0x5C:])
                 ):
                     raise ValueError("Missing world brush-model zero")
+                validate_world_model_bounds(asset, model)
                 virtual = ((virtual + 3) & ~3) + 96
                 if count:
                     sorted_surfaces = struct.unpack(f"<{words*32}I", vtake(words * 32 * 4, 3))
