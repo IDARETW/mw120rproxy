@@ -211,7 +211,7 @@ def build_candidate(
     )
     manifest["depth_coverage"] = "atlas-prepass-v1"
     write_json(destination / "manifest.json", manifest)
-    run([converter, "validate-package", destination, mapid], REPO, out / "validate.log")
+    run([converter, "validate-output", destination, mapid], REPO, out / "validate.log")
     run(
         [
             sys.executable,

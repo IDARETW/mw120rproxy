@@ -118,12 +118,13 @@ iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example ^
 ## Check output
 
 ```bat
-iw8-zonetool.exe validate-package C:\maps\mp_example\output mp_example
+iw8-zonetool.exe validate-output C:\maps\mp_example\output mp_example
 iw8-zonetool.exe inspect C:\maps\mp_example\output\mp_example.ff
 ```
 
 Validation accepts exactly five fastfiles and an optional `map.json`. It checks the Replay header,
-resident framing, and stream sizes of every zone.
+resident framing, and stream sizes of every zone. Normal installation runs this validation
+automatically; the command is useful when diagnosing a failed build.
 
 ## Install
 

@@ -90,17 +90,16 @@ For a finished textured map with converted materials, baked light data, doors, g
 footstep tags, and other authored sidecars, use the prepared-dump route documented in
 [Build a custom map](MAP_BUILDING.md) and [Map dump input](../iw8-zonetool/docs/INPUT_FORMAT.md).
 
-## Validate and install
+## Install
 
 ```powershell
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-package `
-    'D:\CoD4\zone\english\mp_example_iw8' mp_example
-
 .\mw120rproxy\tools\deploy_custom_map.ps1 `
     -GameRoot 'D:\Replay' `
-    -PackageDir 'D:\CoD4\zone\english\mp_example_iw8' `
-    -Map mp_example
+    -MapOutput 'D:\CoD4\zone\english\mp_example_iw8'
 ```
+
+The installer reads the map ID from the output and validates it before copying anything into the
+game folder.
 
 IW3 scripts, bot navigation, objectives, and arbitrary scripted movers are not converted
 automatically.

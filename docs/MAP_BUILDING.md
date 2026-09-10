@@ -61,11 +61,12 @@ techsets_mp_example.ff
 `map.json` is optional and is the only loose output file accepted. It can set the lobby `title`,
 `description`, and a matching `id`.
 
-## Validate and install
+## Install
 
 ```powershell
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-package 'D:\Maps\Example\output' mp_example
-.\mw120rproxy\tools\deploy_custom_map.ps1 -GameRoot 'D:\Games\Replay' -PackageDir 'D:\Maps\Example\output' -Map mp_example
+.\mw120rproxy\tools\deploy_custom_map.ps1 -GameRoot 'D:\Games\Replay' -MapOutput 'D:\Maps\Example\output'
 ```
+
+The installer derives the map ID from the output and validates it before installation.
 
 Test geometry, movement and bullet collision, materials, sunlight, interiors, footsteps, glass, ladders, spawns, and the HUD minimap before sharing a conversion.

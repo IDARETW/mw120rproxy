@@ -390,11 +390,11 @@ bool ZoneFromRequest(const char* request, std::string& zoneOut) {
 bool ValidateFastfileOnlyPackage(custommaps::Package& package,
                                  const std::filesystem::path& directory) {
     if (!IsMapId(package.id)) {
-        package.error = "package directory must use the mp_ map form";
+        package.error = "map folder must use the mp_ map form";
         return false;
     }
     if ((GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        package.error = "package directories must not be links";
+        package.error = "map folders must not be links";
         return false;
     }
     if (std::filesystem::exists(g_gameRoot / "zone" / (package.id + ".ff")) ||
@@ -418,18 +418,18 @@ bool ValidateFastfileOnlyPackage(custommaps::Package& package,
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
         if (error || !entry.is_regular_file(error)) {
-            package.error = "fastfile-only package contains an unreadable entry";
+            package.error = "fastfile-only map output contains an unreadable entry";
             return false;
         }
         actual.push_back(entry.path().filename().string());
     }
     if (error) {
-        package.error = "fastfile-only package cannot be read";
+        package.error = "fastfile-only map output cannot be read";
         return false;
     }
     std::sort(actual.begin(), actual.end());
     if (actual != expected) {
-        package.error = "fastfile-only package must contain five map zones and optional map.json";
+        package.error = "fastfile-only map output must contain five map zones and optional map.json";
         return false;
     }
 
@@ -471,11 +471,11 @@ void ValidatePackage(custommaps::Package& package, const std::filesystem::path& 
         return;
     }
     if (package.id != ToUtf8(directory.filename().wstring())) {
-        package.error = "manifest id must match the package directory";
+        package.error = "manifest id must match the map folder";
         return;
     }
     if ((GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        package.error = "package directories must not be links";
+        package.error = "map folders must not be links";
         return;
     }
     if (std::filesystem::exists(g_gameRoot / "zone" / (package.id + ".ff")) ||

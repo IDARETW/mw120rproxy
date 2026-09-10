@@ -43,11 +43,10 @@ Install the converter's five-fastfile output folder:
 ```powershell
 .\mw120rproxy\tools\deploy_custom_map.ps1 `
     -GameRoot 'D:\Games\Replay' `
-    -PackageDir 'D:\CoD4\zone\english\mp_4doffice_iw8' `
-    -Map mp_4doffice
+    -MapOutput 'D:\CoD4\zone\english\mp_4doffice_iw8'
 ```
 
-Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The installer validates all five Replay fastfiles, verifies the copied hashes, and backs up the previous map folder in `.proxy/backups`.
+Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The installer reads the map ID from the generated primary fastfile, validates all five Replay fastfiles, verifies the copied hashes, and backs up the previous map folder in `.proxy/backups`.
 
 1. Start Replay and open **Multiplayer → Local Play → Game Setup → Map**.
 2. Select your custom map. Its title and artwork should appear in the lobby and loading screen. A packaged `compass_map_<map_id>` asset also appears on the in-game HUD minimap.

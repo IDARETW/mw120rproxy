@@ -506,7 +506,7 @@ def build(args):
 
     preview(package, "mp_test")
     spatial_grid = None
-    run([converter, "validate-package", package, "mp_test"], REPO, out / "validate.log")
+    run([converter, "validate-output", package, "mp_test"], REPO, out / "validate.log")
     run(
         [
             sys.executable,
@@ -611,7 +611,9 @@ def build(args):
                 "Bypass",
                 "-File",
                 TOOLS / "deploy_custom_map.ps1",
-                "-PackageDir",
+                "-GameRoot",
+                args.replay.parent,
+                "-MapOutput",
                 package,
             ],
             REPO,

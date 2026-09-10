@@ -74,10 +74,10 @@ No JSON is required. To set the lobby title or description, pass one small file 
 `id` is also allowed when it matches the target map id. `map.json` is the only loose file accepted
 beside the five fastfiles.
 
-Use `validate-package` before installation:
+Installation validates the output automatically. To inspect a failed conversion manually:
 
 ```powershell
-iw8-zonetool.exe validate-package 'D:\CoD4\zone\english\mp_example_iw8' mp_example
+iw8-zonetool.exe validate-output 'D:\CoD4\zone\english\mp_example_iw8' mp_example
 ```
 
 Direct conversion includes the playable world mesh, placed static models, collision, entities,

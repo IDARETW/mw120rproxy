@@ -1,18 +1,22 @@
 param(
     [Parameter(Mandatory = $true)][string]$GameRoot,
-    [Parameter(Mandatory = $true)][string]$PackageDir,
-    [Parameter(Mandatory = $true)][string]$Map
+    [Parameter(Mandatory = $true)][string]$MapOutput
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $gameRoot = (Resolve-Path -LiteralPath $GameRoot).Path
-$packageSource = (Resolve-Path -LiteralPath $PackageDir).Path
+$mapOutput = (Resolve-Path -LiteralPath $MapOutput).Path
 $gameExe = Join-Path $gameRoot 'game_dx12_ship_replay.exe'
 $converter = Join-Path $repoRoot 'iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
 
+$mainZones = @(Get-ChildItem -LiteralPath $mapOutput -File -Filter 'mp_*.ff')
+if ($mainZones.Count -ne 1) {
+    throw 'Map output must contain exactly one primary mp_<name>.ff file.'
+}
+$Map = [IO.Path]::GetFileNameWithoutExtension($mainZones[0].Name)
 if ($Map -notmatch '^mp_[a-z0-9_]{1,60}$') {
-    throw 'Invalid map id.'
+    throw 'Primary fastfile has an invalid map id.'
 }
 if (-not (Test-Path -LiteralPath $gameExe)) {
     throw "Game executable is missing: $gameExe"
@@ -37,7 +41,7 @@ function Test-NativeZones([string]$Directory) {
         if (Test-Path -LiteralPath $metadata) {
             Copy-Item -LiteralPath $metadata -Destination $check
         }
-        & $converter validate-package $check $Map
+        & $converter validate-output $check $Map
         return $LASTEXITCODE -eq 0
     }
     finally {
@@ -45,8 +49,8 @@ function Test-NativeZones([string]$Directory) {
     }
 }
 
-if (-not (Test-NativeZones $packageSource)) {
-    throw 'Source package validation failed.'
+if (-not (Test-NativeZones $mapOutput)) {
+    throw 'Map output validation failed.'
 }
 
 function Assert-GameClosed {
@@ -80,18 +84,18 @@ foreach ($path in @($installed, $stage, $backup, $previous)) {
 }
 
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-$manifestPath = Join-Path $packageSource 'manifest.json'
+$manifestPath = Join-Path $mapOutput 'manifest.json'
 if (Test-Path -LiteralPath $manifestPath) {
     $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
     if ($manifest.schema -ne 1 -or $manifest.id -cne $Map -or !$manifest.title -or
         $manifest.gametypes -notcontains 'tdm') {
         throw 'Invalid package manifest.'
     }
-    $names = @(Get-ChildItem -File -LiteralPath $packageSource | ForEach-Object Name)
+    $names = @(Get-ChildItem -File -LiteralPath $mapOutput | ForEach-Object Name)
 }
 else {
     $names = @("$Map.ff", "srv_$Map.ff", "eng_$Map.ff", "ww_$Map.ff", "techsets_$Map.ff")
-    $metadataPath = Join-Path $packageSource 'map.json'
+    $metadataPath = Join-Path $mapOutput 'map.json'
     if (Test-Path -LiteralPath $metadataPath) {
         $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
         if ($metadata.id -and $metadata.id -cne $Map) {
@@ -101,11 +105,11 @@ else {
     }
 }
 $files = foreach ($name in $names) {
-    $source = Join-Path $packageSource $name
+    $source = Join-Path $mapOutput $name
     $destination = Join-Path $stage $name
     $item = Get-Item -LiteralPath $source
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw "Package file is a link: $source"
+        throw "Map output file is a link: $source"
     }
     Copy-Item -LiteralPath $source -Destination $destination
     $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
@@ -116,7 +120,7 @@ $files = foreach ($name in $names) {
 }
 
 if (-not (Test-NativeZones $stage)) {
-    throw 'Staged package validation failed.'
+    throw 'Staged map output validation failed.'
 }
 
 Assert-GameClosed
@@ -144,7 +148,7 @@ catch {
 
 [pscustomobject]@{
     Destination = $installed
-    Source = $packageSource
+    Source = $mapOutput
     Backup = $backup
     Files = @($files)
 } | ConvertTo-Json -Depth 4

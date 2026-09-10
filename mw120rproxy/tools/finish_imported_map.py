@@ -54,7 +54,7 @@ def finish(out, mapid, title, credit, source, dump=None):
 
     preview(package, mapid, source)
     converter = REPO / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
-    run([converter, "validate-package", package, mapid], REPO, out / "validate.log")
+    run([converter, "validate-output", package, mapid], REPO, out / "validate.log")
     run(
         [
             sys.executable,

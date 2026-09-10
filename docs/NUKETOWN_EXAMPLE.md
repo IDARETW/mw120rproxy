@@ -33,8 +33,7 @@ not need CoD4, Radiant, an asset dump, or shader extraction to play this example
 ```powershell
 .\mw120rproxy\tools\deploy_custom_map.ps1 `
     -GameRoot 'D:\Games\Replay' `
-    -PackageDir 'D:\Maps\Nuketown\mp_nuketown' `
-    -Map mp_nuketown
+    -MapOutput 'D:\Maps\Nuketown\mp_nuketown'
 ```
 
 The installer uses the native converter built by `build.ps1`. It validates the five fastfiles,

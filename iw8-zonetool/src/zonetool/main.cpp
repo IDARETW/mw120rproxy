@@ -61,7 +61,7 @@ void printUsage()
                 "  iw8-zonetool build-map <dump> <map> [-o <output>] [options]\n"
                 "  iw8-zonetool build-iw3 <map.ff> [map] [-o <output>] [options]\n"
                 "  iw8-zonetool inspect <file.ff>\n"
-                "  iw8-zonetool validate-package <package_dir> <map>\n"
+                "  iw8-zonetool validate-output <map_output> <map>\n"
                 "options:\n"
                 "  --replay <game_dx12_ship_replay.exe>\n"
                 "  --collision <collision.bin>\n"
@@ -406,7 +406,7 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
     }
     if (valid)
     {
-        info("validate: package '%s' passes structural checks", map.c_str());
+        info("validate: map output '%s' passes structural checks", map.c_str());
     }
     return valid;
 }
@@ -903,7 +903,7 @@ try
     {
         return inspect(args);
     }
-    if (args.command == "validate-package")
+    if (args.command == "validate-output" || args.command == "validate-package")
     {
         return validate(args);
     }
