@@ -121,6 +121,8 @@ void CustomImageTests() {
     };
     Check(value(id, 21) == "mw120r/" + id && value(id, 22) == "mw120r/" + id,
           "hover and loading columns resolve custom artwork before selection");
+    Check(value(id, 18) == "compass_map_" + id,
+          "custom map row resolves its native compass material");
     Check(find(19, value(id, 22).c_str(), 1) == result,
           "captured table loading lookup resolves uploaded image");
     for (int row = 0; row < 121; ++row)

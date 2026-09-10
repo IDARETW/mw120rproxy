@@ -1,0 +1,8 @@
+.xmake/
+xmake-out/
+build/
+test-output/
+*.user
+*.suo
+*.VC.db
+*.pdb

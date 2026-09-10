@@ -1,144 +1,42 @@
 # Custom-map lighting
 
-IW3 full-conversion scripts use the original map's sun direction and color, with
-an adjustable intensity multiplier. Their default is `--lighting-profile source
---sun-intensity-scale 7`. The multiplier is a starting brightness calibration,
-not an established physical conversion between IW3 and IW8 light units. The
-source's baked indirect lightmaps remain separate and are not multiplied by it.
+MW120R uses the lighting serialized by the native zonetool. The proxy does not replace a converted map's sun direction, color, or intensity.
 
-Aniyah Incursion remains available through `--lighting-profile aniyah-incursion`.
-Its preset comes from Replay's patched `mp_aniyah_tac` fastfile. The converter
-writes the selected sun into ComWorld. Local lights, light grids, reflection
-probes and visibility data must match each custom map's own geometry.
+## Source sun
 
-The proxy no longer replaces the engine's ambient probe from the sky image or
-the camera position. New packages omit `ambient.bin` and `ambient_grid.bin`.
-The skybox remains a visible background. Its pixels do not set scene lighting.
+Every dump needs `maps/mp/<map-id>.d3dbsp.lighting.json` with schema 1:
 
-The experimental lighting builder creates a separate package from an existing
-map build. It keeps the surface order and gameplay sidecars, including door
-poses, glass panes, collision, ladders, and footstep materials.
-
-From the repository root, run:
-
-```powershell
-python mw120rproxy/tools/rebuild_map_lighting.py --build "custom_map_sources/mp_dr_sm64/builds/<existing-build>" --lighting-profile source --sun-intensity-scale 7
+```json
+{
+  "schema": 1,
+  "intensity": 1.0,
+  "color": [1.0, 0.96, 0.90],
+  "direction": [0.25, -0.45, -0.86],
+  "up": [0.0, 0.0, 0.0]
+}
 ```
 
-The source build must retain its conversion dump, or a build report pointing to
-that dump. Build `iw8-zonetool` first if its source has changed. The command
-prints the new package path and does not install it or start Replay.
-
-Use `--indirect-ev -1` to halve the contribution from the source's baked indirect
-light. Direct sunlight uses the native preset and the sky image retains its exposure. Use
-`--unbaked-ev` separately for the fallback fill on imported props without
-lightmaps. Both controls accept -4 through +4 stops and default to zero. These
-are per-package calibration controls, not global game brightness settings.
-
-Opaque surfaces use Replay's current sun direction and color. With the `source`
-profile, lightmapped surfaces also retain their authored static sun-shadow mask
-at every distance. Replay's realtime shadows can add occlusion from nearby and
-moving objects. The masks are combined with a minimum so an empty distant shadow
-map cannot light through a wall, and partial shadows are not darkened twice.
-This is mixed static and realtime lighting; it does not extend the engine's
-cached shadow range for objects without a source lightmap. Other sun profiles
-use only Replay's shadow mask because their direction does not match the bake.
-Indirect occlusion comes from the source lightmaps. Masked materials
-use an atlas-aware depth and normal prepass with the same sampling and alpha
-cutoff as the color pass. Their color pass tests against that depth without
-writing new depth after screen-space lighting has been resolved.
-
-Full IW3 conversions preserve source vertex RGBA, tangent handedness, normal
-maps, specular maps and material constants. Both directional baked-light
-coefficients and their direction are retained. Color uses an sRGB texture;
-normal, response and lightmap data use linear textures. Rebuilding from an old
-render dump cannot recover source channels that were already discarded; run a
-full conversion from the original export for those maps.
-
-Transparent color textures and their mipmaps are filtered with float alpha
-precision to preserve faint edge colors. Use `--refresh-source-textures` when
-rebuilding an older package to regenerate its material tiles from the source
-images. Normal and lighting channels remain independent of transparency.
-
-Sky surfaces use a separate material and do not cast sun shadows. Glass remains
-translucent and does not write opaque depth. The shared ambient-occlusion buffer
-is not multiplied into the source map's baked indirect lighting.
-
-To update material coverage while retaining the previous color shader, add
-`--preserve-lighting`. This preserves shader calculations, not the ComWorld
-sun: the converter still applies its default sun profile. The build must retain
-`map.hlsl` or `authored_map.hlsl`. Use `--source-build "<retained-dump-build>"` if an older
-package's build report does not point to its conversion dump.
-
-This change is in the map's compiled shader. Rebuild and replace the map package
-to update its lighting; replacing the proxy DLL alone does not update shaders.
-
-This is an experimental rendering path. Shader raster tests and package checks
-do not confirm its appearance in Replay. A complete native GPU light grid with
-independent lighting for weapons and other objects is not yet generated by the
-converter. Removing the previous ambient override exposes that missing data;
-the sun preset alone cannot reproduce a shipped map's full lighting.
-
-To test a generated package, close Replay and run:
+The compiler keeps the source direction and color. Adjust exposure with a positive multiplier:
 
 ```powershell
-./mw120rproxy/tools/deploy_custom_map.ps1 -PackageDir "<generated-package>" -Map mp_dr_sm64
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\package' --sun-intensity-scale 5.5
 ```
 
-Check outdoor shadows while moving, the sky, transitions into buildings, glass,
-foliage, and any moving doors. Compare the same locations with the previous
-package. The deployment script preserves a backup; the original build folder
-also remains available for reinstalling the previous package.
+Change the multiplier in small steps and rebuild all five fastfiles. High values can wash out materials and emphasize shadow transitions.
 
-## Source light grids
+## Baked and indirect light
 
-The OpenAssetTools exporter now retains the original IW3 grid's row data,
-entries, directional color palette, and trace masks. Rebuild the supplied OAT
-exporter and extract the map again to obtain the `.lightgrid.json` and its four
-binary arrays alongside the world dump.
+Converted GPU lightgrid data uses both files below:
 
-Decode and validate an exported grid with:
-
-```powershell
-python mw120rproxy/tools/iw3_lightgrid.py --dump "<extracted-map>" --map mp_4doffice --out "<probe-output>"
+```text
+maps/mp/<map-id>.d3dbsp.gpulightgrid.json
+maps/mp/<map-id>.d3dbsp.gpulightgrid.bin
 ```
 
-The output preserves grid positions, all 56 directional RGB samples per palette
-entry, the primary-light index, and trace masks. These files are conversion
-intermediates. Replay's GPU light-grid format needs spherical-harmonic
-coefficients, tetrahedra, spatial lookup data, and resource registration; copying
-IW3 arrays into an IW8 asset is not sufficient.
+The compiler embeds both in the main map zone. Keep them from the same export. Incorrect counts, offsets, probes, or color data can cause camera-dependent artifacts and poor indoor or viewmodel lighting.
 
-The older spatial-ambient scripts remain available for inspecting previous
-packages. Their output is no longer consumed by the proxy. Native grid
-conversion must preserve spatial lookup and directional lighting without
-replacing a shared probe at runtime.
+The sky image is visual and should agree with the source sun. Do not use it as a second ambient-light override.
 
-## Converter profiles
+Compare the conversion with a source screenshot. Check sun and shadow direction, outdoor exposure, indoor ambient level, viewmodel lighting while standing and crouching, shadow stability and distance, and transparent foliage or fence materials.
 
-`iw8-zonetool fromdump` accepts `--lighting-profile aniyah-incursion` (the default)
-or `--lighting-profile source`. The source profile requires a schema-1
-`.lighting.json` beside the map dump, with `intensity`, `color`, `direction` and
-`up`. Values are native linear-light values; a directional sun can have a zero
-up vector. `--sun-intensity-scale` multiplies the selected intensity without
-changing direction or color. The package manifest records both settings. The
-IW3 rebuild helper regenerates source lighting from the retained worldspawn,
-because older `.lighting.json` files had already clamped its intensity.
-
-The default also applies to the shared textured importer. Graybox imports are
-deliberately unlit. To change an existing package, rebuild it; a DLL update alone
-cannot change the native light record or compiled materials.
-
-## Sun-shadow tile classification
-
-Replay's shipped forward shader reads the lighting-tile buffer at `t5` before
-sampling sun visibility at `t85`. When `cb7[83].w` is positive, class 11 in the
-high nibble of the tile record's second word forces zero sun visibility. Each
-tile covers 8x8 scaled screen pixels, with row stride rounded up from the render
-width. The custom material now follows that same contract.
-
-Ignoring the classification reads texels the native shader deliberately skips.
-The raster regression fills those texels with light and verifies that the
-corrected material still shades their tiles as shadowed. An intentionally
-unclassified shader fails those same cases. This is an asset/shader correction;
-it does not require a renderer hook or disabling shadows.
+Correct lighting and lightgrid data in the source dump and rebuild the map. Do not compensate for conversion errors with game rendering hooks.

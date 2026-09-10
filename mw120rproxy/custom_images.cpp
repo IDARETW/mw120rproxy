@@ -45,7 +45,8 @@ void LocalizedTitle(const std::string& key, const std::string& text) {
 }
 std::mutex g_mutex;
 std::atomic<unsigned> g_aliasLogs{0};
-
+// Verified against the live 1.20 Replay asset: uint16 cell indices into
+// separate hash/string dictionaries. This is NOT the older 24-byte table ABI.
 struct Table {
     const char* name;
     int columns, rows, unique, padding;
@@ -187,6 +188,7 @@ void* MapInfoTable(void* source) {
             copy->indices[row * original.columns + 3] = intern("");
             if (original.columns > 24)
                 copy->indices[row * original.columns + 24] = title;
+            copy->indices[row * original.columns + 18] = intern("compass_map_" + package.id);
             const auto artwork = intern("mw120r/" + package.id);
             copy->indices[row * original.columns + 21] = artwork;
             copy->indices[row * original.columns + 22] = artwork;

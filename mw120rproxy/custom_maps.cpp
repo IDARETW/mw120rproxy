@@ -351,6 +351,60 @@ bool ZoneFromRequest(const char* request, std::string& zoneOut) {
     return true;
 }
 
+bool ValidateFastfileOnlyPackage(custommaps::Package& package,
+                                 const std::filesystem::path& directory) {
+    if (!IsMapId(package.id)) {
+        package.error = "package directory must use the mp_ map form";
+        return false;
+    }
+    if ((GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        package.error = "package directories must not be links";
+        return false;
+    }
+    if (std::filesystem::exists(g_gameRoot / "zone" / (package.id + ".ff")) ||
+        std::filesystem::exists(g_gameRoot / (package.id + ".ff"))) {
+        package.error = "package id conflicts with an installed stock map";
+        return false;
+    }
+
+    std::vector<std::string> expected;
+    for (const auto& zone : ZoneNames(package.id))
+        expected.push_back(zone + ".ff");
+    std::sort(expected.begin(), expected.end());
+
+    std::vector<std::string> actual;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+        if (error || !entry.is_regular_file(error)) {
+            package.error = "fastfile-only package contains an unreadable entry";
+            return false;
+        }
+        actual.push_back(entry.path().filename().string());
+    }
+    if (error) {
+        package.error = "fastfile-only package cannot be read";
+        return false;
+    }
+    std::sort(actual.begin(), actual.end());
+    if (actual != expected) {
+        package.error = "fastfile-only package must contain exactly five map zones";
+        return false;
+    }
+
+    for (const auto& name : expected) {
+        const auto fastfile = directory / name;
+        if ((GetFileAttributesW(fastfile.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+            !HasReplayFastfileHeader(fastfile)) {
+            package.error = "zone fastfile has an invalid 1.20 header";
+            return false;
+        }
+    }
+    package.visibility = "all-visible-v1";
+    package.worldFormat = "replay-1.20-native-v1";
+    package.valid = true;
+    return true;
+}
+
 void ValidatePackage(custommaps::Package& package, const std::filesystem::path& directory) {
     package.directory = directory.wstring();
     package.title = ToUtf8(directory.filename().wstring());
@@ -359,7 +413,7 @@ void ValidatePackage(custommaps::Package& package, const std::filesystem::path& 
     const std::filesystem::path manifest = directory / "manifest.json";
     std::string text;
     if (!ReadText(manifest, text)) {
-        package.error = "manifest.json is missing or invalid";
+        ValidateFastfileOnlyPackage(package, directory);
         return;
     }
     if (!IsJsonDocument(text)) {

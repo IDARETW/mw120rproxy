@@ -233,7 +233,10 @@ def verify(game, package, map_id):
     for i in range(41):
         ptr = struct.unpack("<Q", pe.get_data(0x4598378 + i * 24, 8))[0]
         tags.append(pe.get_data(ptr - 0x140000000, 32).split(b"\0")[0].decode("ascii"))
-    header = Path(__file__).resolve().parents[3] / "iw8-zonetool/src/iw8/replay_netconst.h"
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "iw8-zonetool/src/zonetool/iw8/replay_netconst.h"
+    )
     if re.findall(r'"([a-z0-9]+)"', header.read_text()) != tags:
         raise ValueError("Converter NCS type/tag table differs from Replay")
     expected_name = f"maps/mp/{map_id}.d3dbsp".encode()

@@ -33,9 +33,8 @@ not need CoD4, Radiant, an asset dump, or shader extraction to play this example
     -Map mp_nuketown
 ```
 
-The installer uses the converter built by `build.ps1` and the Python
-dependencies from `requirements.txt`. It validates the package and preserves
-an existing installed version in `.proxy/backups`.
+The installer uses the native converter built by `build.ps1`. It validates the five fastfiles,
+verifies the installed hashes, and preserves an existing installed version in `.proxy/backups`.
 
 If the mod is already set up and you are copying the package manually, copy
 the complete `mp_nuketown` folder into `mods/mw120r/maps` under your game

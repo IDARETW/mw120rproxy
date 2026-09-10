@@ -27,7 +27,7 @@
 #include "replay_trace_conversion_fixture.h"
 #include "replay_metadata_fixture.h"
 #include "replay_ladder_ik_fixture.h"
-#include "../../../iw8-zonetool/src/iw8/replay_netconst.h"
+#include "../../iw8-zonetool/src/zonetool/iw8/replay_netconst.h"
 #include <cstdarg>
 #include "replay_physics_fixture.h"
 #include "log.h"
@@ -108,6 +108,8 @@ void PackageTests() {
     MakePackage(id + "_nested");
     MakePackage(id + "_large");
     MakePackage(id + "_contract");
+    MakePackage(id + "_fastfiles");
+    fs::remove(packageRoot / (id + "_fastfiles") / "manifest.json");
     Text(
         packageRoot / (id + "_nested") / "manifest.json",
         "{\"nested\":{\"schema\":1,\"id\":\"mp_proxy_nested\",\"title\":\"Wrong scope\",\"gametypes\":[\"tdm\"]}}");
@@ -129,6 +131,11 @@ void PackageTests() {
           "64-bit inflated size cannot evade block-size validation");
     Check(!custommaps::Select((id + "_contract").c_str()),
           "unknown generated-world contracts are rejected");
+    Check(custommaps::Select((id + "_fastfiles").c_str()),
+          "fastfile-only package is accepted");
+    Check(custommaps::ActiveWorldContract(),
+          "fastfile-only package uses the native world contract");
+    Check(custommaps::Select(id.c_str()), "manifest package can be reselected");
     std::string target;
     Check(custommaps::ResolveDiskRead(("zone/" + id + ".ff").c_str(), target),
           "selected root zone resolves");
@@ -1697,13 +1704,10 @@ int main(int argc, char** argv) {
                                                          {CompoundNativeTests, "compound"},
                                                          {OmnvarTests, "omnvars"}})
         RunFixture(test.first, test.second);
-    const fs::path netConstPackage =
-        argc > 1 ? fs::path(argv[1]) : fs::path("custom_map_sources/mp_test/replay_package_v9");
-    if (fs::exists(netConstPackage))
-        NetConstTests(netConstPackage.string().c_str());
+    if (argc > 1)
+        NetConstTests(argv[1]);
     else
-        printf("SKIP: Replay NCS package fixture is unavailable: %s\n",
-               netConstPackage.string().c_str());
+        puts("SKIP: Replay NCS package fixture not supplied");
     RunFixture(CustomImageTests, "custom images");
     RunFixture(CustomSurfaceTests, "custom surfaces");
     for (int packageIndex = 1; packageIndex < argc; ++packageIndex)
@@ -1738,7 +1742,7 @@ int main(int argc, char** argv) {
         }
     // Only the three process-specific directories created by this test are removed.
     for (const auto& name : {id, std::string(id + "_nested"), std::string(id + "_large"),
-                             std::string(id + "_contract")})
+                             std::string(id + "_contract"), std::string(id + "_fastfiles")})
         fs::remove_all(packageRoot / name);
     return 0;
 }

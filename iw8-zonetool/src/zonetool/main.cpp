@@ -1,0 +1,707 @@
+#include "common/ff_io.h"
+#include "common/fs_util.h"
+#include "common/json.hpp"
+#include "common/log.h"
+#include "convert/maps_convert.h"
+#include "dumpsrc/dump_source.h"
+#include "dumpsrc/image_dump.h"
+#include "dumpsrc/material_dumpsrc.h"
+#include "dumpsrc/xmodel_dump.h"
+#include "iw8/iw8_ffheader.h"
+#include "iw8/iw8_zone.h"
+#include "iw8/map_zone.h"
+#include "iw8/maps_write.h"
+#include "iw8/replay_havok.h"
+#include "iw8/replay_impact.h"
+#include "iw8/replay_render.h"
+#include "iw8/write_xsurface.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+using namespace zt;
+
+namespace
+{
+struct Args
+{
+    std::string command;
+    std::vector<std::string> positional;
+    std::string outputDirectory;
+    std::string replayExecutable;
+    std::string collisionPath;
+    std::string footstepsPath;
+    std::string lightingProfile = "source";
+    float sunIntensityScale = 6.0f;
+};
+
+void printUsage()
+{
+    std::printf("iw8-zonetool - IW8 Replay 1.20 map compiler\n"
+                "usage:\n"
+                "  iw8-zonetool build-map <dump> <map> -o <output> [options]\n"
+                "  iw8-zonetool inspect <file.ff>\n"
+                "  iw8-zonetool validate-package <package_dir> <map>\n"
+                "options:\n"
+                "  --replay <game_dx12_ship_replay.exe>\n"
+                "  --collision <collision.bin>\n"
+                "  --footsteps <footsteps.bin>\n"
+                "  --lighting-profile source|aniyah-incursion\n"
+                "  --sun-intensity-scale <positive multiplier>\n"
+                "  -v  -q\n");
+}
+
+bool parseArgs(const int argc, char **argv, Args &args)
+{
+    if (argc < 2)
+    {
+        return false;
+    }
+
+    args.command = argv[1];
+    for (int index = 2; index < argc; ++index)
+    {
+        const std::string value = argv[index];
+        if (value == "-o" && index + 1 < argc)
+        {
+            args.outputDirectory = argv[++index];
+        }
+        else if (value == "--replay" && index + 1 < argc)
+        {
+            args.replayExecutable = argv[++index];
+        }
+        else if (value == "--collision" && index + 1 < argc)
+        {
+            args.collisionPath = argv[++index];
+        }
+        else if (value == "--footsteps" && index + 1 < argc)
+        {
+            args.footstepsPath = argv[++index];
+        }
+        else if (value == "--lighting-profile" && index + 1 < argc)
+        {
+            args.lightingProfile = argv[++index];
+        }
+        else if (value == "--sun-intensity-scale" && index + 1 < argc)
+        {
+            const std::string scale = argv[++index];
+            size_t consumed = 0;
+            try
+            {
+                args.sunIntensityScale = std::stof(scale, &consumed);
+            }
+            catch (const std::exception &)
+            {
+                return false;
+            }
+            if (consumed != scale.size() || !std::isfinite(args.sunIntensityScale) ||
+                args.sunIntensityScale <= 0.0f)
+            {
+                return false;
+            }
+        }
+        else if (value == "-v")
+        {
+            g_logLevel = 3;
+        }
+        else if (value == "-q")
+        {
+            g_logLevel = 0;
+        }
+        else
+        {
+            args.positional.push_back(value);
+        }
+    }
+    return true;
+}
+
+bool isMapId(const std::string &map)
+{
+    if (map.size() < 4 || map.size() > 63 || !map.starts_with("mp_"))
+    {
+        return false;
+    }
+    return std::all_of(map.begin(), map.end(), [](const unsigned char character) {
+        return character == '_' || (character >= 'a' && character <= 'z') ||
+               (character >= '0' && character <= '9');
+    });
+}
+
+bool requireMapId(const std::string &map)
+{
+    if (isMapId(map))
+    {
+        return true;
+    }
+    err("map id '%s' is invalid; use lower-case mp_<name>", map.c_str());
+    return false;
+}
+
+std::array<std::string, 5> zoneNames(const std::string &map)
+{
+    return {map, "srv_" + map, "eng_" + map, "ww_" + map, "techsets_" + map};
+}
+
+std::vector<std::string> expectedFiles(const std::string &map)
+{
+    std::vector<std::string> files;
+    for (const std::string &zone : zoneNames(map))
+    {
+        files.push_back(zone + ".ff");
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+bool prepareOutputDirectory(const std::string &outputDirectory, const std::string &map)
+{
+    std::error_code error;
+    if (!std::filesystem::exists(outputDirectory, error))
+    {
+        return mkdirs(outputDirectory);
+    }
+    if (error || !std::filesystem::is_directory(outputDirectory, error))
+    {
+        err("build-map: output is not a directory: %s", outputDirectory.c_str());
+        return false;
+    }
+
+    const std::vector<std::string> expected = expectedFiles(map);
+    for (const auto &entry : std::filesystem::directory_iterator(outputDirectory, error))
+    {
+        if (error || !entry.is_regular_file(error) ||
+            !std::binary_search(expected.begin(), expected.end(), entry.path().filename().string()))
+        {
+            err("build-map: output directory must be empty or contain only this "
+                "map's five fastfiles");
+            return false;
+        }
+    }
+    return !error;
+}
+
+bool validateZoneFile(const std::string &path)
+{
+    std::vector<uint8_t> bytes;
+    if (!read_file(path, bytes) || bytes.size() < 0x8C)
+    {
+        err("validate: cannot read a complete IW8 header from %s", path.c_str());
+        return false;
+    }
+
+    IW8_DB_FFHeader header{};
+    std::memcpy(&header, bytes.data(), (std::min)(bytes.size(), sizeof(header)));
+    if (std::memcmp(header.magic, iw8ff::kMagicUnsec, 8) != 0 ||
+        header.headerVersion != iw8ff::kHeaderVersion ||
+        header.xfileVersion != iw8ff::kXFileVersion || header.dashCompressBuild != 0 ||
+        header.dashEncryptBuild != 0)
+    {
+        err("validate: %s has an unsupported Replay header", path.c_str());
+        return false;
+    }
+    if (std::memcmp(bytes.data() + 0x88, "\x01IWC", 4) != 0 ||
+        header.xfileHeader.size != bytes.size() - 0x8C ||
+        header.residentPartSize != bytes.size() - 0x88 ||
+        header.alwaysLoadedPartSize != header.xfileHeader.size)
+    {
+        err("validate: %s has invalid resident framing", path.c_str());
+        return false;
+    }
+
+    uint64_t streamTotal = 0;
+    for (const uint64_t size : header.xfileHeader.blockSize)
+    {
+        streamTotal += size;
+    }
+    if (streamTotal < header.xfileHeader.size)
+    {
+        err("validate: %s has invalid stream sizes", path.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool validatePackage(const std::string &packageDirectory, const std::string &map)
+{
+    if (!requireMapId(map))
+    {
+        return false;
+    }
+
+    std::vector<std::string> actual;
+    std::error_code error;
+    for (const auto &entry : std::filesystem::directory_iterator(packageDirectory, error))
+    {
+        if (error || !entry.is_regular_file(error))
+        {
+            err("validate: package contains an unreadable or non-file entry");
+            return false;
+        }
+        actual.push_back(entry.path().filename().string());
+    }
+    if (error)
+    {
+        err("validate: cannot enumerate %s", packageDirectory.c_str());
+        return false;
+    }
+    std::sort(actual.begin(), actual.end());
+    if (actual != expectedFiles(map))
+    {
+        err("validate: package must contain exactly the five map fastfiles");
+        return false;
+    }
+
+    bool valid = true;
+    for (const std::string &zone : zoneNames(map))
+    {
+        valid = validateZoneFile(path_join(packageDirectory, zone + ".ff")) && valid;
+    }
+    if (valid)
+    {
+        info("validate: package '%s' passes structural checks", map.c_str());
+    }
+    return valid;
+}
+
+const char *defaultEntities = "{\n"
+                              "\"classname\" \"worldspawn\"\n"
+                              "}\n"
+                              "{\n"
+                              "\"origin\" \"0 0 64\"\n"
+                              "\"classname\" \"info_player_deathmatch\"\n"
+                              "}\n";
+
+struct AssetTally
+{
+    int materials{};
+    int images{};
+    int models{};
+    int surfaces{};
+    int failures{};
+};
+
+AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirectory,
+                        const dumpsrc::DumpSource &source, const std::string &map)
+{
+    AssetTally tally;
+    for (const std::string &relativePath : source.listMaterials())
+    {
+        const std::string path = path_join(path_join(dumpDirectory, "materials"), relativePath);
+        if (convdump::mtl::emitMaterialFromDump(writer, path, relativePath))
+        {
+            ++tally.materials;
+        }
+        else
+        {
+            ++tally.failures;
+        }
+    }
+
+    const std::string compassName = "compass_map_" + map;
+    bool hasCompass = false;
+    for (const std::string &name : dumpimg::listImageDumps(dumpDirectory))
+    {
+        const dumpimg::ImageDumpFile input = dumpimg::readImageDump(dumpDirectory, name);
+        if (!input.loaded || !dumpimg::addImageAsset(writer, dumpimg::convertImage(input)))
+        {
+            ++tally.failures;
+            continue;
+        }
+        ++tally.images;
+        hasCompass = hasCompass || input.name == compassName;
+    }
+    if (hasCompass)
+    {
+        if (!convdump::mtl::writeCompassMaterial(writer, compassName))
+        {
+            ++tally.failures;
+        }
+    }
+    else
+    {
+        warn("assets: no images/%s.iwi or .ffImg; HUD compass will use the default material",
+             compassName.c_str());
+    }
+
+    for (const std::string &name : source.listXModels())
+    {
+        if (iw8::addXModelFromDump(writer, dumpDirectory, name))
+        {
+            ++tally.models;
+        }
+        else
+        {
+            ++tally.failures;
+        }
+    }
+
+    std::vector<std::string> surfaceFiles;
+    if (list_dir(path_join(dumpDirectory, "XSurface"), surfaceFiles))
+    {
+        for (const std::string &file : surfaceFiles)
+        {
+            if (!file.ends_with(".xse"))
+            {
+                continue;
+            }
+            const std::string name = file.substr(0, file.size() - 4);
+            if (iw8xs_dump::writeXModelSurfsFromDump(writer, dumpDirectory, name))
+            {
+                ++tally.surfaces;
+            }
+            else
+            {
+                ++tally.failures;
+            }
+        }
+    }
+
+    info("assets: %d materials, %d images, %d models, %d model surfaces, %d "
+         "skipped",
+         tally.materials, tally.images, tally.models, tally.surfaces, tally.failures);
+    return tally;
+}
+
+template <typename Buffer> Iw8WriteParams writeParams(const Buffer &buffer)
+{
+    Iw8WriteParams params;
+    for (int index = 0; index < iw8::IW8_MAX_XFILE_COUNT; ++index)
+    {
+        params.blockSize[index] = buffer.blockSize(index);
+        params.totalDecompressed += params.blockSize[index];
+    }
+    params.calcSize = buffer.calcSize();
+    return params;
+}
+
+template <> Iw8WriteParams writeParams(const iw8::ZoneBuffer &buffer)
+{
+    Iw8WriteParams params;
+    for (int index = 0; index < iw8::IW8_MAX_XFILE_COUNT; ++index)
+    {
+        params.blockSize[index] = buffer.streamSize(index);
+        params.totalDecompressed += params.blockSize[index];
+    }
+    params.calcSize = buffer.calcSize();
+    return params;
+}
+
+iw8::MapSun loadLighting(const Args &args, const std::string &dumpDirectory,
+                         const std::string &assetName)
+{
+    if (args.lightingProfile != "source" && args.lightingProfile != "aniyah-incursion")
+    {
+        throw std::runtime_error("unknown lighting profile: " + args.lightingProfile);
+    }
+
+    iw8::MapSun lighting;
+    if (args.lightingProfile == "source")
+    {
+        const std::string path = path_join(dumpDirectory, assetName + ".lighting.json");
+        if (!file_exists(path))
+        {
+            throw std::runtime_error("source lighting profile needs .lighting.json");
+        }
+
+        std::ifstream input(path);
+        const nlohmann::json data = nlohmann::json::parse(input);
+        if (data.at("schema") != 1)
+        {
+            throw std::runtime_error("invalid map lighting schema");
+        }
+        lighting.intensity = data.at("intensity").get<float>();
+
+        float directionLength = 0.0f;
+        float upLength = 0.0f;
+        float dot = 0.0f;
+        for (size_t index = 0; index < 3; ++index)
+        {
+            lighting.color[index] = data.at("color").at(index).get<float>();
+            lighting.direction[index] = data.at("direction").at(index).get<float>();
+            lighting.up[index] = data.at("up").at(index).get<float>();
+            if (!std::isfinite(lighting.color[index]) || lighting.color[index] < 0.0f)
+            {
+                throw std::runtime_error("invalid sun color");
+            }
+            directionLength += lighting.direction[index] * lighting.direction[index];
+            upLength += lighting.up[index] * lighting.up[index];
+            dot += lighting.direction[index] * lighting.up[index];
+        }
+        if (!std::isfinite(lighting.intensity) || lighting.intensity < 0.0f ||
+            !std::isfinite(directionLength + upLength + dot) ||
+            std::abs(directionLength - 1.0f) > 0.001f ||
+            (upLength != 0.0f && std::abs(upLength - 1.0f) > 0.001f) || std::abs(dot) > 0.001f)
+        {
+            throw std::runtime_error("invalid sun lighting data");
+        }
+    }
+
+    lighting.intensity *= args.sunIntensityScale;
+    if (!std::isfinite(lighting.intensity))
+    {
+        throw std::runtime_error("scaled sun intensity is not finite");
+    }
+    info("lighting: %s, scale %.6f, native intensity %.6f", args.lightingProfile.c_str(),
+         args.sunIntensityScale, lighting.intensity);
+    return lighting;
+}
+
+std::vector<uint8_t> loadCollision(const Args &args, const std::string &dumpDirectory,
+                                   const std::string &assetName)
+{
+    if (!args.collisionPath.empty())
+    {
+        if (args.replayExecutable.empty())
+        {
+            throw std::runtime_error("--replay is required with --collision");
+        }
+        return iw8::havok::BakeCollision(
+            {args.replayExecutable, args.collisionPath, args.footstepsPath});
+    }
+
+    std::vector<uint8_t> collision;
+    const std::string path = path_join(dumpDirectory, assetName + ".havok");
+    if (!read_file(path, collision) || collision.size() < 16 ||
+        collision.size() > 256 * 1024 * 1024 || std::memcmp(collision.data() + 4, "TAG0", 4) != 0)
+    {
+        throw std::runtime_error("native collision is missing; pass --replay and --collision");
+    }
+    return collision;
+}
+
+int writeMapPackage(const Args &args, const std::string &map, const std::string &outputDirectory,
+                    const std::string &entities, const iw8::MapBounds &bounds,
+                    const std::string &dumpDirectory)
+{
+    if (!prepareOutputDirectory(outputDirectory, map))
+    {
+        return 2;
+    }
+
+    const std::string assetName = "maps/mp/" + map + ".d3dbsp";
+    int result = 0;
+
+    {
+        iw8::ZoneBuffer buffer;
+        const iw8::MapSun lighting = loadLighting(args, dumpDirectory, assetName);
+        const std::vector<uint8_t> collision = loadCollision(args, dumpDirectory, assetName);
+        info("collision: serialized native world, %zu bytes", collision.size());
+        iw8::buildSrvMapZone(buffer, assetName.c_str(), entities, bounds, lighting, collision);
+        if (!iw8_write(path_join(outputDirectory, "srv_" + map + ".ff"), buffer.data(),
+                       writeParams(buffer)))
+        {
+            result = 1;
+        }
+    }
+
+    {
+        iw8::ZoneWriter writer;
+        const std::string renderPath = path_join(dumpDirectory, assetName + ".render.json");
+        if (!file_exists(renderPath))
+        {
+            throw std::runtime_error("native render data is missing: " + renderPath);
+        }
+
+        replayrender::RegisterMaterial(writer, renderPath);
+        iw8::impact::Register(writer, map);
+        writer.add(ASSET_TYPE_GFX_MAP, assetName, [assetName, renderPath](iw8::ZoneWriter &output) {
+            iw8maps::emitGfxMapBody(output, assetName.c_str(), renderPath);
+        });
+        writer.add(ASSET_TYPE_GLASS_MAP, assetName, [assetName](iw8::ZoneWriter &output) {
+            iw8maps::emitGlassMapBody(output, assetName.c_str());
+        });
+        const dumpsrc::DumpSource source(dumpDirectory, map);
+        addMapAssets(writer, dumpDirectory, source, map);
+        writer.build();
+
+        if (!iw8_write(path_join(outputDirectory, map + ".ff"), writer.body(), writeParams(writer)))
+        {
+            result = 1;
+        }
+        info("build-map: main zone contains %zu assets", writer.assetCount());
+    }
+
+    const auto writeEmpty = [&](const std::string &name) {
+        iw8::ZoneBuffer buffer;
+        iw8::buildEmptyZone(buffer);
+        if (!iw8_write(path_join(outputDirectory, name), buffer.data(), writeParams(buffer)))
+        {
+            result = 1;
+        }
+    };
+    writeEmpty("eng_" + map + ".ff");
+    writeEmpty("ww_" + map + ".ff");
+    writeEmpty("techsets_" + map + ".ff");
+
+    if (result == 0 && !validatePackage(outputDirectory, map))
+    {
+        result = 1;
+    }
+    if (result == 0)
+    {
+        info("build-map: wrote five fastfiles to %s", outputDirectory.c_str());
+    }
+    return result;
+}
+
+int buildMap(const Args &args)
+{
+    if (args.positional.size() < 2)
+    {
+        printUsage();
+        return 2;
+    }
+
+    const std::string dumpDirectory = args.positional[0];
+    const std::string map = args.positional[1];
+    if (!requireMapId(map))
+    {
+        return 2;
+    }
+    const std::string outputDirectory = args.outputDirectory.empty()
+                                            ? path_join(dumpDirectory, map + "_out")
+                                            : args.outputDirectory;
+
+    const dumpsrc::DumpSource source(dumpDirectory, map);
+    if (!source.hasMapFiles())
+    {
+        err("build-map: no maps/mp/%s.d3dbsp.* files under %s", map.c_str(), dumpDirectory.c_str());
+        return 1;
+    }
+
+    std::string entities;
+    bool foundEntities = false;
+    for (const std::string &path : {path_join(dumpDirectory, map + "_iw8_ents.txt"),
+                                    path_join(path_dir(dumpDirectory), map + "_iw8_ents.txt")})
+    {
+        if (file_exists(path) && read_file_str(path, entities) && !entities.empty())
+        {
+            info("entities: using %s", path.c_str());
+            foundEntities = true;
+            break;
+        }
+    }
+
+    const dumpsrc::EntsDump sourceEntities = source.loadEnts();
+    if (!foundEntities && sourceEntities.loaded && !sourceEntities.text.empty())
+    {
+        const size_t converted = convert::iw3ToIw8EntityString(sourceEntities.text, entities);
+        if (converted == 0)
+        {
+            err("build-map: could not convert any source entities");
+            return 1;
+        }
+        info("entities: converted %zu source entities", converted);
+        foundEntities = true;
+    }
+    if (!foundEntities)
+    {
+        entities = defaultEntities;
+        warn("entities: using the built-in worldspawn and deathmatch spawn");
+    }
+
+    iw8::MapBounds bounds;
+    const dumpsrc::ClipMapDump clipMap = source.loadClipMap();
+    if (clipMap.loaded && clipMap.boundsFromVerts)
+    {
+        for (size_t index = 0; index < 3; ++index)
+        {
+            bounds.mn[index] = clipMap.boundsMin[index];
+            bounds.mx[index] = clipMap.boundsMax[index];
+        }
+        bounds.valid = true;
+    }
+
+    const std::string boundsPath =
+        path_join(dumpDirectory, "maps/mp/" + map + ".d3dbsp.bounds.json");
+    if (file_exists(boundsPath))
+    {
+        std::ifstream file(boundsPath);
+        const nlohmann::json data = nlohmann::json::parse(file);
+        if (data.at("schema") != 1 || data.at("min").size() != 3 || data.at("max").size() != 3)
+        {
+            throw std::runtime_error("invalid map bounds schema");
+        }
+        for (size_t index = 0; index < 3; ++index)
+        {
+            bounds.mn[index] = data.at("min").at(index).get<float>();
+            bounds.mx[index] = data.at("max").at(index).get<float>();
+            if (!std::isfinite(bounds.mn[index]) || !std::isfinite(bounds.mx[index]) ||
+                bounds.mn[index] >= bounds.mx[index] || std::abs(bounds.mn[index]) > 100100.0f ||
+                std::abs(bounds.mx[index]) > 100100.0f)
+            {
+                throw std::runtime_error("invalid map bounds");
+            }
+        }
+        bounds.valid = true;
+    }
+
+    const dumpsrc::ComWorldDump commonWorld = source.loadComWorld();
+    if (commonWorld.loaded)
+    {
+        info("common world: %d primary lights", commonWorld.primaryLightCount);
+    }
+
+    return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory);
+}
+
+int inspect(const Args &args)
+{
+    if (args.positional.empty())
+    {
+        printUsage();
+        return 2;
+    }
+    return inspect_ff(args.positional[0]) ? 0 : 1;
+}
+
+int validate(const Args &args)
+{
+    if (args.positional.size() < 2)
+    {
+        printUsage();
+        return 2;
+    }
+    return validatePackage(args.positional[0], args.positional[1]) ? 0 : 1;
+}
+} // namespace
+
+int main(const int argc, char **argv)
+try
+{
+    Args args;
+    if (!parseArgs(argc, argv, args))
+    {
+        printUsage();
+        return 2;
+    }
+    if (args.command == "build-map")
+    {
+        return buildMap(args);
+    }
+    if (args.command == "inspect")
+    {
+        return inspect(args);
+    }
+    if (args.command == "validate-package")
+    {
+        return validate(args);
+    }
+
+    err("unknown command '%s'", args.command.c_str());
+    printUsage();
+    return 2;
+}
+catch (const std::exception &error)
+{
+    err("conversion failed: %s", error.what());
+    return 1;
+}

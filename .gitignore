@@ -18,7 +18,7 @@ __pycache__/
 *.ilk
 *.exe
 *.dll
-# Owner game files, generated packages and diagnostics
+# Local game files, generated packages and diagnostics
 custom_map_sources/
 evidence/
 .proxy/

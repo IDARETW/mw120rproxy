@@ -17,58 +17,17 @@ foreach ($project in @('mw120rproxy', 'iw8-zonetool')) {
     }
 }
 if ($Tests) {
-    $previousImportWriter = $env:IW8_ZONETOOL_WRITER
-    try {
-        $importConfiguration = if ($Mode -eq 'debug') { 'Debug' } else { 'Release' }
-        $env:IW8_ZONETOOL_WRITER = Join-Path $PSScriptRoot "iw8-zonetool/xmake-out/x64/$importConfiguration/iw8-zonetool.exe"
-        & python -B (Join-Path $PSScriptRoot 'iw8-zonetool/tests/test_import.py')
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Multi-engine importer tests failed'
-        }
-    }
-    finally {
-        $env:IW8_ZONETOOL_WRITER = $previousImportWriter
-    }
-    & python -B (Join-Path $PSScriptRoot 'mw120rproxy/tests/test_shader_setup.py')
+    $testProject = Join-Path $PSScriptRoot 'mw120rproxy/tests'
+    & xmake f -P $testProject -m $Mode -a x64 -y
     if ($LASTEXITCODE -ne 0) {
-        throw 'Shader setup validation tests failed'
+        throw 'Test configuration failed'
     }
-    & python -B (Join-Path $PSScriptRoot 'mw120rproxy/tests/test_door_data.py')
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Door conversion tests failed'
-    }
-    & xmake -P (Join-Path $PSScriptRoot 'mw120rproxy/tests') -j 2 custom_map_tests
+    & xmake -P $testProject -j 2 custom_map_tests
     if ($LASTEXITCODE -ne 0) {
         throw 'Test build failed'
     }
-    Push-Location $PSScriptRoot
-    try {
-        & './test-out/custom_map_tests.exe'
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Tests failed'
-        }
-        foreach ($target in @('door_tests', 'door_ui_tests')) {
-            & xmake -P (Join-Path $PSScriptRoot 'mw120rproxy/tests') -j 2 $target
-            if ($LASTEXITCODE -ne 0) {
-                throw "Test build failed: $target"
-            }
-            & "./test-out/$target.exe"
-            if ($LASTEXITCODE -ne 0) {
-                throw "Tests failed: $target"
-            }
-        }
-        & xmake -P (Join-Path $PSScriptRoot 'mw120rproxy/tests') -j 2 render_raster_tests
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Shader raster test build failed'
-        }
-        foreach ($rasterMode in @('biased', 'shadow', 'shadow_tiles', 'shadow_tiles_scaled', 'shadow_tiles_masked', 'source_baked', 'source_flat', 'source_mask_near', 'source_mask_far', 'source_mask_blocked', 'source_mask_other_sun', 'night', 'glass')) {
-            & './test-out/render_raster_tests.exe' 'mw120rproxy/tools/map_surface_realtime.hlsl' $rasterMode
-            if ($LASTEXITCODE -ne 0) {
-                throw "Shader raster test failed: $rasterMode"
-            }
-        }
-    }
-    finally {
-        Pop-Location
+    & (Join-Path $PSScriptRoot 'test-out/custom_map_tests.exe')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Tests failed'
     }
 }

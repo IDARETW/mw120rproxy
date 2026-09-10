@@ -35,6 +35,10 @@ if (-not (Test-Path -LiteralPath $sourceRoot)) {
 if (-not (Test-Path -LiteralPath $gameExe)) {
     throw "Game executable is missing: $gameExe"
 }
+if ((Get-FileHash -LiteralPath $gameExe -Algorithm MD5).Hash -ne
+    '1C238FE327F2ECC3B0DB924C5B425439') {
+    throw 'The selected game executable is not Replay 1.20.4.7623265.'
+}
 
 if (!$SkipBuild) {
     Push-Location $sourceRoot
@@ -61,11 +65,6 @@ if ((Get-Item -LiteralPath $artifact).Length -lt 64KB) {
     throw "Build artifact is too small: $artifact"
 }
 
-$evidence = Join-Path $repoRoot 'evidence'
-& python -X utf8 (Join-Path $sourceRoot 'tools\verify_build.py') --dll $artifact --game $gameExe --out (Join-Path $evidence 'build_validation.json')
-if ($LASTEXITCODE -ne 0) {
-    throw 'Target/export verification failed; no deployment.'
-}
 if (Get-TargetGameProcess) {
     throw 'Close Replay before deploying. The script never starts or stops the game.'
 }
@@ -115,5 +114,5 @@ catch {
     Backup                 = $backup
     GameStarted            = $false
 } |
-    ConvertTo-Json | Tee-Object -FilePath (Join-Path $evidence 'deployment.json')
+    ConvertTo-Json
 Write-Host 'Deployed and verified. Start Replay yourself and test Multiplayer -> Local Play.'

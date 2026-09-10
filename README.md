@@ -2,24 +2,22 @@
 
 This project is made open source with the goal of providing a modding base for others who want to play, experiment with, and iterate on the code. Later iterations will be updated in this repo as the days progress.
 
-Load custom maps in **MW2019 Replay 1.20.4.7623265**. Includes normal Local Play map selection, a game console, CoD4 conversion tools, an offline importer for additional map and mesh formats, and a Radiant build workflow.
+Load custom maps in **MW2019 Replay 1.20.4.7623265**. The repository includes normal Local Play map selection, a game console, and a native C++ map compiler that writes Replay fastfiles.
 
 ## Requirements
 
 - Windows x64 and a complete Replay installation.
 - Executable: `game_dx12_ship_replay.exe`, MD5 `1c238fe327f2ecc3b0db924c5b425439`.
 - Visual Studio C++ build tools with a Windows SDK, and XMake 2.8 or newer.
-- Python 3.10 or newer.
 - A converted MW120R map package to play a custom map. Original CoD4 `.ff` files cannot be installed directly.
 
 The repository contains source and tools. Game executables, stock fastfiles, shaders, and prebuilt DLLs are not bundled in the source checkout. A ready-to-install [Nuketown example map](docs/NUKETOWN_EXAMPLE.md) is available as a separate release download.
 
 ## Build and install
 
-Open PowerShell in this repository. Install the Python dependencies, then build:
+Open PowerShell in this repository, then build:
 
 ```powershell
-python -m pip install -r requirements.txt
 .\build.ps1 -Tests
 ```
 
@@ -40,7 +38,7 @@ Start the game and enter **Multiplayer → Local Play**. Stock maps still requir
 
 ## Install and play custom maps
 
-Install the complete converted map folder, including `manifest.json` and all supporting files:
+Install the converter's five-fastfile output folder:
 
 ```powershell
 .\mw120rproxy\tools\deploy_custom_map.ps1 `
@@ -49,18 +47,17 @@ Install the complete converted map folder, including `manifest.json` and all sup
     -Map mp_4doffice
 ```
 
-Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The installer checks the map files and required stock shaders before installing. Previous versions are backed up in `.proxy/backups`.
+Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The installer validates all five Replay fastfiles, verifies the copied hashes, and backs up the previous map folder in `.proxy/backups`.
 
 1. Start Replay and open **Multiplayer → Local Play → Game Setup → Map**.
-2. Select your custom map. Its title and artwork should appear in the lobby and loading screen.
+2. Select your custom map. Its title and artwork should appear in the lobby and loading screen. A packaged `compass_map_<map_id>` asset also appears on the in-game HUD minimap.
 3. Start **Team Deathmatch with zero bots** for the first test, select a loadout, and spawn.
 4. Return to Local Play before switching maps. Stock maps can be selected from the same menu.
 
 Office, Nuketown, `mp_test`, and Super Mario 64 have been tested. Download the [Nuketown example package and usage instructions](docs/NUKETOWN_EXAMPLE.md) to try a converted map without running the conversion tools. The other maps are not included.
 
-- [Import maps from other engines](docs/MULTI_ENGINE_IMPORT.md) — IW3/IW4/IW5, Quake II/III/Live, Source BSP, OBJ and glTF static imports, with explicit per-format validation and conversion limits.
-- [Convert an IW3 map to IW8](docs/IW3_TO_IW8.md) — the existing CoD4 workflow, including its additional map-specific features.
-- [Build a map from Radiant](docs/MAP_BUILDING.md#radiant-source-map) — compile your own map source and static models.
+- [Build Replay fastfiles](iw8-zonetool/README.md) — compile a prepared map dump with the native C++ zonetool. The output directory contains only the five map fastfiles.
+- [Map dump format](iw8-zonetool/docs/INPUT_FORMAT.md) — required geometry, materials, collision, lighting, entities, and the optional HUD minimap asset.
 - [Imported doors](docs/DOORS.md) — open, close, and bash compatible brush doors.
 - [Custom-map lighting](docs/LIGHTING.md) — rebuild a map with native sun shadows and adjust baked-light exposure.
 
@@ -85,7 +82,7 @@ Stale safe-mode markers are cleared at startup to prevent the safe-mode prompt a
 - Transparent foliage and decals, normal/specular material channels, climbable ladders, ladder sounds, and footsteps matched to floor materials.
 - Breakable glass with sound when shot, hit with melee, or mantled through. Glass debris is still being investigated.
 - Imported brush doors with Use to open/close, melee and sprint bashing, moving collision, and the game's interaction popup. Existing packages need to be rebuilt to include door data.
-- Custom map names, menu previews, and loading-screen images.
+- Custom map names, menu previews, loading-screen images, and native HUD minimap materials.
 
 CoD4 scripts, general destructible objects, and bot navigation are not supported. Model physics is not imported automatically; use clip brushes for solid props. Test converted maps in-game, especially maps with unusual materials or scripted objects.
 
