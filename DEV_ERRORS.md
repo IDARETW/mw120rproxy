@@ -535,6 +535,7 @@
 | 930 | radius not specified for trigger_rotatable_radius at (%g %g %g) |
 | 931 | height not specified for trigger_rotatable_radius at (%g %g %g) |
 | 932 | radius not specified for trigger_disk at (%g %g %g) |
+| 933 | BaseForFields: invalid fields[] |
 | 950 | Compass ownerdraw had width or height of 0 |
 | 951 | Compass ownerdraw had width or height of 0 |
 | 952 | Channel name too long in specified list: "%s" |
@@ -1224,6 +1225,7 @@
 | 2030 | %s is too long. Max length is %i |
 | 2031 | %s is too long. Max length is %i |
 | 2032 | %s is too long. Max length is %i |
+| 2036 | unknown species '%s' (should be human, dog, alien or all) |
 | 2038 | GetAccuracyFraction <weapon> <distance> [use player accuracy]. |
 | 2039 | "%s" weapon is not precached |
 | 2040 | GetSpawnerStruct() requires two arguments (name, key) |
@@ -1234,6 +1236,8 @@
 | 2045 | Only Space enabled actors are supported for ForceMovingPlatformEntity |
 | 2046 | ForceMovingPlatformEntity can only be called on players or actors |
 | 2047 | SetSlowMotionView requires at least 1 parameter. |
+| 2048 | not a player entity |
+| 2049 | not an entity |
 | 2050 | Moving platform turn rates can only be set on clients. |
 | 2051 | Rate not set. |
 | 2052 | Trying to relative teleport entity that is linked to parent. Please teleport parent instead. |
@@ -1243,11 +1247,31 @@
 | 2056 | "%s" grenade weapon is not precached |
 | 2057 | Invalid grenade weapon for MagicGrenade |
 | 2058 | BulletTracer called with unknown weapon |
+| 2059 | UpdateEntityWithWeapons must be called with pairs of 'weapon name', 'tag name' - we have an odd number of parameters passed in. |
+| 2060 | UpdateEntityWithWeapons must be called with no more than %d pairs of 'weapon name', 'tag name' - we have %d pairs passed in. |
 | 2062 | unknown sound alias '%s' |
 | 2063 | '%s' is a looping alias, use 'playloopsound' instead |
 | 2064 | Sound Error |
+| 2065 | PlaySoundAtViewHeight() should only be called on sentients |
 | 2066 | unknown sound alias '%s' |
 | 2067 | '%s' is a looping alias, use 'playloopsound' instead |
+| 2068 | PlayLoopSound() must not be called on the player in SP. |
+| 2069 | unknown sound alias '%s' |
+| 2070 | '%s' is not a looping alias, use 'playsound' instead |
+| 2071 | unknown sound alias '%s' |
+| 2072 | '%s' is a looping alias, use 'playloopsound' instead |
+| 2073 | Surface type '%s' does not exist (%s) |
+| 2074 | playsurfacesound has %d parameters. There should be two, three or four. |
+| 2075 | playcontextsound has %d parameters. There should be exactly three or five. |
+| 2076 | unknown context sound alias '%s' |
+| 2077 | '%s' is a looping alias, cannot play a looping context sound |
+| 2078 | '%s' does has not have a valid index (%i) |
+| 2079 | Sound Context '%s' - '%s' does not exist (%s) |
+| 2080 | Sound Context '%s' - '%s' does not exist (%s) |
+| 2081 | unknown sound alias '%s' |
+| 2082 | '%s' is a looping alias, use 'playloopsound' instead |
+| 2083 | EnableAudioPortal: Incorrect number of parameters |
+| 2084 | This function only supports trigger brush entity types. |
 | 2091 | Must be called with a player. |
 | 2092 | Must be called with a player. |
 | 2093 | Type should be a sentient or a vehicle |
@@ -1340,6 +1364,7 @@
 | 2180 | Incorrect number of parameters |
 | 2181 | Incorrect number of parameters |
 | 2182 | Incorrect number of paramters |
+| 2183 | Incorrect number of parameters |
 | 2184 | Incorrect number of parameters |
 | 2185 | Incorrect number of parameters |
 | 2186 | Incorrect number of parameters |
@@ -1365,6 +1390,7 @@
 | 2206 | GScr_StartRagdollFromImpact must be called on an actor. |
 | 2207 | HitLoc parameter must be a valid hit location string e.g. 'torso_upper' |
 | 2208 | USAGE: notifyOnCommand( <notify>, <command> ) |
+| 2209 | Unknown channel name (%s), please check channel definitions file. |
 | 2210 | SetLaserMaterial takes two parameters (laser material name, light material name) |
 | 2211 | PushPlayerVector is not supported in this game mode |
 | 2212 | PushPlayerVector must be called on a player entity |
@@ -1854,6 +1880,7 @@
 | 2781 | Scriptable property '%s' has no getter function - this should never happen |
 | 2782 | Scriptable property '%s' is read-only |
 | 2783 | Scriptable does not support directly being set, implementation needed |
+| 2784 | Tried to set a read only entity field |
 | 2785 | Cannot set count on a non-spawner entity |
 | 2786 | entity %i is not a script_brushmodel, script_model, script_origin, script_arms, script_weapon, light or script_vehicle |
 | 2787 | not an entity |
@@ -2763,6 +2790,7 @@
 | 3911 | AnimScripted entities are not supported in this game mode |
 | 3912 | AnimScripted entities are not supported in this game mode |
 | 3913 | blended nonsynchronized animation has no concept of time |
+| 3914 | failed memory allocation for script usage |
 | 3915 | '%s' is an illegal radar mode. Must be '%s' or '%s' |
 | 3916 | unknown team '%s' |
 | 3917 | client is not pointing to the level.clients array |
@@ -4661,6 +4689,7 @@
 | 6442 | Attempted to access an invalid head icon slot. |
 | 6443 | Attachment '%s' has %u variants. This exceeded the code limit on number of variants, 'BG_WEAPONS_SETUP_MAX_VARIANT_NUM' (%u). |
 | 6446 | LUI: Out of elements. |
+| 6447 | PredictStreamPos has invalid viewMode argument |
 | 6448 | SetAdditionalStreamPos has invalid player entity argument |
 | 6449 | SetAdditionalStreamPos has invalid viewMode argument |
 | 6450 | SetAdditionalStreamPos has invalid player entity argument |
