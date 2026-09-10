@@ -20,7 +20,7 @@ iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe
 
 Use the checked-in clang-format styles for C++. Keep Replay addresses, byte signatures, structure sizes, streams, and ABI padding explicit.
 
-The compiler reads a prepared dump and writes exactly five fastfiles. It has no Python dependency and writes no manifest or loose runtime data. See [Map dump input](../iw8-zonetool/docs/INPUT_FORMAT.md).
+The compiler accepts a generated IW3 map fastfile or a prepared dump and writes exactly five fastfiles. It has no Python dependency and writes no manifest or loose runtime data. See [Direct IW3 conversion](IW3_TO_IW8.md) and [Map dump input](../iw8-zonetool/docs/INPUT_FORMAT.md).
 
 Validate a package before installation:
 

@@ -1,6 +1,7 @@
 # Build a custom map
 
-The supported compiler is the native C++ source in `iw8-zonetool`. It consumes a prepared map dump and produces the five fastfiles read by MW120R.
+The supported compiler is the native C++ source in `iw8-zonetool`. It accepts a generated IW3
+fastfile directly or consumes a prepared map dump and produces the five fastfiles read by MW120R.
 
 ## Build the tools
 
@@ -9,6 +10,10 @@ The supported compiler is the native C++ source in `iw8-zonetool`. It consumes a
 ```
 
 No Python installation is required.
+
+To start directly from a generated CoD4 `.ff`, follow
+[Convert an IW3 fastfile](IW3_TO_IW8.md). The prepared layout below remains available for finished
+maps that supply converted materials and authored gameplay sidecars.
 
 ## Prepare the dump
 

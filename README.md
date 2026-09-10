@@ -9,7 +9,7 @@ Load custom maps in **MW2019 Replay 1.20.4.7623265**. The repository includes no
 - Windows x64 and a complete Replay installation.
 - Executable: `game_dx12_ship_replay.exe`, MD5 `1c238fe327f2ecc3b0db924c5b425439`.
 - Visual Studio C++ build tools with a Windows SDK, and XMake 2.8 or newer.
-- A converted MW120R map package to play a custom map. Original CoD4 `.ff` files cannot be installed directly.
+- A converted MW120R map package to play a custom map. CoD4 `.ff` files can be passed directly to the converter, but they cannot be installed in Replay unchanged.
 
 The repository contains source and tools. Game executables, stock fastfiles, shaders, and prebuilt DLLs are not bundled in the source checkout. A ready-to-install [Nuketown example map](docs/NUKETOWN_EXAMPLE.md) is available as a separate release download.
 
@@ -56,7 +56,8 @@ Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The
 
 Office, Nuketown, `mp_test`, and Super Mario 64 have been tested. Download the [Nuketown example package and usage instructions](docs/NUKETOWN_EXAMPLE.md) to try a converted map without running the conversion tools. The other maps are not included.
 
-- [Build Replay fastfiles](iw8-zonetool/README.md) — compile a prepared map dump with the native C++ zonetool. The output directory contains only the five map fastfiles.
+- [Convert an IW3 fastfile](docs/IW3_TO_IW8.md) — pass a generated CoD4 map `.ff` directly to the native converter with no manual export or Python dependency.
+- [Build Replay fastfiles](iw8-zonetool/README.md) — convert an IW3 fastfile or compile a prepared map dump. The output directory contains only the five map fastfiles.
 - [Map dump format](iw8-zonetool/docs/INPUT_FORMAT.md) — required geometry, materials, collision, lighting, entities, and the optional HUD minimap asset.
 - [Imported doors](docs/DOORS.md) — open, close, and bash compatible brush doors.
 - [Custom-map lighting](docs/LIGHTING.md) — rebuild a map with native sun shadows and adjust baked-light exposure.

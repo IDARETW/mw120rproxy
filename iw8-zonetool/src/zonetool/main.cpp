@@ -7,6 +7,7 @@
 #include "dumpsrc/image_dump.h"
 #include "dumpsrc/material_dumpsrc.h"
 #include "dumpsrc/xmodel_dump.h"
+#include "iw3/iw3_fastfile.h"
 #include "iw8/iw8_ffheader.h"
 #include "iw8/iw8_zone.h"
 #include "iw8/map_zone.h"
@@ -38,6 +39,8 @@ struct Args
     std::string replayExecutable;
     std::string collisionPath;
     std::string footstepsPath;
+    std::string unlinkerExecutable;
+    std::vector<std::string> searchPaths;
     std::string lightingProfile = "source";
     float sunIntensityScale = 6.0f;
 };
@@ -47,12 +50,15 @@ void printUsage()
     std::printf("iw8-zonetool - IW8 Replay 1.20 map compiler\n"
                 "usage:\n"
                 "  iw8-zonetool build-map <dump> <map> -o <output> [options]\n"
+                "  iw8-zonetool build-iw3 <map.ff> [map] -o <output> [options]\n"
                 "  iw8-zonetool inspect <file.ff>\n"
                 "  iw8-zonetool validate-package <package_dir> <map>\n"
                 "options:\n"
                 "  --replay <game_dx12_ship_replay.exe>\n"
                 "  --collision <collision.bin>\n"
                 "  --footsteps <footsteps.bin>\n"
+                "  --unlinker <OpenAssetTools\\Unlinker.exe>\n"
+                "  --search-path <IW3 asset directory>\n"
                 "  --lighting-profile source|aniyah-incursion\n"
                 "  --sun-intensity-scale <positive multiplier>\n"
                 "  -v  -q\n");
@@ -84,6 +90,14 @@ bool parseArgs(const int argc, char **argv, Args &args)
         else if (value == "--footsteps" && index + 1 < argc)
         {
             args.footstepsPath = argv[++index];
+        }
+        else if (value == "--unlinker" && index + 1 < argc)
+        {
+            args.unlinkerExecutable = argv[++index];
+        }
+        else if (value == "--search-path" && index + 1 < argc)
+        {
+            args.searchPaths.emplace_back(argv[++index]);
         }
         else if (value == "--lighting-profile" && index + 1 < argc)
         {
@@ -653,6 +667,40 @@ int buildMap(const Args &args)
     return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory);
 }
 
+int buildIw3(const Args &args)
+{
+    if (args.positional.empty() || args.positional.size() > 2 || args.outputDirectory.empty() ||
+        args.replayExecutable.empty())
+    {
+        printUsage();
+        return 2;
+    }
+
+    const std::string map = args.positional.size() == 2
+                                ? args.positional[1]
+                                : std::filesystem::path(args.positional[0]).stem().string();
+    if (!requireMapId(map))
+    {
+        return 2;
+    }
+
+    iw3::ImportOptions options;
+    options.fastfile = args.positional[0];
+    options.map = map;
+    options.unlinker = args.unlinkerExecutable;
+    for (const std::string &path : args.searchPaths)
+    {
+        options.searchPaths.emplace_back(path);
+    }
+    iw3::PreparedMap prepared = iw3::PrepareFastfile(options);
+
+    Args build = args;
+    build.command = "build-map";
+    build.positional = {prepared.root.string(), map};
+    build.collisionPath = prepared.collision.string();
+    return buildMap(build);
+}
+
 int inspect(const Args &args)
 {
     if (args.positional.empty())
@@ -686,6 +734,10 @@ try
     if (args.command == "build-map")
     {
         return buildMap(args);
+    }
+    if (args.command == "build-iw3")
+    {
+        return buildIw3(args);
     }
     if (args.command == "inspect")
     {

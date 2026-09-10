@@ -29,6 +29,38 @@ xmake-out\x64\Release\iw8-zonetool.exe
 
 ## Build a map
 
+### Convert an IW3 fastfile directly
+
+`build-iw3` accepts a CoD4 map fastfile and performs the extraction, normalization, collision
+bake, and IW8 zone build in one command:
+
+```bat
+iw8-zonetool.exe build-iw3 D:\CoD4\zone\english\mp_example.ff ^
+  -o D:\Maps\mp_example\package ^
+  --replay "D:\Replay\game_dx12_ship_replay.exe" ^
+  --unlinker "D:\Tools\OpenAssetTools\Unlinker.exe"
+```
+
+The map id is taken from the fastfile name. Pass a second positional value to rename it during
+conversion. A sibling `mp_example_load.ff` is read automatically. Repeat `--search-path` for CoD4
+directories or IWD locations needed by the source zone.
+
+This command uses the native OpenAssetTools Unlinker with the supplied IW3 Replay map exporters.
+It keeps the extracted files in a private temporary directory and removes them after the five
+fastfiles are written. No Python runtime, manual export, `.bin`, JSON, report, or preview file is
+left in the package directory.
+
+Direct fastfile conversion preserves world geometry, placed static-model LOD0 geometry, collision,
+entities, source sun settings, vertex colors, and an available `compass_map_<map>` image. It uses
+Replay's stock material for the 3D world because IW3 technique sets cannot be serialized as IW8
+technique sets. Use the prepared-dump route below when the map needs converted materials, textures,
+baked light data, doors, glass, ladders, or other authored sidecars.
+
+The patched Unlinker setup and complete command are documented in
+[`docs/IW3_FASTFILE.md`](docs/IW3_FASTFILE.md).
+
+### Build a prepared map
+
 Give `build-map` a prepared map dump, a lower-case `mp_` map id, and an empty output directory:
 
 ```bat
