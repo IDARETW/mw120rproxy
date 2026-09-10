@@ -43,7 +43,7 @@ Install the converter's five-fastfile output folder:
 ```powershell
 .\mw120rproxy\tools\deploy_custom_map.ps1 `
     -GameRoot 'D:\Games\Replay' `
-    -PackageDir 'D:\Maps\Office\package' `
+    -PackageDir 'D:\CoD4\zone\english\mp_4doffice_iw8' `
     -Map mp_4doffice
 ```
 
@@ -55,7 +55,7 @@ Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The
 4. Return to Local Play before switching maps. Stock maps can be selected from the same menu.
 
 - [Convert an IW3 fastfile](docs/IW3_TO_IW8.md) — pass a generated CoD4 map `.ff` directly to the native converter with no manual export or Python dependency.
-- [Build Replay fastfiles](iw8-zonetool/README.md) — convert an IW3 fastfile or compile a prepared map dump. The output directory contains only the five map fastfiles.
+- [Build Replay fastfiles](iw8-zonetool/README.md) — convert an IW3 fastfile or compile a prepared map dump. The output contains the five map fastfiles and, when requested, `map.json` metadata.
 - [Map dump format](iw8-zonetool/docs/INPUT_FORMAT.md) — required geometry, materials, collision, lighting, entities, and the optional HUD minimap asset.
 - [Imported doors](docs/DOORS.md) — open, close, and bash compatible brush doors.
 - [Custom-map lighting](docs/LIGHTING.md) — rebuild a map with native sun shadows and adjust baked-light exposure.

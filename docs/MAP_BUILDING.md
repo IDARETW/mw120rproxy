@@ -1,7 +1,8 @@
 # Build a custom map
 
 The supported compiler is the native C++ source in `iw8-zonetool`. It accepts a generated IW3
-fastfile directly or consumes a prepared map dump and produces the five fastfiles read by MW120R.
+fastfile directly or consumes a prepared map dump and produces the five fastfiles read by MW120R,
+plus optional `map.json` metadata.
 
 ## Build the tools
 
@@ -38,7 +39,7 @@ For the HUD minimap, add `dump/images/compass_map_mp_example.iwi`. It must be an
 ## Compile
 
 ```powershell
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\package'
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\output'
 ```
 
 To bake MWCOLL02 or MWCOLL03 collision in memory, add the supported Replay executable, collision input, and optional footstep data:
@@ -63,8 +64,8 @@ techsets_mp_example.ff
 ## Validate and install
 
 ```powershell
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-package 'D:\Maps\Example\package' mp_example
-.\mw120rproxy\tools\deploy_custom_map.ps1 -GameRoot 'D:\Games\Replay' -PackageDir 'D:\Maps\Example\package' -Map mp_example
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-package 'D:\Maps\Example\output' mp_example
+.\mw120rproxy\tools\deploy_custom_map.ps1 -GameRoot 'D:\Games\Replay' -PackageDir 'D:\Maps\Example\output' -Map mp_example
 ```
 
 Test geometry, movement and bullet collision, materials, sunlight, interiors, footsteps, glass, ladders, spawns, and the HUD minimap before sharing a conversion.

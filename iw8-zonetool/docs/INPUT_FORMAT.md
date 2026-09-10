@@ -1,4 +1,8 @@
-# Map dump input
+# Prepared map-dump input
+
+This format is for the advanced `build-map` route. Direct `build-iw3` conversion accepts a
+generated IW3 fastfile and does not require a manually prepared dump, JSON input, or `.bin`
+sidecar. See [Direct IW3 fastfile conversion](IW3_FASTFILE.md) for that path.
 
 `build-map` reads one prepared dump directory. All map-specific files use the same asset name:
 
@@ -106,5 +110,5 @@ are consumed during compilation and embedded in the main fastfile.
 
 ## Output rule
 
-The output directory must be empty or already contain only the same map's five fastfiles. The
-compiler rejects unrelated entries instead of silently deleting them.
+The output directory must be empty or already contain only the same map's five fastfiles and an
+optional `map.json`. The compiler rejects unrelated entries instead of silently deleting them.

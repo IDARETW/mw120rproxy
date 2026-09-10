@@ -4,6 +4,10 @@ This is a ready-to-install conversion of **Nuketown by >>N.B.Z.I.<<** for
 MW120R and **MW2019 Replay 1.20.4.7623265**. The map is listed in Local Play as
 **Nuketown (CoD4)** and uses the ID `mp_nuketown`.
 
+This release uses the earlier package layout and includes its manifest and sidecar files. It is a
+ready-to-play example, not the normal output of current `build-iw3` conversion. New direct
+conversions contain five fastfiles and, optionally, `map.json` metadata.
+
 Download [mw120r-nuketown-example-v1.zip](https://github.com/IDARETW/mw120rproxy/releases/download/nuketown-example-v1/mw120r-nuketown-example-v1.zip)
 from the [Nuketown example release](https://github.com/IDARETW/mw120rproxy/releases/tag/nuketown-example-v1).
 Download the named ZIP asset, not GitHub's automatically generated source-code
@@ -58,7 +62,7 @@ The final layout must be:
 ```
 
 Keep all twelve files together. Do not rename the map folder or put another
-`mp_nuketown` folder between it and `manifest.json`.
+`mp_nuketown` folder between it and the legacy `manifest.json`.
 
 ## Play
 

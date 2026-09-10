@@ -7,7 +7,7 @@ conversion code, and game-specific IW8 asset writers.
 The compiler writes native Replay 1.20 fastfiles. Collision, footsteps, render geometry,
 materials, lightgrid data, sun settings, bullet-impact effects, and an optional HUD minimap are
 serialized into the zones. It does not create a manifest, loose collision file, report, preview,
-or other file in the output directory.
+or other output file. The only exception is an optional `map.json` when `--metadata` is supplied.
 
 The project has no Python scripts or Python dependency. It builds as a single Windows x64 C++
 executable with XMake and Visual Studio Build Tools.
@@ -80,7 +80,7 @@ beside the dump unless `-o` selects another destination:
 iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example
 ```
 
-The output contains exactly:
+The output contains these five fastfiles:
 
 ```text
 mp_example.ff
@@ -90,7 +90,8 @@ ww_mp_example.ff
 techsets_mp_example.ff
 ```
 
-The source dump layout is documented in [docs/INPUT_FORMAT.md](docs/INPUT_FORMAT.md). Existing
+`map.json` is optional and is the only loose file accepted beside the fastfiles. The source dump
+layout is documented in [docs/INPUT_FORMAT.md](docs/INPUT_FORMAT.md). Existing
 serialized Replay collision can be placed at
 `maps/mp/mp_example.d3dbsp.havok`. To bake `collision.bin` directly into the server fastfile, pass
 the matching Replay executable and optional footstep data:
@@ -126,7 +127,7 @@ resident framing, and stream sizes of every zone.
 
 ## Install
 
-Copy the five fastfiles to:
+Copy the five fastfiles, and `map.json` if you created it, to:
 
 ```text
 <game>\mods\mw120r\maps\mp_example\

@@ -1,8 +1,8 @@
 # Direct IW3 fastfile conversion
 
 The native `build-iw3` command reads a generated CoD4 multiplayer fastfile and writes the five
-fastfiles expected by MW120R. Extraction and intermediate map data stay in a temporary directory
-and are deleted when the command finishes.
+fastfiles expected by MW120R. It can also write optional `map.json` metadata. Extraction and
+intermediate map data stay in a temporary directory and are deleted when the command finishes.
 
 ## Prepare OpenAssetTools once
 
@@ -30,18 +30,18 @@ Build `iw8-zonetool`, then run:
 ```powershell
 .\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-iw3 `
     'D:\CoD4\zone\english\mp_example.ff' `
-    -o 'D:\Maps\mp_example\package' `
     --replay 'D:\Replay\game_dx12_ship_replay.exe' `
     --unlinker 'D:\Tools\OpenAssetTools\build\bin\Release_x86\Unlinker.exe' `
     --search-path 'D:\CoD4\main' `
     --search-path 'D:\CoD4\usermaps\mp_example'
 ```
 
-The map id defaults to the `.ff` filename. To rename it, add the target id immediately after the
-input path:
+The map id defaults to the `.ff` filename. The output folder is created beside the source as
+`<map>_iw8`; use `-o` only when you need another location. To rename it, add the target id
+immediately after the input path:
 
 ```powershell
-iw8-zonetool.exe build-iw3 'D:\CoD4\mp_old.ff' mp_new -o 'D:\Maps\mp_new\package' `
+iw8-zonetool.exe build-iw3 'D:\CoD4\mp_old.ff' mp_new `
     --replay 'D:\Replay\game_dx12_ship_replay.exe' `
     --unlinker 'D:\Tools\OpenAssetTools\Unlinker.exe'
 ```
@@ -52,7 +52,7 @@ lets Unlinker resolve assets stored outside the map zone. `--unlinker` may be om
 `IW8_ZONETOOL_UNLINKER` environment variable. The earlier `MW120R_UNLINKER` variable is also
 accepted.
 
-The output directory contains only:
+The output directory contains these five fastfiles:
 
 ```text
 mp_example.ff
@@ -62,10 +62,22 @@ ww_mp_example.ff
 techsets_mp_example.ff
 ```
 
+No JSON is required. To set the lobby title or description, pass one small file with `--metadata`:
+
+```json
+{
+  "title": "Example Map",
+  "description": "Converted from CoD4"
+}
+```
+
+`id` is also allowed when it matches the target map id. `map.json` is the only loose file accepted
+beside the five fastfiles.
+
 Use `validate-package` before installation:
 
 ```powershell
-iw8-zonetool.exe validate-package 'D:\Maps\mp_example\package' mp_example
+iw8-zonetool.exe validate-package 'D:\CoD4\zone\english\mp_example_iw8' mp_example
 ```
 
 Direct conversion includes the playable world mesh, placed static models, collision, entities,

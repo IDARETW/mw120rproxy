@@ -1,6 +1,6 @@
 # Custom-map lighting
 
-MW120R uses the lighting serialized by the native zonetool. The proxy does not replace a converted map's sun direction, color, or intensity.
+MW120R uses the lighting serialized by the native zonetool. The proxy does not replace a converted map's sun direction, color, or intensity. This page describes the prepared-dump route; direct `build-iw3` conversion uses the source sun without requiring a lighting JSON file.
 
 ## Source sun
 
@@ -19,7 +19,7 @@ Every dump needs `maps/mp/<map-id>.d3dbsp.lighting.json` with schema 1:
 The compiler keeps the source direction and color. Adjust exposure with a positive multiplier:
 
 ```powershell
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\package' --sun-intensity-scale 5.5
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\output' --sun-intensity-scale 5.5
 ```
 
 Change the multiplier in small steps and rebuild all five fastfiles. High values can wash out materials and emphasize shadow transitions.

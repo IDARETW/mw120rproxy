@@ -20,12 +20,12 @@ iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe
 
 Use the checked-in clang-format styles for C++. Keep Replay addresses, byte signatures, structure sizes, streams, and ABI padding explicit.
 
-The compiler accepts a generated IW3 map fastfile or a prepared dump and writes exactly five fastfiles. It has no Python dependency and writes no manifest or loose runtime data. See [Direct IW3 conversion](IW3_TO_IW8.md) and [Map dump input](../iw8-zonetool/docs/INPUT_FORMAT.md).
+The compiler accepts a generated IW3 map fastfile or a prepared dump. Its standard output is five fastfiles; it can also write one optional `map.json` with the map title and description. It has no Python dependency and writes no manifest or other loose runtime data. See [Direct IW3 conversion](IW3_TO_IW8.md) and [Map dump input](../iw8-zonetool/docs/INPUT_FORMAT.md).
 
 Validate a package before installation:
 
 ```powershell
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-package 'D:\Maps\Example\package' mp_example
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-package 'D:\CoD4\zone\english\mp_example_iw8' mp_example
 ```
 
 Use [deploy_custom_map.ps1](../mw120rproxy/tools/deploy_custom_map.ps1) to install it. The script checks the Replay build, stages the files, compares hashes, and backs up the prior map.

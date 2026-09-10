@@ -22,15 +22,15 @@ doors. The rest of the CoD4 gameplay script is not executed.
 
 ## Map conversion
 
-`build_imported_map.py` recognizes named `script_brushmodel` doors with literal
+The legacy imported-map builder recognizes named `script_brushmodel` doors with literal
 `getEnt`, `linkto`, `rotateYaw`, or `moveX`/`moveY`/`moveZ` definitions in the map's
 GSC source. The door's name must contain `door`. Hinged doors use their authored
 linked pivot, and sliding gates retain their authored travel distance.
 
-Doors are excluded from static collision and stored in `doors.bin`. The manifest
-uses `"doors": "brush-poses-v1"`. Keep that file with the map's fastfiles; the
-deployment script installs it automatically. Existing packages must be rebuilt
-to gain door support.
+This legacy package format stores moving door data in `doors.bin` and records
+`"doors": "brush-poses-v1"` in `manifest.json`. Keep those files with that
+legacy package. Direct `build-iw3` output is fastfile-only and does not create
+door sidecars; it can still be installed without a manifest.
 
 This supports authored brush doors in Local Play. It does not turn arbitrary
 decorative models into doors or run general scripted movers, elevators, keys,
