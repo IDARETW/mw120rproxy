@@ -54,8 +54,6 @@ Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The
 3. Start **Team Deathmatch with zero bots** for the first test, select a loadout, and spawn.
 4. Return to Local Play before switching maps. Stock maps can be selected from the same menu.
 
-Office, Nuketown, `mp_test`, and Super Mario 64 have been tested. Download the [Nuketown example package and usage instructions](docs/NUKETOWN_EXAMPLE.md) to try a converted map without running the conversion tools. The other maps are not included.
-
 - [Convert an IW3 fastfile](docs/IW3_TO_IW8.md) — pass a generated CoD4 map `.ff` directly to the native converter with no manual export or Python dependency.
 - [Build Replay fastfiles](iw8-zonetool/README.md) — convert an IW3 fastfile or compile a prepared map dump. The output directory contains only the five map fastfiles.
 - [Map dump format](iw8-zonetool/docs/INPUT_FORMAT.md) — required geometry, materials, collision, lighting, entities, and the optional HUD minimap asset.
