@@ -1,6 +1,8 @@
 float glassStockFraction = 1;
 const int* glassExpectedSkip = nullptr;
 unsigned glassFxCalls = 0, glassSoundCalls = 0;
+float glassSpawnOffset = 2.125f;
+std::vector<glassfile::Vec> glassSpawnOrigins;
 const char* glassEffectName = "vfx/code/glass/glass_shatter_64x64";
 struct GlassAlias {
     const char* name = "glass_pane_breakout";
@@ -17,8 +19,10 @@ void* GlassFindSound(const char* name) {
 }
 unsigned GlassEffect(int client, void* ref, int time, const float* origin, const float* axis) {
     Check(client == 0 && time == 1000 && *static_cast<void**>(ref) == &glassEffectName &&
-              std::abs(origin[0] - 2) < .001f && axis[0] == 1,
+              std::abs(origin[0] - glassSpawnOffset) < .001f && axis[0] == 1 && origin[1] >= -20 &&
+              origin[1] <= 20 && origin[2] >= 0 && origin[2] <= 80,
           "native shatter effect receives current client time and surface-offset impact");
+    glassSpawnOrigins.push_back({origin[0], origin[1], origin[2]});
     ++glassFxCalls;
     return 0x1001;
 }
@@ -194,8 +198,14 @@ void GlassTests() {
     memcpy(cg.data() + 0x2F20, &deltaTime, 4);
     customglass::PumpEffects();
     customglass::PumpEffects();
-    Check(glassFxCalls == 1 && glassSoundCalls == 1,
-          "shot produces one native shatter effect and positional sound, never duplicates");
+    Check(
+        glassFxCalls == 13 && glassSoundCalls == 1,
+        "shot distributes native shard effects across the pane and plays one sound, never duplicates");
+    auto uniqueOrigins = glassSpawnOrigins;
+    std::sort(uniqueOrigins.begin(), uniqueOrigins.end());
+    uniqueOrigins.erase(std::unique(uniqueOrigins.begin(), uniqueOrigins.end()),
+                        uniqueOrigins.end());
+    Check(uniqueOrigins.size() == 13, "pane fractures emit at distinct positions");
     slide(nullptr, nullptr, trace.data(), start, end, bounds, 7, nullptr, 0, 1, true);
     Check(*reinterpret_cast<float*>(trace.data()) == 1, "broken pane releases collision");
     std::vector<unsigned char> world(0x4300);
@@ -245,7 +255,7 @@ void GlassTests() {
     customglass::HideBroken(reinterpret_cast<uintptr_t>(world.data()), 0);
     Check(visibility == 0x70000000, "native mantle overlap breaks just the touched pane");
     customglass::PumpEffects();
-    Check(glassFxCalls == 2 && glassSoundCalls == 2,
+    Check(glassFxCalls == 26 && glassSoundCalls == 2,
           "mantle uses the same effect and audio path as shooting");
     customglass::Load(dir);
     using Physics = void (*)(int, void*, const float*, const float*, const float*, const int*, int,
@@ -255,11 +265,11 @@ void GlassTests() {
     glassStockFraction = .1f;
     physics(1, trace.data(), rayA, rayB, point, nullptr, 0, 0, 0x2806931, 1, nullptr, 0);
     customglass::PumpEffects();
-    Check(glassFxCalls == 2, "low-level bullet respects walls");
+    Check(glassFxCalls == 26, "low-level bullet respects walls");
     glassStockFraction = 1;
     physics(1, trace.data(), rayA, rayB, point, nullptr, 0, 0, 0x2806931, 1, nullptr, 0);
     customglass::PumpEffects();
-    Check(glassFxCalls == 3 && glassSoundCalls == 3,
+    Check(glassFxCalls == 39 && glassSoundCalls == 3,
           "low-level weapon query independently breaks panes with native effects");
     {
         std::ofstream f(dir / "glass.bin", std::ios::binary);
@@ -272,10 +282,11 @@ void GlassTests() {
         f.write(reinterpret_cast<char*>(surfaces), sizeof(surfaces));
     }
     customglass::Load(dir);
+    glassSpawnOffset = 6.f;
     glassStockFraction = .45f;
     physics(1, trace.data(), rayA, rayB, point, nullptr, 0, 0, 0x2806931, 1, nullptr, 0);
     customglass::PumpEffects();
-    Check(glassFxCalls == 4 && glassSoundCalls == 4,
+    Check(glassFxCalls == 52 && glassSoundCalls == 4,
           "shot at authored pane thickness breaks before its center plane");
     visibility = 0xF0000000;
     customglass::HideBroken(reinterpret_cast<uintptr_t>(world.data()), 0);
@@ -283,9 +294,25 @@ void GlassTests() {
     glassStockFraction = 1;
     customglass::Clear();
     glassfile::Pane smallPane;
+    smallPane.normal = {1, 0, 0};
     smallPane.vertices = {{0, 0, 0}, {0, 32, 0}, {0, 32, 32}, {0, 0, 32}};
     Check(!strcmp(glassfile::ShatterEffect(smallPane), "vfx/code/glass/glass_shatter_32x32"),
           "small panes select stock model-debris effect at their scale");
+    for (float side : {-1.f, 1.f}) {
+        const auto origins = glassfile::ShardOrigins(smallPane, {side, 0, 0});
+        Check(origins.size() == 8, "small panes still produce a visible bounded burst");
+        for (const auto& p : origins)
+            Check(std::abs(p[0] - side * 2.125f) < .001f && p[1] >= 0 && p[1] <= 32 && p[2] >= 0 &&
+                      p[2] <= 32,
+                  "fragments lie on the polygon and outside its thickness on either side");
+    }
+    smallPane.vertices = {{0, 0, 0}, {0, 1024, 0}, {0, 1024, 1024}, {0, 0, 1024}};
+    Check(glassfile::ShardOrigins(smallPane, {1, 0, 0}).size() == glassfile::MaxShardEffects,
+          "large panes cannot exceed the native effect budget");
+    smallPane.vertices = {{0, 0, 0}, {0, 64, 0}, {0, 0, 64}};
+    for (const auto& p : glassfile::ShardOrigins(smallPane, {1, 0, 0}))
+        Check(p[1] >= 0 && p[2] >= 0 && p[1] + p[2] <= 64.001f,
+              "triangular panes keep every fragment inside the authored outline");
     fs::remove(dir / "glass.bin");
     puts(
         "PASS: exact glass hook prologues and 7/8/11/12-argument ABIs; occluded shots, narrow-core mantle damage, vehicle-side rejection, pane thickness, grouped visibility, native model-debris effects, deferred client/prediction gates, spatial audio, no duplicate events and reload reset (engine traces and playback mocked)");

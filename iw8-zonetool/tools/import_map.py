@@ -20,7 +20,7 @@ from mapimport.replay import prepare, preview
 from mapimport.source import read_source
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TOOLS = ROOT.parent / "mw120rproxy/tools"
+DEFAULT_TOOLS = ROOT.parent / "mw120rproxy/mw120rproxy/tools"
 FORMATS = [
     {
         "id": "iw3",
@@ -126,9 +126,7 @@ def verify_package(package, mapid):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("input", type=Path)
-    p.add_argument(
-        "map", help="Target lower-case mp_<name>; independent of the source map name"
-    )
+    p.add_argument("map", help="Target lower-case mp_<name>; independent of the source map name")
     p.add_argument(
         "-o",
         "--output",
@@ -182,11 +180,13 @@ def parser():
     )
     p.add_argument("--title", help="Map selector title")
     p.add_argument(
-        "--credit", default="", help="Source author/license attribution for the package"
+        "--replay",
+        type=Path,
+        required=True,
+        help="Replay 1.20.4.7623265 executable used for offline collision baking",
     )
-    p.add_argument(
-        "--writer", type=Path, default=ROOT / "xmake-out/x64/Release/iw8-zonetool.exe"
-    )
+    p.add_argument("--credit", default="", help="Source author/license attribution for the package")
+    p.add_argument("--writer", type=Path, default=ROOT / "xmake-out/x64/Release/iw8-zonetool.exe")
     p.add_argument(
         "--replay-tools",
         type=Path,
@@ -261,9 +261,7 @@ def run(args):
             inventory = Scene("archive")
             assets = Assets([source], inventory)
             candidates = [
-                name
-                for name in assets.names()
-                if Path(name).suffix.lower() in (".bsp", ".ff")
+                name for name in assets.names() if Path(name).suffix.lower() in (".bsp", ".ff")
             ]
             if args.source_map:
                 candidates = [
@@ -288,8 +286,7 @@ def run(args):
             unlinker = args.unlinker
             if unlinker is None:
                 unlinker = (
-                    DEFAULT_TOOLS
-                    / "_vendor/OpenAssetTools/build/bin/Release_x86/Unlinker.exe"
+                    DEFAULT_TOOLS / "_vendor/OpenAssetTools/build/bin/Release_x86/Unlinker.exe"
                 )
             unlinker = unlinker.resolve()
             if not unlinker.is_file():
@@ -346,9 +343,7 @@ def run(args):
             scene = read_cod(source, args.source_map, args.format)
         else:
             if args.format and args.format != kind:
-                raise ValueError(
-                    f"Source signature is {kind}, not requested {args.format}"
-                )
+                raise ValueError(f"Source signature is {kind}, not requested {args.format}")
             scene = {
                 "q2": read_q2,
                 "q3": lambda p: read_q3(p, args.patch_steps),
@@ -360,9 +355,7 @@ def run(args):
         scale = (
             args.scale
             if args.scale is not None
-            else 39.37007874015748
-            if scene.engine == "gltf"
-            else 1.0
+            else 39.37007874015748 if scene.engine == "gltf" else 1.0
         )
         scene.transform(scale, args.up_axis)
         scene.validate()
@@ -376,13 +369,28 @@ def run(args):
         for m in normalized["materials"].values():
             if "image_bytes" in m:
                 raw = m.pop("image_bytes")
-                m["embedded_image_sha256"] = (
-                    __import__("hashlib").sha256(raw).hexdigest()
-                )
+                m["embedded_image_sha256"] = __import__("hashlib").sha256(raw).hexdigest()
         write_json(out / "scene.json", normalized)
         preview(scene, out / "preview.png")
         package = out / "package"
         package.mkdir()
+        with (out / "collision-bake.log").open("w") as log:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools/bake_collision.py"),
+                    "--replay",
+                    str(args.replay),
+                    "--collision",
+                    str(out / "collision.bin"),
+                    "--output",
+                    str(out / f"dump/maps/mp/{args.map}.d3dbsp.havok"),
+                ],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=True,
+                timeout=300,
+            )
         with (out / "writer.log").open("w") as log:
             subprocess.run(
                 [
@@ -490,7 +498,10 @@ def main(argv=None):
         argv = argv[1:]
     try:
         return run(parser().parse_args(argv))
-    except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 - CLI boundary retains the failed-build report.
+    except (
+        Exception,
+        KeyboardInterrupt,
+    ) as error:  # noqa: BLE001 - CLI boundary retains the failed-build report.
         print(f"Import failed: {error}", file=sys.stderr)
         return 1
 

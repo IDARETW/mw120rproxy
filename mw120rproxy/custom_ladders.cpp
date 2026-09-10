@@ -34,11 +34,11 @@ float Lateral(const ladderfile::Face& f, const float* p) {
     return -(p[0] - f.bottom[0]) * f.normal[1] + (p[1] - f.bottom[1]) * f.normal[0];
 }
 void Check(void* pm, void* pml) {
-    customsurfaces::ObserveMovement(pm);
+    customsurfaces::CaptureMovement(pm);
     customdoors::Movement(pm, pml);
     const auto faces = g_faces.load();
     auto* bytes = static_cast<unsigned char*>(pm);
-    if (faces && !faces->empty() && customphysics::OwnsEmptyWorld()) {
+    if (faces && !faces->empty() && customphysics::OwnsCustomWorld()) {
         unsigned char* ps = nullptr;
         memcpy(&ps, bytes + 8, 8);
         const auto* origin = reinterpret_cast<const float*>(ps + 0x30);
@@ -53,7 +53,8 @@ void Check(void* pm, void* pml) {
             auto* buttons = reinterpret_cast<unsigned long long*>(bytes + 0x10);
             const auto original = *buttons;
             *buttons |= 0x0800000000000000ull;
-            if (g_checks.fetch_add(1) < 6)
+            if (g_checks.load(std::memory_order_relaxed) < 6 &&
+                g_checks.fetch_add(1, std::memory_order_relaxed) < 6)
                 LOG_INFO("Ladders",
                          "armed native movement check origin=(%.1f %.1f %.1f) buttons=%llX",
                          origin[0], origin[1], origin[2], original);
@@ -72,7 +73,7 @@ bool Get(const float* origin,
          unsigned* hint,
          unsigned* widthHint) {
     const auto faces = g_faces.load();
-    if (faces && customphysics::OwnsEmptyWorld()) {
+    if (faces && customphysics::OwnsCustomWorld()) {
         const ladderfile::Face* best = nullptr;
         float score = 1e10f;
         for (const auto& f : *faces) {
@@ -124,11 +125,13 @@ void PlayerTrace(void* self,
     if (caller != 0xCC63B6 && caller != 0xCC64E2)
         return;
     const auto faces = g_faces.load();
-    if (!faces || !customphysics::OwnsEmptyWorld())
+    if (!faces || !customphysics::OwnsCustomWorld())
         return;
     float fraction;
     memcpy(&fraction, result, 4);
-    if (g_checks.load() && g_traceSamples.fetch_add(1) < 8)
+    if (g_checks.load(std::memory_order_relaxed) &&
+        g_traceSamples.load(std::memory_order_relaxed) < 8 &&
+        g_traceSamples.fetch_add(1, std::memory_order_relaxed) < 8)
         LOG_INFO(
             "Ladders",
             "trace caller=%llX fraction=%.3f start=(%.1f %.1f %.1f) end=(%.1f %.1f %.1f) bounds=(%.1f %.1f %.1f %.1f %.1f %.1f)",
@@ -147,7 +150,8 @@ void PlayerTrace(void* self,
             continue;
         auto* flags = reinterpret_cast<unsigned char*>(result) + 0x1C;
         *flags |= 8;
-        if (g_hits.fetch_add(1) < 4)
+        if (g_hits.load(std::memory_order_relaxed) < 4 &&
+            g_hits.fetch_add(1, std::memory_order_relaxed) < 4)
             LOG_INFO("Ladders", "native climb trace matched authored face at %.1f %.1f %.1f",
                      f.bottom[0], f.bottom[1], f.bottom[2]);
         break;

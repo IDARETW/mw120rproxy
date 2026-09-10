@@ -1,4 +1,4 @@
-// MW2019 Replay 1.20 startup and custom-map integration.
+// MW2019 1.20 Replay: minimal DllMain and checked startup hooks.
 #include <windows.h>
 #include <mutex>
 #include "proxy.h"
@@ -149,7 +149,7 @@ DWORD WINAPI StartupMonitor(LPVOID) {
         Sleep(5000);
         LOG_INFO(
             "Startup",
-            "post-splash=%ds hook_state=%d bool_calls=%llu variant_calls=%llu (menu state is not checked here)",
+            "post-splash=%ds hook_state=%d bool_calls=%llu variant_calls=%llu (menu state requires an in-game check)",
             (i + 1) * 5, state::hookState.load(), state::boolDvarsSeen.load(),
             state::dvarsSeen.load());
         if (g_config.offlineAuth)
@@ -169,7 +169,7 @@ DWORD WINAPI InitThread(LPVOID) {
         log120r::Init(g_self, g_config.console);
         LOG_INFO(
             "Core",
-            "mw120rproxy custom-map-authoring-v46-trace-layout 2026-09-09; target 1.20.4.7623265-replay");
+            "mw120rproxy custom-map-authoring-v54-native-world-collision-test 2026-09-09; target 1.20.4.7623265-replay");
         LOG_INFO(
             "Diagnostics",
             "exception call chains: mw120rproxy.exceptions.log and per-run mw120rproxy.crash.*.log; native errors: mw120rproxy.engine.log");

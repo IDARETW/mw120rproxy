@@ -36,13 +36,11 @@ import glass_panes
 from vertex_attributes import atlas_vertices, color, coverage_flags
 from foliage_material import classify
 from cod4_lighting import compile_lighting
+from local_paths import COD4, REPLAY
 
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parents[1]
 BASE = REPO / "custom_map_sources/mp_test"
-from local_paths import COD4, REPLAY
-
-
 def write_json(path, data):
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
@@ -56,6 +54,35 @@ def run(command, cwd, log):
         )
     if result.returncode:
         raise RuntimeError(f"Command failed ({result.returncode}); read {log}")
+
+
+def bake_native_collision(out, mapid, source, materials, names, surfaces, replay=REPLAY):
+    from footstep_data import generate
+
+    package = out / "package"
+    package.mkdir(parents=True, exist_ok=True)
+    generate(
+        package, source, {"materials": materials, "color_images": names}, {"surfaces": surfaces}
+    )
+    brushes = json.loads((out / "source_collision.json").read_text())
+    collision = out / "collision.bin"
+    collision.write_bytes(radiant_collision.encode(brushes))
+    run(
+        [
+            sys.executable,
+            REPO.parent / "iw8-zonetool/tools/bake_collision.py",
+            "--replay",
+            replay,
+            "--collision",
+            collision,
+            "--footsteps",
+            package / "footsteps.bin",
+            "--output",
+            out / f"dump/maps/mp/{mapid}.d3dbsp.havok",
+        ],
+        REPO,
+        out / "collision-bake.log",
+    )
 
 
 def numeric_entities(entities):
@@ -111,7 +138,7 @@ def build(args):
             raise ValueError("Retained map snapshot does not match its build report")
     text = source.read_text(encoding="utf-8-sig")
     brushes, dependencies = radiant_collision.collect(source, source_root)
-    converter = REPO / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
+    converter = REPO.parent / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
     for p in (
         (converter, args.replay) if reuse else (game / "bin/cod4map.exe", converter, args.replay)
     ):
@@ -429,6 +456,21 @@ def build(args):
         if enabled:
             create(folder, "mp_test.d3dbsp", "mp_test", kind)
     package = out / "package"
+    from native_lightgrid import convert as convert_lightgrid
+
+    grid_sources = list((light_root / "maps/mp").glob("*.d3dbsp.lightgrid.json"))
+    if len(grid_sources) == 1:
+        source_map = grid_sources[0].name.removesuffix(".d3dbsp.lightgrid.json")
+        convert_lightgrid(light_root, source_map, folder / "mp_test.d3dbsp.gpulightgrid.bin")
+    bake_native_collision(
+        out,
+        "mp_test",
+        REPO / "custom_map_sources/mp_test/extracted",
+        materials,
+        names,
+        surfaces,
+        args.replay,
+    )
     run(
         [
             converter,
@@ -479,7 +521,7 @@ def build(args):
         REPO,
         out / "layout.log",
     )
-    acts = REPO / "external/atian-cod-tools/build/bin/Release/acts.exe"
+    acts = REPO.parent / "atian-cod-tools/build/bin/Release/acts.exe"
     acts_report = out / "acts-validation.json"
     if acts.is_file():
         run(
@@ -588,7 +630,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lighting-profile", choices=("source", "aniyah-incursion"), default="source"
     )
-    parser.add_argument("--sun-intensity-scale", type=float, default=7.0)
+    parser.add_argument("--sun-intensity-scale", type=float, default=6.0)
     parser.add_argument("--out", type=Path)
     parser.add_argument(
         "--reuse-build",

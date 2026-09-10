@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT.parent / "mw120rproxy/tools"))
 from import_map import detect, parser, run
 from mapimport.assets import Assets
 from mapimport.bsp import BSP, read_q2, read_q3
@@ -31,6 +33,8 @@ from mapimport.replay import packed_normal, spawns, split_surfaces
 from mapimport.source import displacement_indices, read_source
 
 DOWNLOADS = ROOT / "evidence/multi_engine_20260908/downloads"
+REPLAY = Path(os.environ.get("IW8_REPLAY_EXE", ROOT / "missing-replay.exe"))
+REPLAY_ARGS = ["--replay", str(REPLAY)]
 
 
 def q3_fixture(patch=False):
@@ -279,7 +283,7 @@ class ImportTests(unittest.TestCase):
         self.assertLess(cross(sub(b, a), sub(c, a))[2], 0)
 
     def test_normal_packing_uses_replay_quaternion(self):
-        sys.path.insert(0, str(ROOT.parent / "mw120rproxy/tools"))
+        sys.path.insert(0, str(ROOT.parent / "mw120rproxy/mw120rproxy/tools"))
         from replay_mesh_math import unpack_normal
 
         for n in ([1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1], [0.6, 0, 0.8]):
@@ -374,7 +378,7 @@ class ImportTests(unittest.TestCase):
         path = self.file("bad.bsp", b"IBSP" + struct.pack("<i", 999))
         output = self.root / "build"
         args = parser().parse_args(
-            [str(path), "mp_bad", "-o", str(output), "--graybox"]
+            [str(path), "mp_bad", "-o", str(output), "--graybox", *REPLAY_ARGS]
         )
         with self.assertRaises(ValueError):
             run(args)
@@ -389,13 +393,15 @@ class ImportTests(unittest.TestCase):
         marker = output / "user.txt"
         marker.write_text("keep")
         args = parser().parse_args(
-            [str(source), "mp_bad", "-o", str(output), "--graybox"]
+            [str(source), "mp_bad", "-o", str(output), "--graybox", *REPLAY_ARGS]
         )
         with self.assertRaises(ValueError):
             run(args)
         self.assertEqual(marker.read_text(), "keep")
 
     def test_map_archive_selects_without_extracting_unrelated_content(self):
+        if not REPLAY.is_file():
+            self.skipTest("Set IW8_REPLAY_EXE to run native collision integration tests")
         raw = io.BytesIO()
         with zipfile.ZipFile(raw, "w") as z:
             z.writestr("maps/selected.bsp", q3_fixture())
@@ -403,7 +409,7 @@ class ImportTests(unittest.TestCase):
         source = self.file("map.pk3", raw.getvalue())
         output = self.root / "archive-import"
         args = parser().parse_args(
-            [str(source), "mp_archive", "-o", str(output), "--graybox"]
+            [str(source), "mp_archive", "-o", str(output), "--graybox", *REPLAY_ARGS]
         )
         self.assertEqual(run(args), 0)
         self.assertFalse((output / "source-input/unused").exists())
@@ -420,12 +426,14 @@ class ImportTests(unittest.TestCase):
         source = self.file("maps.pk3", raw.getvalue())
         output = self.root / "ambiguous"
         args = parser().parse_args(
-            [str(source), "mp_archive", "-o", str(output), "--graybox"]
+            [str(source), "mp_archive", "-o", str(output), "--graybox", *REPLAY_ARGS]
         )
         with self.assertRaisesRegex(ValueError, "2 matching maps"):
             run(args)
 
     def test_native_argument_boundaries(self):
+        if not REPLAY.is_file():
+            self.skipTest("Set IW8_REPLAY_EXE to run native collision integration tests")
         writer = ROOT / "xmake-out/x64/Release/iw8-zonetool.exe"
         path = self.file("source with spaces.bsp", q3_fixture())
         output = self.root / "output with spaces"
@@ -445,6 +453,7 @@ class ImportTests(unittest.TestCase):
                 title,
                 "--credit",
                 credit,
+                *REPLAY_ARGS,
             ],
             capture_output=True,
             check=False,

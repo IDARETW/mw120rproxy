@@ -5,6 +5,7 @@
 #include "custom_physics.h"
 #include "custom_surfaces.h"
 #include "replay_bindings.h"
+#include "replay_particle_state.h"
 #include "logger.h"
 #include "safemem.h"
 #include <atomic>
@@ -22,6 +23,13 @@ struct State {
     std::atomic<unsigned> broken[1024]{};
     std::mutex mutex;
     std::vector<Event> events;
+    struct Observation {
+        unsigned handle = 0, pane = 0, stage = 0;
+        uintptr_t definition = 0;
+        ULONGLONG due = 0;
+    };
+    std::vector<Observation> observations;
+    unsigned observationCount = 0;
 };
 std::atomic<std::shared_ptr<State>> g_state;
 uintptr_t g_base = 0;
@@ -71,7 +79,7 @@ using ClientPhysicsTrace = void (*)(int,
 std::atomic<ClientPhysicsTrace> g_physicsClient{nullptr};
 std::atomic<unsigned> g_shotSamples{0};
 std::shared_ptr<State> Active() {
-    return customphysics::OwnsEmptyWorld() ? g_state.load() : nullptr;
+    return customphysics::OwnsCustomWorld() ? g_state.load() : nullptr;
 }
 void Break(const std::shared_ptr<State>& state,
            unsigned i,
@@ -117,7 +125,8 @@ void Shot(const float* start, const float* end, const void* trace, const char* c
                 ++hits;
             }
         }
-    if (g_shotSamples.fetch_add(1) < 12)
+    if (g_shotSamples.load(std::memory_order_relaxed) < 12 &&
+        g_shotSamples.fetch_add(1, std::memory_order_relaxed) < 12)
         LOG_INFO("Glass",
                  "%s trace start=(%.1f %.1f %.1f) end=(%.1f %.1f %.1f) fraction=%.6f breaks=%u",
                  cause, start[0], start[1], start[2], end[0], end[1], end[2], limit, hits);
@@ -292,9 +301,8 @@ void TraceLegacy(void* self,
         glassfile::Vec normal;
         if (!glassfile::Hit(state->panes[i], start, end, centerBounds, 1, fraction, normal, true))
             continue;
-        const float distance =
-            std::abs(glassfile::Dot(glassfile::Sub(center, state->panes[i].vertices[0]),
-                                    state->panes[i].normal));
+        const float distance = std::abs(glassfile::Dot(
+            glassfile::Sub(center, state->panes[i].vertices[0]), state->panes[i].normal));
         if (distance < bestDistance) {
             best = i;
             bestDistance = distance;
@@ -314,7 +322,7 @@ void PumpEffects() {
     // callbacks only enqueue events; particle asset access stays on this thread.
     {
         std::lock_guard lock(state->mutex);
-        if (state->events.empty())
+        if (state->events.empty() && state->observations.empty())
             return;
     }
     int connected = 0, deltaTime = 1, time = 0;
@@ -327,16 +335,39 @@ void PumpEffects() {
         !safemem::ReadBytes(reinterpret_cast<void*>(cg + 0x2F20), &deltaTime, 4) || deltaTime ||
         !safemem::ReadBytes(reinterpret_cast<void*>(cg + 0x65A4), &time, 4))
         return;
+    const auto now = GetTickCount64();
+    for (auto it = state->observations.begin(); it != state->observations.end();) {
+        if (now < it->due) {
+            ++it;
+            continue;
+        }
+        replayparticle::Snapshot snapshot;
+        const bool readable = replayparticle::Inspect(g_base, it->handle, it->definition, snapshot);
+        LOG_INFO("Glass",
+                 "effect-state pane=%u handle=%08X sample=%u readable=%d present=%d "
+                 "running=%d flags=%llX emitters=%u",
+                 it->pane, it->handle, it->stage, int(readable), int(snapshot.present),
+                 int(snapshot.running), snapshot.flags, snapshot.emitterCount);
+        if (readable && snapshot.present)
+            for (unsigned i = 0; i < snapshot.emitterCount; ++i)
+                LOG_INFO("Glass", "effect-emitter handle=%08X index=%u flags=%X particles=%u",
+                         it->handle, i, snapshot.emitters[i].flags, snapshot.emitters[i].particles);
+        if (it->stage++ == 0) {
+            it->due = now + 500;
+            ++it;
+        } else {
+            it = state->observations.erase(it);
+        }
+    }
     std::vector<Event> events;
     {
         std::lock_guard lock(state->mutex);
-        const auto count = (std::min)(size_t(4), state->events.size());
+        const auto count = (std::min)(size_t(2), state->events.size());
         events.assign(state->events.begin(), state->events.begin() + count);
         state->events.erase(state->events.begin(), state->events.begin() + count);
     }
     for (const auto& event : events) {
-        // Both code/glass definitions in Replay common_mp contain a MODEL
-        // emitter (type 7). Use pane shatter debris instead of a tiny impact FX.
+        // The stock effect emits a chip per fracture, not debris for an entire pane.
         const char* name = glassfile::ShatterEffect(state->panes[event.pane]);
         auto* effect = reinterpret_cast<void* (*)(int, const char*, int)>(
             g_base + replay::FindAsset.rva)(44, name, 0);
@@ -346,23 +377,33 @@ void PumpEffects() {
             effect && safemem::ReadBytes(effect, &assetName, 8) && assetName &&
             safemem::ReadString(reinterpret_cast<const char*>(assetName), text, sizeof(text)) &&
             strcmp(text, name) == 0;
-        unsigned handle = 0;
+        unsigned created = 0, requested = 0, firstHandle = 0;
         if (found) {
             float axis[9];
             memcpy(axis, event.normal.data(), 12);
             reinterpret_cast<void (*)(const float*, float*, float*)>(
                 g_base + replay::NormalBasis.rva)(axis, axis + 3, axis + 6);
-            // Offset off the surface to avoid spawning all debris inside its
-            // thickness. Collision was already removed for the broken pane.
-            auto origin = event.origin;
-            for (unsigned k = 0; k < 3; ++k)
-                origin[k] += event.normal[k] * 2;
-            handle = reinterpret_cast<unsigned (*)(int, void*, int, const float*, const float*)>(
-                g_base + replay::PlayOrientedEffect.rva)(0, &effect, time, origin.data(), axis);
+            const auto origins = glassfile::ShardOrigins(state->panes[event.pane], event.normal);
+            requested = unsigned(origins.size());
+            for (const auto& origin : origins) {
+                const unsigned handle =
+                    reinterpret_cast<unsigned (*)(int, void*, int, const float*, const float*)>(
+                        g_base + replay::PlayOrientedEffect.rva)(0, &effect, time, origin.data(),
+                                                                 axis);
+                created += handle != 0;
+                if (!firstHandle)
+                    firstHandle = handle;
+            }
         }
-        if (!found || !handle)
-            LOG_WARN("Glass", "shard spawn failed pane=%u effect='%s' asset=%d handle=%08X",
-                     event.pane, name, int(found), handle);
+        if (firstHandle && state->observationCount < 8) {
+            state->observations.push_back(
+                {firstHandle, event.pane, 0, reinterpret_cast<uintptr_t>(effect), now + 100});
+            ++state->observationCount;
+        }
+        if (!found || !created || created != requested)
+            LOG_WARN("Glass",
+                     "effect creation incomplete pane=%u effect='%s' asset=%d systems=%u/%u",
+                     event.pane, name, int(found), created, requested);
         auto* alias = reinterpret_cast<void* (*)(const char*)>(
             g_base + replay::SoundAliasByName.rva)("glass_pane_breakout");
         unsigned aliasId = 0;
@@ -371,10 +412,8 @@ void PumpEffects() {
         if (aliasId)
             reinterpret_cast<void (*)(unsigned, int, int, const float*)>(
                 g_base + replay::SoundAtPosition.rva)(aliasId, 0, 2046, event.origin.data());
-        LOG_INFO(
-            "Glass",
-            "pane=%u shatter='%s' asset=%d particleHandle=%08X client=%d time=%d positional sound=%d",
-            event.pane, name, int(found), handle, connected, time, int(aliasId != 0));
+        LOG_INFO("Glass", "pane=%u shatter='%s' asset=%d systems=%u/%u time=%d positional sound=%d",
+                 event.pane, name, int(found), created, requested, time, int(aliasId != 0));
     }
 }
 void Load(const std::filesystem::path& directory) {

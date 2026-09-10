@@ -17,7 +17,9 @@
 
 namespace customsurfaces {
 hook::Status Install(uintptr_t base);
-void ObserveMovement(const void* pm);
+void CaptureMovement(const void* pm);
+void PumpMovementReport();
+void ResetMovementReport();
 struct Triangle {
     float p[3][3];
     unsigned type;
@@ -28,14 +30,12 @@ struct Data {
     std::unordered_map<uint64_t, std::vector<unsigned>> cells;
 };
 inline std::atomic<std::shared_ptr<const Data>> data;
-inline std::atomic<unsigned> samples{0};
-inline std::atomic<unsigned> movementEpoch{0};
 inline uint64_t Key(int x, int y) {
     return uint64_t(uint32_t(x)) << 32 | uint32_t(y);
 }
 inline void Clear() {
     data.store(nullptr);
-    ++movementEpoch;
+    ResetMovementReport();
 }
 inline void Load(const std::filesystem::path& directory) {
     Clear();
@@ -79,7 +79,6 @@ inline void Load(const std::filesystem::path& directory) {
     }
     LOG_INFO("Footsteps", "loaded %zu walkable surface triangles; concrete fallback enabled",
              result->triangles.size());
-    samples = 0;
     data.store(std::move(result));
 }
 inline unsigned TypeAt(const Data& d, const float* p) {
@@ -125,9 +124,8 @@ inline void Apply(void* trace, const float* start, const float* end) {
     // Imported bodies currently share PM_Concrete; replace that generic type
     // with authored face data. Preserve other native types and entity hits.
     const unsigned nativeType = (flags >> 19) & 63;
-    if (!std::isfinite(fraction) || fraction < 0 || fraction >= 1 ||
-        !std::isfinite(normalZ) || normalZ < .35f ||
-        hitType != 1 || entity != 2046 || (nativeType && nativeType != 5))
+    if (!std::isfinite(fraction) || fraction < 0 || fraction >= 1 || !std::isfinite(normalZ) ||
+        normalZ < .35f || hitType != 1 || entity != 2046 || (nativeType && nativeType != 5))
         return;
     float p[3];
     for (unsigned k = 0; k < 3; ++k)
@@ -136,9 +134,6 @@ inline void Apply(void* trace, const float* start, const float* end) {
     unsigned type = current ? TypeAt(*current, p) : 5;
     flags = (flags & ~0x1F80000u) | (type << 19);
     memcpy(b + 0x1C, &flags, 4);
-    if (samples.fetch_add(1) < 4)
-        LOG_INFO("Footsteps", "world ground surface=%u at (%.1f %.1f %.1f)", type, p[0], p[1],
-                 p[2]);
 }
 inline void ApplyShot(void* trace, const float* start, const float* end) {
     if (!customphysics::OwnsEmptyWorld())

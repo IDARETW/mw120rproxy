@@ -366,7 +366,14 @@ int writeMapPackage(const Args& a, const std::string& map, const std::string& ou
             throw std::runtime_error("Scaled sun intensity is not finite");
         zt::info("lighting: %s, scale %.6f, native sun intensity %.6f",
                  a.lightingProfile.c_str(), a.sunIntensityScale, lighting.intensity);
-        iw8::buildSrvMapZone(zb, assetName.c_str(), ents, bounds, lighting);
+        std::vector<uint8_t> collision;
+        const auto collisionPath = path_join(dumpDir, assetName + ".havok");
+        if (!read_file(collisionPath, collision) || collision.size() < 16 ||
+            collision.size() > 256 * 1024 * 1024 ||
+            std::memcmp(collision.data() + 4, "TAG0", 4) != 0)
+            throw std::runtime_error("Missing native collision; run tools/bake_collision.py: " + collisionPath);
+        zt::info("collision: serialized native world, %zu bytes", collision.size());
+        iw8::buildSrvMapZone(zb, assetName.c_str(), ents, bounds, lighting, collision);
         Iw8WriteParams p = paramsFromBuffer(zb);
         std::string out = path_join(outDir, "srv_" + map + ".ff");
         if (!iw8_write(out, zb.data(), p)) rc = 1;
@@ -428,6 +435,9 @@ int writeMapPackage(const Args& a, const std::string& map, const std::string& ou
         manifest["lighting_profile"] = a.lightingProfile;
         manifest["sun_intensity_scale"] = a.sunIntensityScale;
         manifest["lighting_runtime_override"] = false;
+        manifest["world_collision"] = "native-havok-v1";
+        if (file_exists(path_join(dumpDir, assetName + ".gpulightgrid.bin")))
+            manifest["light_grid"] = "source-spatial-dc-v2";
         if (!write_file_str(path, manifest.dump(2) + "\n")) rc = 1;
     }
     if (rc == 0 && !validatePackage(outDir, map)) rc = 1;

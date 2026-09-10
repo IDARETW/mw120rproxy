@@ -80,7 +80,7 @@ Stale safe-mode markers are cleared at startup to prevent the safe-mode prompt a
 
 ## Supported features and limits
 
-- CoD4 world geometry, static models, collision, TDM spawns, and loadout selection.
+- CoD4 world geometry, static models, TDM spawns, and loadout selection. World collision is serialized into `srv_<map>.ff` as native Replay Havok data, including floor-material and contents tags. Replay registers it through its normal world-collision path for movement, footsteps, and bullet traces.
 - Source sun direction and color, adjustable sunlight intensity, directional baked lightmaps, and native sun-shadow reception. Source static shadows remain visible beyond the nearby realtime shadow range. The skybox is visual and does not override scene lighting.
 - Transparent foliage and decals, normal/specular material channels, climbable ladders, ladder sounds, and footsteps matched to floor materials.
 - Breakable glass with sound when shot, hit with melee, or mantled through. Glass debris is still being investigated.
@@ -89,7 +89,7 @@ Stale safe-mode markers are cleared at startup to prevent the safe-mode prompt a
 
 CoD4 scripts, general destructible objects, and bot navigation are not supported. Model physics is not imported automatically; use clip brushes for solid props. Test converted maps in-game, especially maps with unusual materials or scripted objects.
 
-Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Opening, closing, and the interaction prompt have been tested on Super Mario 64. Dynamic-object lighting remains incomplete, so native weapons can still appear dark. Distant realtime shadows on props without source lightmaps, walking leg animation, and glass debris need further work.
+Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Opening, closing, and the interaction prompt have been tested on Super Mario 64. Glass debris remains under investigation.
 
 ## Troubleshooting
 

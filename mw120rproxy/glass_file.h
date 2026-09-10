@@ -23,6 +23,44 @@ struct Pane {
     std::vector<unsigned> surfaces;
     float halfThickness = .125f;
 };
+inline constexpr unsigned MaxShardEffects = 32;
+inline std::vector<Vec> ShardOrigins(const Pane& pane, const Vec& facing) {
+    if (pane.vertices.size() < 3)
+        return {};
+    std::vector<float> areas;
+    float total = 0;
+    for (size_t i = 1; i + 1 < pane.vertices.size(); ++i) {
+        const float area = .5f * std::abs(Dot(Cross(Sub(pane.vertices[i], pane.vertices[0]),
+                                                    Sub(pane.vertices[i + 1], pane.vertices[0])),
+                                              pane.normal));
+        areas.push_back(area);
+        total += area;
+    }
+    if (!std::isfinite(total) || total < .5f)
+        return {};
+    const unsigned count =
+        unsigned(std::clamp(std::ceil(total / 256.f), 8.f, float(MaxShardEffects)));
+    std::vector<Vec> origins;
+    origins.reserve(count);
+    size_t triangle = 0;
+    float precedingArea = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        const float target = (float(i) + .5f) * total / float(count);
+        while (triangle + 1 < areas.size() && target >= precedingArea + areas[triangle])
+            precedingArea += areas[triangle++];
+        const float u = std::sqrt(std::clamp((target - precedingArea) / areas[triangle], 0.f, 1.f));
+        float v = 0, weight = .5f;
+        for (unsigned bits = i + 1; bits; bits >>= 1, weight *= .5f)
+            v += float(bits & 1) * weight;
+        Vec origin{};
+        for (unsigned k = 0; k < 3; ++k)
+            origin[k] =
+                (1 - u) * pane.vertices[0][k] + u * (1 - v) * pane.vertices[triangle + 1][k] +
+                u * v * pane.vertices[triangle + 2][k] + facing[k] * (pane.halfThickness + 2.f);
+        origins.push_back(origin);
+    }
+    return origins;
+}
 inline const char* ShatterEffect(const Pane& pane) {
     float spanSquared = 0;
     for (const auto& a : pane.vertices)

@@ -476,7 +476,7 @@ def build(args):
     for kind, enabled in [("foliage", has_cutout), ("glass", has_glass), ("sky", True)]:
         if enabled:
             create(folder, stem, mapid, kind)
-    converter = REPO / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
+    converter = REPO.parent / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
     package = out / "package"
     report = {
         "map": mapid,
@@ -528,6 +528,9 @@ def build(args):
         "sun_color": sun_color,
     }
     write_json(out / "import_report.json", report)
+    from build_mp_test import bake_native_collision
+
+    bake_native_collision(out, mapid, source, materials, names, surfaces)
     del (
         surfaces,
         world,
@@ -543,6 +546,9 @@ def build(args):
         target,
     )
     gc.collect()
+    from native_lightgrid import convert as convert_lightgrid
+
+    convert_lightgrid(source, mapid, out / f"dump/maps/mp/{mapid}.d3dbsp.gpulightgrid.bin")
     run(
         [
             converter,
@@ -575,7 +581,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lighting-profile", choices=("source", "aniyah-incursion"), default="source"
     )
-    parser.add_argument("--sun-intensity-scale", type=float, default=7.0)
+    parser.add_argument("--sun-intensity-scale", type=float, default=6.0)
     parser.add_argument(
         "--spawn-mode", choices=("native-tdm", "deathrun-tdm"), default="native-tdm"
     )

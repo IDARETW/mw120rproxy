@@ -1,7 +1,8 @@
 #include "custom_surfaces.h"
 #include "replay_bindings.h"
 #include "inline_hook.h"
-#include "safemem.h"
+#include <mutex>
+#include <climits>
 
 namespace {
 // Exact Replay movement trace wrapper (CD24C0): both the short ground probes
@@ -9,7 +10,21 @@ namespace {
 using MovementTrace =
     void (*)(void*, void*, void*, const float*, const float*, const float*, int, int, int, bool);
 std::atomic<MovementTrace> movementTrace{nullptr};
-std::atomic<unsigned> movementSamples{0};
+struct MovementSample {
+    int commandTime = 0;
+    short animationSpeed = 0;
+    unsigned cycle[2]{};
+    unsigned movementTimer = 0, movementAnimation = 0;
+    unsigned secondaryTimer = 0, secondaryAnimation = 0;
+    unsigned long long otherFlags = 0;
+    unsigned short ground = 2047;
+    float velocity[3]{};
+};
+std::mutex reportMutex;
+MovementSample pendingReport;
+bool hasReport = false;
+unsigned reports = 0;
+std::atomic<ULONGLONG> nextReport{0};
 void Trace(void* handler,
            void* pm,
            void* result,
@@ -24,74 +39,69 @@ void Trace(void* handler,
     if (!customphysics::OwnsEmptyWorld())
         return;
     customsurfaces::Apply(result, start, end);
-    // Bounded evidence of the actual movement path, separate from the older
-    // legacy traces which can occur during spawn without walking the floor.
-    if (movementSamples.fetch_add(1) < 12) {
-        float fraction = 0, normalZ = 0;
-        unsigned surfaceFlags = 0;
-        unsigned short entity = 0;
-        auto* b = static_cast<unsigned char*>(result);
-        memcpy(&fraction, b, 4);
-        memcpy(&normalZ, b + replaytrace::NormalZ, 4);
-        memcpy(&surfaceFlags, b + 0x1C, 4);
-        memcpy(&entity, b + 0x2C, 2);
-        LOG_INFO(
-            "Footsteps",
-            "movement trace fraction=%.3f normalZ=%.3f entity=%u surface=%u start=(%.1f %.1f %.1f)",
-            fraction, normalZ, entity, (surfaceFlags >> 19) & 63, start[0], start[1], start[2]);
-    }
 }
 }
 namespace customsurfaces {
-void ObserveMovement(const void* pm) {
-    if (!pm || !customphysics::OwnsEmptyWorld())
+void ResetMovementReport() {
+    std::lock_guard lock(reportMutex);
+    reports = 0;
+    hasReport = false;
+    nextReport.store(0, std::memory_order_relaxed);
+}
+void CaptureMovement(const void* pm) {
+    if (!pm || !customphysics::OwnsCustomWorld())
         return;
-    struct SampleState {
-        unsigned epoch = 0, count = 0;
-        ULONGLONG next = 0;
-        std::array<float, 3> origin{};
-    };
-    static thread_local SampleState state;
-    const unsigned epoch = movementEpoch.load();
-    if (state.epoch != epoch)
-        state = {epoch};
     const auto now = GetTickCount64();
-    if (state.count >= 80 || now < state.next)
+    if (now < nextReport.load(std::memory_order_relaxed))
         return;
-    state.next = now + 750;
-    const auto* bytes = static_cast<const unsigned char*>(pm);
-    const unsigned char *ps = nullptr, *ground = nullptr;
-    std::array<float, 6> motion{};
-    std::array<unsigned char, 0x4E> contact{};
-    unsigned short entity = 2047;
-    unsigned long long flags = 0;
-    if (!safemem::ReadBytes(bytes + 8, &ps, sizeof(ps)) || !ps ||
-        !safemem::ReadBytes(bytes + 0x368, &ground, sizeof(ground)) || !ground ||
-        !safemem::ReadBytes(ps + 0x30, motion.data(), sizeof(motion)) ||
-        !safemem::ReadBytes(ps + 0x272, &entity, sizeof(entity)) ||
-        !safemem::ReadBytes(ps + 0x14, &flags, sizeof(flags)) ||
-        !safemem::ReadBytes(ground, contact.data(), contact.size()))
+    std::unique_lock lock(reportMutex, std::try_to_lock);
+    if (!lock || now < nextReport.load(std::memory_order_relaxed))
         return;
-    float displacement = 0, speedSquared = 0;
-    for (unsigned k = 0; k < 3; ++k) {
-        const float delta = motion[k] - state.origin[k];
-        displacement += delta * delta;
-        speedSquared += motion[k + 3] * motion[k + 3];
-        state.origin[k] = motion[k];
+    if (reports >= 60) {
+        nextReport.store(ULLONG_MAX, std::memory_order_relaxed);
+        return;
     }
-    if (state.count >= 4 && displacement < .01f && speedSquared < 1)
+    nextReport.store(now + 2000, std::memory_order_relaxed);
+    const unsigned char* ps = nullptr;
+    memcpy(&ps, static_cast<const unsigned char*>(pm) + 8, sizeof(ps));
+    if (!ps)
         return;
-    float fraction = 0, normalZ = 0;
-    unsigned surface = 0, hitType = 0;
-    memcpy(&fraction, contact.data(), 4);
-    memcpy(&normalZ, contact.data() + replaytrace::NormalZ, 4);
-    memcpy(&surface, contact.data() + 0x1C, 4);
-    memcpy(&hitType, contact.data() + 0x24, 4);
-    ++state.count;
-    LOG_INFO("Movement",
-             "sample=%u origin=(%.2f %.2f %.2f) velocity=(%.2f %.2f %.2f) ground=%u walking=%u plane=%u fraction=%.4f normalZ=%.3f surfaceFlags=%X hitType=%u pmFlags=%llX",
-             state.count, motion[0], motion[1], motion[2], motion[3], motion[4], motion[5],
-             entity, contact[0x4C], contact[0x4D], fraction, normalZ, surface, hitType, flags);
+    // Capture the previous completed command on its simulation thread. The
+    // client overlay writes the bounded report, never the movement callback.
+    MovementSample sample;
+    memcpy(&sample.commandTime, ps + 4, 4);
+    memcpy(sample.velocity, ps + 0x3C, sizeof(sample.velocity));
+    memcpy(&sample.ground, ps + 0x272, 2);
+    memcpy(&sample.otherFlags, ps + 0x1C, 8);
+    memcpy(sample.cycle, ps + 0x28, sizeof(sample.cycle));
+    // Replay UpdateTimersAndEventsSlot CB76D1 reads the timer at E0 + slot*8;
+    // TickPS CB6FD0/CB6FF0 tests the animation at E4 + slot*8.
+    memcpy(&sample.movementTimer, ps + 0xE0, 4);
+    memcpy(&sample.movementAnimation, ps + 0xE4, 4);
+    memcpy(&sample.secondaryTimer, ps + 0xE8, 4);
+    memcpy(&sample.secondaryAnimation, ps + 0xEC, 4);
+    // Replay BgPlayer_Asm::TickPS CB6F69..CB6F77 stores the native speed here.
+    memcpy(&sample.animationSpeed, ps + 0x1146, 2);
+    pendingReport = sample;
+    hasReport = true;
+    ++reports;
+}
+void PumpMovementReport() {
+    MovementSample sample;
+    {
+        std::unique_lock lock(reportMutex, std::try_to_lock);
+        if (!lock || !hasReport)
+            return;
+        sample = pendingReport;
+        hasReport = false;
+    }
+    LOG_INFO(
+        "Movement",
+        "native command=%d velocity=(%.2f %.2f %.2f) ground=%u animSpeed=%d bob=%08X/%08X movement=%08X timer=%u secondary=%08X timer=%u otherFlags=%llX",
+        sample.commandTime, sample.velocity[0], sample.velocity[1], sample.velocity[2],
+        sample.ground, sample.animationSpeed, sample.cycle[0], sample.cycle[1],
+        sample.movementAnimation, sample.movementTimer, sample.secondaryAnimation,
+        sample.secondaryTimer, sample.otherFlags);
 }
 hook::Status Install(uintptr_t base) {
     const auto& b = replay::MovementTrace;

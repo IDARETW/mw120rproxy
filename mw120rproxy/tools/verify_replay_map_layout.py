@@ -15,6 +15,17 @@ import math
 import pefile
 
 
+def validate_light_grid_activation(world, transient):
+    """The availability flag and the resident light-grid payload must agree."""
+    present = struct.unpack_from("<Q", transient, 0xF8)[0] != 0
+    if world[0x7C0] != (1 if present else 0):
+        raise ValueError("World lightGridType does not match its resident light-grid payload")
+    scale = struct.unpack_from("<f", world, 0x37F0)[0]
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("World bakedLightScale disables secondary diffuse lighting")
+    return "single" if present else "none"
+
+
 def validate_world_model_bounds(world, model):
     values = struct.unpack_from("<7f", model, 0x38)
     if not any(values):
@@ -23,10 +34,10 @@ def validate_world_model_bounds(world, model):
         raise ValueError("Invalid world-model bounds")
     bounds = struct.unpack_from("<6f", world, 0x78)
     expected = (*values[:3], *(v + 1 for v in values[3:6]))
-    if any(abs(a - b) > max(.005, abs(b) * 2e-7) for a, b in zip(bounds, expected)):
+    if any(abs(a - b) > max(0.005, abs(b) * 2e-7) for a, b in zip(bounds, expected)):
         raise ValueError("Global bounds differ from the padded world model")
     radius = math.sqrt(sum(v * v for v in values[3:6]))
-    if abs(values[6] - radius) > max(.005, radius * 2e-7):
+    if abs(values[6] - radius) > max(0.005, radius * 2e-7):
         raise ValueError("World-model radius does not enclose its bounds")
 
 
@@ -196,6 +207,10 @@ def verify(game, package, map_id):
     if hashlib.md5(exe).hexdigest() != "1c238fe327f2ecc3b0db924c5b425439":
         raise ValueError("Wrong Replay executable")
     pe = pefile.PE(data=exe, fast_load=True)
+    if pe.get_data(0x188E940, 11) != bytes.fromhex("80 B9 C0 07 00 00 00 0F 95 C0 C3"):
+        raise ValueError("Replay light-grid availability gate differs")
+    if pe.get_data(0x197CB93, 8) != bytes.fromhex("F3 0F 10 15 85 85 AB 0E"):
+        raise ValueError("Replay baked-light scale consumer differs")
     sizes = {
         t: struct.unpack("<I", pe.get_data(0x2458160 + 4 * t, 4))[0]
         for t in (11, 14, 17, 18, 19, 23, 24, 25, 29, 31, 61)
@@ -218,7 +233,7 @@ def verify(game, package, map_id):
     for i in range(41):
         ptr = struct.unpack("<Q", pe.get_data(0x4598378 + i * 24, 8))[0]
         tags.append(pe.get_data(ptr - 0x140000000, 32).split(b"\0")[0].decode("ascii"))
-    header = Path(__file__).resolve().parents[2] / "iw8-zonetool/src/iw8/replay_netconst.h"
+    header = Path(__file__).resolve().parents[3] / "iw8-zonetool/src/iw8/replay_netconst.h"
     if re.findall(r'"([a-z0-9]+)"', header.read_text()) != tags:
         raise ValueError("Converter NCS type/tag table differs from Replay")
     expected_name = f"maps/mp/{map_id}.d3dbsp".encode()
@@ -650,8 +665,8 @@ def verify(game, package, map_id):
                 continue
             name()
             if asset_type == 23:
-                if q(asset, 0x18) != 2**64 - 2 or u(asset, 0xB8) or q(asset, 0xC0):
-                    raise ValueError("Unexpected prototype clipMap linkage/physics")
+                if q(asset, 0x18) != 2**64 - 2:
+                    raise ValueError("Unexpected clipMap linkage")
                 mapents()
                 if q(asset, 0x20):
                     if q(asset, 0x20) != 2**64 - 2 or asset[0x28] != 1:
@@ -664,6 +679,18 @@ def verify(game, package, map_id):
                     ):
                         raise ValueError("Invalid default stage")
                     name(b"default")
+                collision_size = u(asset, 0xB8)
+                if collision_size:
+                    if q(asset, 0xC0) != 2**64 - 2 or collision_size > 256 * 1024 * 1024:
+                        raise ValueError("Invalid clipMap collision payload")
+                    collision = vtake(collision_size, 15)
+                    if (
+                        collision[4:8] != b"TAG0"
+                        or int.from_bytes(collision[:4], "big") & 0x3FFFFFFF != collision_size
+                    ):
+                        raise ValueError("Invalid native Havok tagfile")
+                elif q(asset, 0xC0):
+                    raise ValueError("Collision pointer without a payload")
             elif asset_type == 25:
                 if q(asset, 8) != 2**64 - 2 or take(40) != bytes(40):
                     raise ValueError("Missing valid empty G_GlassData object")
@@ -812,6 +839,8 @@ def verify(game, package, map_id):
                         raise ValueError("Invalid neutral IES image reference")
                     name(b",$white")
                 transient = take(0x148)
+                report["light_grid_type"] = validate_light_grid_activation(asset, transient)
+                report["baked_light_scale"] = struct.unpack_from("<f", asset, 0x37F0)[0]
                 if (
                     q(transient, 0) != 2**64 - 2
                     or u(transient, 0xD8) != 1
@@ -864,6 +893,17 @@ def verify(game, package, map_id):
                 virtual = ((virtual + 7) & ~7) + 48
                 if u(tree, 24) != count or any(tree[28:]):
                     raise ValueError("Cell tree does not cover mesh surfaces")
+                if q(transient, 0xF8):
+                    from native_lightgrid import validate_serialized
+
+                    if q(transient, 0xF8) != 2**64 - 2 or manifest.get("light_grid") not in (
+                        "source-spatial-dc-v1",
+                        "source-spatial-dc-v2",
+                    ):
+                        raise ValueError("Invalid native light-grid manifest or pointer")
+                    report["light_grid"] = validate_serialized(vtake)
+                elif manifest.get("light_grid"):
+                    raise ValueError("Package declares a missing native light grid")
                 preload_size = ((sizes[31] + 31) & ~31) + 32
                 model = take(96)
                 if (

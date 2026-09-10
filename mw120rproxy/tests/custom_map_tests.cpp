@@ -16,6 +16,7 @@
 #include "ladder_file.h"
 #include "custom_glass.h"
 #include "glass_file.h"
+#include "replay_particle_state.h"
 #include "collision_file.h"
 #include "compound_collision.h"
 #include "replay_compound_fixture.h"
@@ -116,9 +117,10 @@ void PackageTests() {
     const uint32_t high = 1;
     large.write(reinterpret_cast<const char*>(&high), 4);
     large.close();
-    Text(packageRoot / (id + "_contract") / "manifest.json",
-         "{\"schema\":1,\"id\":\"" + id +
-             "_contract\",\"title\":\"Fixture\",\"gametypes\":[\"tdm\"],\"visibility\":\"unknown\"}");
+    Text(
+        packageRoot / (id + "_contract") / "manifest.json",
+        "{\"schema\":1,\"id\":\"" + id +
+            "_contract\",\"title\":\"Fixture\",\"gametypes\":[\"tdm\"],\"visibility\":\"unknown\"}");
     custommaps::Initialize(GetModuleHandleW(nullptr));
     Check(custommaps::Select(id.c_str()), "valid structural package selected");
     Check(!custommaps::Select((id + "_nested").c_str()),
@@ -590,8 +592,7 @@ void RenderTests() {
                       replay::DrawBspSurf.size),
           "BSP draw entry points remain unpatched");
     reinterpret_cast<void (*)(const void*)>(image + replay::AddBspDrawSurfacesCamera.rva)(nullptr);
-    Check(nativeDrawCalls == 1 && GetLastError() == 0x3456,
-          "native BSP call preserves LastError");
+    Check(nativeDrawCalls == 1 && GetLastError() == 0x3456, "native BSP call preserves LastError");
     uintptr_t context[2]{};
     reinterpret_cast<void (*)(void*, const void*)>(image + replay::DrawBspSurf.rva)(nullptr,
                                                                                     context);
@@ -620,8 +621,8 @@ void RenderTests() {
     put32(0x3DF0, 1);
     put32(0x3F9C, 1);
     put32(0x3FA0, 1);
-    for (const size_t offset : {0xA8, 0xB0, 0xB8, 0xC0, 0xF0, 0xF8, 0x100, 0x108,
-                                0x7D0, 0x3D68, 0x3DF8, 0x3EF0, 0x3EF8, 0x41C0})
+    for (const size_t offset : {0xA8, 0xB0, 0xB8, 0xC0, 0xF0, 0xF8, 0x100, 0x108, 0x7D0, 0x3D68,
+                                0x3DF8, 0x3EF0, 0x3EF8, 0x41C0})
         putPointer(offset, worldPointer);
     auto ptr = world.data();
     memcpy(image + 0x10C77870, &ptr, 8);
@@ -820,7 +821,7 @@ void CompoundNativeTests() {
     Check(build(&array) == nullptr && compoundBuildCalls == 1, "empty compound does not allocate");
     Check(compoundcollision::BodyCount(325) == 325 && compoundcollision::BodyCount(16965) == 67 &&
               compoundcollision::BodyCount(10740) == 42,
-          "large maps fit small native body counts without dropping hulls");
+          "both reference crash maps fit small native body counts without dropping hulls");
     puts(
         "PASS: exact Replay compound wrapper and aligned 112-byte instances; Office 16965 hulls -> 67 bodies, Nuketown 10740 -> 42 (allocator/constructor mocked)");
 }
@@ -899,10 +900,18 @@ void LadderTrace(void*,
 }
 float conversionHeight = 0;
 bool conversionFloor = true;
-bool ConversionHasHit(void*) { return true; }
-unsigned ConversionRef(void*, int) { return 0; }
-unsigned short ConversionShape(void*, int) { return 0xFFFF; }
-float ConversionFraction(void*, int) { return .5f; }
+bool ConversionHasHit(void*) {
+    return true;
+}
+unsigned ConversionRef(void*, int) {
+    return 0;
+}
+unsigned short ConversionShape(void*, int) {
+    return 0xFFFF;
+}
+float ConversionFraction(void*, int) {
+    return .5f;
+}
 void ConversionPosition(void*, int, float* out) {
     const float p[]{16, 16, conversionHeight};
     memcpy(out, p, sizeof(p));
@@ -911,8 +920,12 @@ void ConversionNormal(void*, int, float* out) {
     const float n[]{conversionFloor ? 0.f : 1.f, 0, conversionFloor ? 1.f : 0.f};
     memcpy(out, n, sizeof(n));
 }
-unsigned ConversionContents(void*, int) { return 1; }
-unsigned short ConversionWorld(unsigned) { return 2046; }
+unsigned ConversionContents(void*, int) {
+    return 1;
+}
+unsigned short ConversionWorld(unsigned) {
+    return 2046;
+}
 void TraceLayoutTests() {
     NativeBytes(0x108C3F0, ReplayTraceConversionCode);
     NativeBytes(0x23C4154, ReplayTraceWalkableThreshold);
@@ -948,8 +961,7 @@ void TraceLayoutTests() {
                       (result[0x3E] != 0) == floor,
                   "native conversion separates hit position from normal and walkable state");
             auto authored = std::make_shared<customsurfaces::Data>();
-            authored->triangles.push_back(
-                {{{0, 0, height}, {0, 64, height}, {64, 0, height}}, 3});
+            authored->triangles.push_back({{{0, 0, height}, {0, 64, height}, {64, 0, height}}, 3});
             authored->cells[customsurfaces::Key(0, 0)].push_back(0);
             customsurfaces::data.store(authored);
             const auto original = result;
@@ -969,7 +981,8 @@ void TraceLayoutTests() {
         }
     }
     customsurfaces::Clear();
-    puts("PASS: exact Replay trace conversion at three elevations; floor/wall classification and synthetic contact layout (query accessors supplied)");
+    puts(
+        "PASS: exact Replay trace conversion at three elevations; floor/wall classification and synthetic contact layout (query accessors supplied)");
 }
 unsigned movementTraceCalls = 0;
 bool movementMiss = false;
@@ -1100,7 +1113,8 @@ void LadderTests() {
                                          unsigned*, unsigned*)>(image + replay::GetLadderInfo.rva);
     float origin[]{20, 5, 20}, center[3]{};
     LadderInfo info{};
-    std::array<unsigned char, 128> pm{}, ps{};
+    std::array<unsigned char, 128> pm{};
+    std::array<unsigned char, 0x1180> ps{};
     auto* psPtr = ps.data();
     memcpy(pm.data() + 8, &psPtr, 8);
     memcpy(ps.data() + 0x30, origin, 12);
@@ -1115,6 +1129,32 @@ void LadderTests() {
     memcpy(ps.data() + 0x34, &distant, 4);
     check(pm.data(), nullptr);
     Check(observedLadderButtons == buttons, "distant movement input is unchanged");
+    customsurfaces::ResetMovementReport();
+    const short animationSpeed = 190;
+    memcpy(ps.data() + 0x1146, &animationSpeed, 2);
+    const unsigned slots[]{12345, 0xDA3, 500, 0x10};
+    memcpy(ps.data() + 0xE0, slots, sizeof(slots));
+    const auto originalState = ps;
+    wchar_t executablePath[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
+    const auto reportPath = fs::path(executablePath).parent_path() / "mw120rproxy.log";
+    const auto beforeCapture = fs::file_size(reportPath);
+    for (unsigned i = 0; i < 100; ++i)
+        customsurfaces::CaptureMovement(pm.data());
+    Check(ps == originalState && fs::file_size(reportPath) == beforeCapture,
+          "movement capture neither changes player state nor writes from the simulation callback");
+    customsurfaces::PumpMovementReport();
+    const auto afterReport = fs::file_size(reportPath);
+    customsurfaces::PumpMovementReport();
+    Check(afterReport > beforeCapture && fs::file_size(reportPath) == afterReport,
+          "client drain writes one bounded movement report without replaying it");
+    {
+        std::ifstream report(reportPath);
+        std::string contents((std::istreambuf_iterator<char>(report)), {});
+        Check(contents.find("movement=00000DA3 timer=12345 secondary=00000010 timer=500") !=
+                  std::string::npos,
+              "movement report distinguishes locomotion and secondary animation timers");
+    }
     Check(get(origin, nullptr, &info, center, false, nullptr, nullptr) && info.axis[0] == 1 &&
               info.axis[4] == 1 && info.axis[8] == 1 && info.top[2] == 120 && info.rung == 12 &&
               center[1] == -5,
@@ -1178,6 +1218,68 @@ void LadderTests() {
 #include "replay_glass_tests.h"
 #include "custom_audio_tests.h"
 #include "shared_collision_tests.h"
+void ParticleObservationTests() {
+    constexpr uintptr_t bank = 0x12C5BA00;
+    constexpr unsigned handle = 0x1001;
+    Commit(bank);
+    std::array<unsigned char, 0x230> system{};
+    std::array<unsigned char, 0x40> definition{};
+    std::array<unsigned char, 0x140> emitterDefinitions{};
+    std::array<unsigned char, 0x400> emitters{};
+    std::array<unsigned char, 0x400> states{};
+    const auto put = [](auto& bytes, size_t offset, auto value) {
+        memcpy(bytes.data() + offset, &value, sizeof(value));
+    };
+    uintptr_t systemAddress = reinterpret_cast<uintptr_t>(system.data());
+    const uintptr_t definitionAddress = reinterpret_cast<uintptr_t>(definition.data());
+    memcpy(image + bank + 8, &systemAddress, 8);
+    put(system, 0x190, definitionAddress);
+    put(system, 0x198, reinterpret_cast<uintptr_t>(emitters.data()));
+    put(system, 0x1A8, handle);
+    put(system, 0x22F, static_cast<unsigned char>(1));
+    put(definition, 8, reinterpret_cast<uintptr_t>(emitterDefinitions.data()));
+    put(definition, 0x1C, 2u);
+    put(emitterDefinitions, 8, 2u);
+    put(emitters, 0x158, reinterpret_cast<uintptr_t>(states.data()));
+    put(emitters, 0x370, 0x40u);
+    put(states, 0x1A8, 2u);
+    put(states, 0x1AC, 1u);
+    put(states, 0x3A8, 4u);
+    replayparticle::Snapshot snapshot;
+    const auto inspect = [&] {
+        return replayparticle::Inspect(reinterpret_cast<uintptr_t>(image), handle,
+                                       definitionAddress, snapshot);
+    };
+    Check(inspect() && snapshot.present && snapshot.running && snapshot.emitterCount == 2 &&
+              snapshot.emitters[0].particles == 7 && snapshot.emitters[1].particles == 0 &&
+              snapshot.emitters[1].flags == 0x40,
+          "particle observation distinguishes queued particles from lazy emitter allocation");
+    put(system, 0x1A8, handle + 0x1000u);
+    Check(inspect() && !snapshot.present, "recycled particle handles are not attributed to glass");
+    put(system, 0x1A8, handle);
+    put(system, 0x190, definitionAddress + 8);
+    Check(inspect() && !snapshot.present,
+          "different effect definitions are not attributed to glass");
+    put(system, 0x190, definitionAddress);
+    put(definition, 0x1C, 9u);
+    Check(!inspect(), "particle emitter traversal is bounded");
+    put(definition, 0x1C, 2u);
+    put(emitterDefinitions, 8, 17u);
+    Check(!inspect(), "particle state traversal is bounded");
+    put(emitterDefinitions, 8, 2u);
+    put(states, 0x1A8, 65537u);
+    Check(!inspect(), "invalid particle counts are not reported as valid state");
+    put(states, 0x1A8, 2u);
+    put(emitters, 0x158, uintptr_t{0});
+    Check(!inspect(), "unavailable particle memory is rejected");
+    systemAddress = 42;
+    memcpy(image + bank + 8, &systemAddress, 8);
+    Check(inspect() && !snapshot.present, "particle free-list entries are not dereferenced");
+    systemAddress = 0;
+    memcpy(image + bank + 8, &systemAddress, 8);
+    puts(
+        "PASS: read-only particle snapshots, handle reuse, unavailable memory and bounded traversal");
+}
 void PhysicsTests() {
     using namespace physicsfixture;
     NativeBytes(AddShapeListRva, AddShapeList);
@@ -1225,6 +1327,7 @@ void PhysicsTests() {
     TraceLayoutTests();
     AudioTests();
     GlassTests();
+    ParticleObservationTests();
     SharedCollisionTests();
     unsigned dataSize = 4;
     char data[4]{};
@@ -1256,6 +1359,24 @@ void PhysicsTests() {
     Check(custommaps::Select(id.c_str()), "reselect custom fixture");
     addMap(mapEnts.data());
     Check(deserializeCalls == 6, "stock map remains original while a custom package is selected");
+    auto nativeClip = clipMap;
+    memcpy(nativeClip.data() + 0xB8, &dataSize, 4);
+    memcpy(nativeClip.data() + 0xC0, &dataPtr, 8);
+    addClip(nativeClip.data());
+    Check(customphysics::OwnsNativeWorld() && customphysics::OwnsCustomWorld() &&
+              !customphysics::OwnsEmptyWorld() && deserializeCalls == 7,
+          "serialized custom collision retains native loading and enables map interactions");
+    std::array<unsigned char, 72> contact{};
+    const float fraction = .25f;
+    memcpy(contact.data(), &fraction, 4);
+    const auto preserved = contact;
+    const float start[]{0, 0, 64}, end[]{0, 0, -64}, bounds[6]{};
+    customcollision::TraceShot(0, contact.data(), start, end, bounds, 0x10001, 0, true);
+    customsurfaces::Apply(contact.data(), start, end);
+    Check(contact == preserved, "native world bullet and floor contacts are never rewritten");
+    addClip(clipMap.data());
+    Check(!customphysics::OwnsNativeWorld() && customphysics::OwnsEmptyWorld(),
+          "loading a legacy package clears native-world state");
     custommaps::ClearSelection();
     puts(
         "PASS: exact Replay physics callers, empty custom registration and nullable main-shape branch; nonempty, submodel, stock, unselected and unrelated callers remain native (reflection mocked)");
@@ -1576,7 +1697,13 @@ int main(int argc, char** argv) {
                                                          {CompoundNativeTests, "compound"},
                                                          {OmnvarTests, "omnvars"}})
         RunFixture(test.first, test.second);
-    NetConstTests(argc > 1 ? argv[1] : "custom_map_sources/mp_test/replay_package_v9");
+    const fs::path netConstPackage =
+        argc > 1 ? fs::path(argv[1]) : fs::path("custom_map_sources/mp_test/replay_package_v9");
+    if (fs::exists(netConstPackage))
+        NetConstTests(netConstPackage.string().c_str());
+    else
+        printf("SKIP: Replay NCS package fixture is unavailable: %s\n",
+               netConstPackage.string().c_str());
     RunFixture(CustomImageTests, "custom images");
     RunFixture(CustomSurfaceTests, "custom surfaces");
     for (int packageIndex = 1; packageIndex < argc; ++packageIndex)

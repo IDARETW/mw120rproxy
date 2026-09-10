@@ -51,24 +51,31 @@ stock $default material and requires no extracted shader templates.
 Run these commands from the repository root, replacing the example source paths.
 Each -o must name a **new directory**, including on retry. Final files go in package/.
 
+Set the Replay executable once. It supplies the native Havok builders and serializer
+in an offline process; the game is not started.
+
+~~~powershell
+$replayExe = Join-Path $env:MW120R_GAME 'game_dx12_ship_replay.exe'
+~~~
+
 ~~~powershell
 # BSP with textures from a PK3; require every requested texture.
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\arena.bsp mp_arena -o test-out\arena_v1 --asset-root C:\Maps\arena.pk3 --strict-textures
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\arena.bsp mp_arena -o test-out\arena_v1 --asset-root C:\Maps\arena.pk3 --strict-textures --replay $replayExe
 
 # Select a map inside an archive; graybox needs no local shader templates.
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\pack.pk3 mp_arena -o test-out\arena_v2 --source-map arena --graybox
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\pack.pk3 mp_arena -o test-out\arena_v2 --source-map arena --graybox --replay $replayExe
 
 # Source BSP, using an extracted materials directory.
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\terrain.bsp mp_terrain -o test-out\terrain_v1 --asset-root C:\Maps\source_assets --spawn 0 0 128
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\terrain.bsp mp_terrain -o test-out\terrain_v1 --asset-root C:\Maps\source_assets --spawn 0 0 128 --replay $replayExe
 
 # OBJ: specify units, up axis and spawn coordinates.
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\level.obj mp_level -o test-out\level_v1 --up-axis y --scale 1 --spawn 0 0 72 --strict-textures
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\level.obj mp_level -o test-out\level_v1 --up-axis y --scale 1 --spawn 0 0 72 --strict-textures --replay $replayExe
 
 # glTF defaults to Y-up -> Z-up and meters -> 39.37007874 Replay units.
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\level.glb mp_glb -o test-out\glb_v1 --spawn 0 0 72 --strict-textures
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\level.glb mp_glb -o test-out\glb_v1 --spawn 0 0 72 --strict-textures --replay $replayExe
 
 # Complete CoD FF via the extended offline Unlinker.
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\mp_example.ff mp_converted -o test-out\cod_v1 --format iw4 --graybox --search-path C:\Maps\dependencies
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe import C:\Maps\mp_example.ff mp_converted -o test-out\cod_v1 --format iw4 --graybox --search-path C:\Maps\dependencies --replay $replayExe
 ~~~
 
 Use --title for the selector label and --credit for attribution. Repeat --asset-root for
@@ -147,8 +154,11 @@ package/
 ~~~
 
 The importer derives world bounds, partitions native render surfaces, packs Replay
-normals/winding and writes MWCOLL02 convex collision. Native package validation must pass
-before a report becomes complete. Failed/interrupted output remains available for diagnosis.
+normals/winding, and bakes a native Havok world shape into `srv_<map>.ff`. The package's
+`collision.bin` is retained for inspection and compatibility with this release; gameplay
+collision comes from the server fastfile. Native serialization, reload, hull-bounds, and
+package validation must pass before a report becomes complete. Failed/interrupted output
+remains available for diagnosis.
 The existing fromdump and validate-package commands remain available.
 
 The current target supports up to 32,768 collision hulls, 4-252 vertices per hull,

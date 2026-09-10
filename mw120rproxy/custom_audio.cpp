@@ -37,7 +37,7 @@ void PickAlias(const void* list,
                unsigned c,
                unsigned d) {
     pick.load()(list, params, first, second, blend, a, b, c, d);
-    if (!customphysics::OwnsEmptyWorld() || !list || !first || *first)
+    if (!customphysics::OwnsCustomWorld() || !list || !first || *first)
         return;
     // Exact Replay SND_PickSoundAliasFromList: list +10 entries, +18 count;
     // entry stride E8, surface mask +40; play parameters +64 surface number.
@@ -80,7 +80,7 @@ void PickAlias(const void* list,
                  surface, used);
 }
 void LadderGrab(int client, int entity, bool left, unsigned char surface) {
-    const bool custom = client == 0 && entity == 0 && customphysics::OwnsEmptyWorld();
+    const bool custom = client == 0 && entity == 0 && customphysics::OwnsCustomWorld();
     if (custom && !surface)
         surface = 22; // authored ladder fallback: solid wood
     grab.load()(client, entity, left, surface);

@@ -116,6 +116,27 @@ uintptr_t Create(int world) {
     const DWORD saved = GetLastError();
     std::lock_guard lock(g_shapeMutex);
     const auto active = custommaps::Active();
+    if (world >= 0 && world < 5 && !g_loaded[world] && customphysics::OwnsNativeWorld() &&
+        !active.empty()) {
+        std::wstring zonePath;
+        if (custommaps::ActiveZonePath(active.c_str(), zonePath)) {
+            const auto folder = std::filesystem::path(zonePath).parent_path();
+            customladders::Load(folder);
+            if (world == 0) {
+                customglass::Load(folder);
+                customdoors::Load(folder);
+                customsurfaces::ResetMovementReport();
+            }
+            g_loaded[world] = true;
+            unsigned instance = ~0u;
+            safemem::ReadBytes(reinterpret_cast<void*>(g_base + 0xE5C8328 + world * 4), &instance,
+                               sizeof(instance));
+            LOG_INFO("Collision", "native world registered: map=%s world=%d instance=%u",
+                     active.c_str(), world, instance);
+        }
+        SetLastError(saved);
+        return result;
+    }
     if (world >= 0 && world < 5 && !g_loaded[world] && customphysics::OwnsEmptyWorld() &&
         !active.empty()) {
         uintptr_t stockShapes = ~uintptr_t{};
@@ -294,6 +315,8 @@ void TraceShot(int world,
                int mask,
                int phase,
                bool detectInside) {
+    if (customphysics::OwnsNativeWorld())
+        return;
     // Bullet and melee callers use All (0). Other phases, swept bounds and
     // unsupported contents retain the original native query result.
     if (world < 0 || world >= 5 || phase != 0 || !(mask & collisionfile::SupportedContents) ||
@@ -352,7 +375,8 @@ void TraceShot(int world,
         memcpy(bytes + 0x2C, &worldEntity, 4);
     }
     customsurfaces::ApplyShot(trace, start, end);
-    if (g_raySamples[world].fetch_add(1) < 12) {
+    if (g_raySamples[world].load(std::memory_order_relaxed) < 12 &&
+        g_raySamples[world].fetch_add(1, std::memory_order_relaxed) < 12) {
         float fraction;
         unsigned flags, finalType;
         unsigned short finalId;

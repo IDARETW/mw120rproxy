@@ -13,6 +13,7 @@ using AddShapes = void* (*)(char**, unsigned*, const char*, int);
 std::atomic<AddShapes> g_original{nullptr};
 uintptr_t g_base = 0;
 std::atomic<bool> g_emptyWorld{false};
+std::atomic<bool> g_nativeWorld{false};
 bool Matches(const replay::Binding& binding) {
     unsigned char bytes[64]{};
     return safemem::ReadBytes(reinterpret_cast<void*>(g_base + binding.rva), bytes, binding.size) &&
@@ -50,8 +51,10 @@ bool EmptySelected(char** data, unsigned* size, const char* name, int type, uint
     }
 }
 void* AddShapeList(char** data, unsigned* size, const char* name, int type) {
-    if (type == 23)
+    if (type == 23) {
         g_emptyWorld.store(false);
+        g_nativeWorld.store(false);
+    }
     const DWORD saved = GetLastError();
     char* payload = nullptr;
     unsigned bytes = 0;
@@ -79,12 +82,24 @@ void* AddShapeList(char** data, unsigned* size, const char* name, int type) {
         return nullptr;
     }
     SetLastError(saved);
-    return g_original.load(std::memory_order_acquire)(data, size, name, type);
+    void* shapes = g_original.load(std::memory_order_acquire)(data, size, name, type);
+    if (type == 23 && shapes && readable && payload && bytes &&
+        EmptySelected(data, size, name, type, reinterpret_cast<uintptr_t>(_ReturnAddress()))) {
+        g_nativeWorld.store(true);
+        LOG_INFO("Collision", "loaded native world shape list: map=%s bytes=%u", name, bytes);
+    }
+    return shapes;
 }
 }
 namespace customphysics {
 bool OwnsEmptyWorld() {
     return g_emptyWorld.load();
+}
+bool OwnsNativeWorld() {
+    return g_nativeWorld.load();
+}
+bool OwnsCustomWorld() {
+    return g_emptyWorld.load() || g_nativeWorld.load();
 }
 hook::Status Install(uintptr_t base) {
     if (g_original.load(std::memory_order_acquire))

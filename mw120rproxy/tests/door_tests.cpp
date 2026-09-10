@@ -8,6 +8,9 @@ namespace customphysics {
 bool OwnsEmptyWorld() {
     return true;
 }
+bool OwnsCustomWorld() {
+    return true;
+}
 }
 namespace {
 void Check(bool ok, const char* message) {

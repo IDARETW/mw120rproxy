@@ -43,7 +43,7 @@ std::atomic<std::shared_ptr<State>> current;
 uintptr_t base = 0;
 customdoors::NativeTrace nativeTrace = nullptr;
 std::shared_ptr<State> Active() {
-    return customphysics::OwnsEmptyWorld() ? current.load() : nullptr;
+    return customphysics::OwnsCustomWorld() ? current.load() : nullptr;
 }
 Vec Center(const Door& d, unsigned frame) {
     Vec v{};

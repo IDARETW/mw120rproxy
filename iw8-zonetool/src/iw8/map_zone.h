@@ -211,7 +211,8 @@ inline void emitLevelNetConstStrings(ZoneBuffer& zb, unsigned type) {
 }
 
 inline void buildSrvMapZone(ZoneBuffer& zb, const char* assetName, const std::string& ents,
-                            const MapBounds& bounds,const MapSun& lighting={}) {
+                            const MapBounds& bounds, const MapSun& lighting,
+                            const std::vector<uint8_t>& collision) {
     const ReplaySpawns spawns(ents);
     // 1) XAssetList root -> TEMP(0): 3 assets.
     zb.pushStream(XFILE_BLOCK_TEMP);
@@ -253,8 +254,8 @@ inline void buildSrvMapZone(ZoneBuffer& zb, const char* assetName, const std::st
         stampf(cm, kCM_bpMin + 0, -100000.f); stampf(cm, kCM_bpMin + 4, -100000.f); stampf(cm, kCM_bpMin + 8, -100000.f);
         stampf(cm, kCM_bpMax + 0,  100000.f); stampf(cm, kCM_bpMax + 4,  100000.f); stampf(cm, kCM_bpMax + 8,  100000.f);
     }
-    stamp32(cm, kCM_havokSize, 0);
-    stamp64(cm, kCM_havokData, PTR_NULL);  // no collision data
+    stamp32(cm, kCM_havokSize, static_cast<uint32_t>(collision.size()));
+    stamp64(cm, kCM_havokData, collision.empty() ? PTR_NULL : PTR_FOLLOWS);
     stamp32(cm, kCM_checksum, 0);
 
     zb.pushStream(XFILE_BLOCK_TEMP_PRELOAD); zb.align(7);   // struct -> retail STREAM 1: live [STREAM-STATE] map_ents curStream=1 (srv's small TEMP scratch s0=0x6F0 exposes streams 0,1 only -- a real game zone confirms s1 reserves, s2 does NOT). gfx_map/glass_map differ (curStream=2, big scratch) -- do NOT unify.
@@ -267,6 +268,10 @@ inline void buildSrvMapZone(ZoneBuffer& zb, const char* assetName, const std::st
         // Load_clipMap_t E0FD30 -> Load_StageArray E05480, 40 bytes.
         uint8_t stage[40]{};stamp64(stage,0,PTR_FOLLOWS);stage[0x16]=1;
         zb.write(stage,sizeof(stage));zb.writeStr("default");
+        if (!collision.empty()) {
+            zb.align(15);
+            zb.write(collision.data(), collision.size());
+        }
         zb.popStream();
     zb.popStream();
 

@@ -200,7 +200,7 @@ ww_mp_4doffice.ff
 techsets_mp_4doffice.ff
 ```
 
-It also includes the supporting files listed in its manifest, such as `collision.bin`, `ladders.bin`, `glass.bin`, `footsteps.bin`, `ambient.bin`, and `preview.rgba`. Keep the complete package together. Copying only the main fastfile will leave the map incomplete.
+It also includes the supporting files listed in its manifest, such as `collision.bin`, `ladders.bin`, `glass.bin`, `footsteps.bin`, `ambient.bin`, and `preview.rgba`. Keep the complete package together. World collision is embedded in `srv_<map>.ff` as native Replay Havok data; `collision.bin` remains as the inspected source record for this release. Copying only the main fastfile will leave the map incomplete.
 
 Installing another map under a different ID adds it alongside your existing maps. Reinstalling the same ID replaces that map and backs up the previous version under `.proxy/backups`.
 
