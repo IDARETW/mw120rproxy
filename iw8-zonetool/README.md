@@ -36,19 +36,31 @@ bake, and IW8 zone build in one command:
 
 ```bat
 iw8-zonetool.exe build-iw3 D:\CoD4\zone\english\mp_example.ff ^
-  -o D:\Maps\mp_example\package ^
   --replay "D:\Replay\game_dx12_ship_replay.exe" ^
   --unlinker "D:\Tools\OpenAssetTools\Unlinker.exe"
 ```
 
 The map id is taken from the fastfile name. Pass a second positional value to rename it during
-conversion. A sibling `mp_example_load.ff` is read automatically. Repeat `--search-path` for CoD4
-directories or IWD locations needed by the source zone.
+conversion. The tool creates `mp_example_iw8` beside the source fastfile and writes the five zones
+there; use `-o` only when you want another destination. A sibling `mp_example_load.ff` is read
+automatically. Repeat `--search-path` for CoD4 directories or IWD locations needed by the source
+zone.
 
 This command uses the native OpenAssetTools Unlinker with the supplied IW3 Replay map exporters.
-It keeps the extracted files in a private temporary directory and removes them after the five
-fastfiles are written. No Python runtime, manual export, `.bin`, JSON, report, or preview file is
-left in the package directory.
+It keeps extracted files in a private temporary directory and removes them after the five fastfiles
+are written. No Python runtime, manual export, `.bin`, report, preview, or extra directory layout
+is required.
+
+`map.json` is optional. Pass it with `--metadata` when the lobby should use a title or description:
+
+```json
+{
+  "title": "Example Map",
+  "description": "Converted from CoD4"
+}
+```
+
+It is the only loose file the output accepts. It may also contain an `id` that matches the map id.
 
 Direct fastfile conversion preserves world geometry, placed static-model LOD0 geometry, collision,
 entities, source sun settings, vertex colors, and an available `compass_map_<map>` image. It uses
@@ -61,13 +73,14 @@ The patched Unlinker setup and complete command are documented in
 
 ### Build a prepared map
 
-Give `build-map` a prepared map dump, a lower-case `mp_` map id, and an empty output directory:
+Give `build-map` a prepared map dump and a lower-case `mp_` map id. The output folder is created
+beside the dump unless `-o` selects another destination:
 
 ```bat
-iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example -o C:\maps\mp_example\package
+iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example
 ```
 
-The package contains exactly:
+The output contains exactly:
 
 ```text
 mp_example.ff
@@ -84,7 +97,7 @@ the matching Replay executable and optional footstep data:
 
 ```bat
 iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example ^
-  -o C:\maps\mp_example\package ^
+  -o C:\maps\mp_example\output ^
   --replay "C:\Games\Modern Warfare\game_dx12_ship_replay.exe" ^
   --collision C:\maps\mp_example\collision.bin ^
   --footsteps C:\maps\mp_example\footsteps.bin
@@ -98,18 +111,18 @@ sun direction or color:
 
 ```bat
 iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example ^
-  -o C:\maps\mp_example\package --sun-intensity-scale 6
+  -o C:\maps\mp_example\output --sun-intensity-scale 6
 ```
 
-## Check a package
+## Check output
 
 ```bat
-iw8-zonetool.exe validate-package C:\maps\mp_example\package mp_example
-iw8-zonetool.exe inspect C:\maps\mp_example\package\mp_example.ff
+iw8-zonetool.exe validate-package C:\maps\mp_example\output mp_example
+iw8-zonetool.exe inspect C:\maps\mp_example\output\mp_example.ff
 ```
 
-Validation requires exactly five files and checks the Replay header, resident framing, and stream
-sizes of every zone.
+Validation accepts exactly five fastfiles and an optional `map.json`. It checks the Replay header,
+resident framing, and stream sizes of every zone.
 
 ## Install
 

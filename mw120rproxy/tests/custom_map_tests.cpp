@@ -110,6 +110,8 @@ void PackageTests() {
     MakePackage(id + "_contract");
     MakePackage(id + "_fastfiles");
     fs::remove(packageRoot / (id + "_fastfiles") / "manifest.json");
+    Text(packageRoot / (id + "_fastfiles") / "map.json",
+         "{\"title\":\"Fastfile Fixture\",\"description\":\"No manifest required\"}");
     Text(
         packageRoot / (id + "_nested") / "manifest.json",
         "{\"nested\":{\"schema\":1,\"id\":\"mp_proxy_nested\",\"title\":\"Wrong scope\",\"gametypes\":[\"tdm\"]}}");
@@ -132,7 +134,7 @@ void PackageTests() {
     Check(!custommaps::Select((id + "_contract").c_str()),
           "unknown generated-world contracts are rejected");
     Check(custommaps::Select((id + "_fastfiles").c_str()),
-          "fastfile-only package is accepted");
+          "fastfile-only package with optional map metadata is accepted");
     Check(custommaps::ActiveWorldContract(),
           "fastfile-only package uses the native world contract");
     Check(custommaps::Select(id.c_str()), "manifest package can be reselected");

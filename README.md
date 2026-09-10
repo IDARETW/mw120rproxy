@@ -9,7 +9,7 @@ Load custom maps in **MW2019 Replay 1.20.4.7623265**. The repository includes no
 - Windows x64 and a complete Replay installation.
 - Executable: `game_dx12_ship_replay.exe`, MD5 `1c238fe327f2ecc3b0db924c5b425439`.
 - Visual Studio C++ build tools with a Windows SDK, and XMake 2.8 or newer.
-- A converted MW120R map package to play a custom map. CoD4 `.ff` files can be passed directly to the converter, but they cannot be installed in Replay unchanged.
+- A converted MW120R map output folder to play a custom map. CoD4 `.ff` files can be passed directly to the converter, but they cannot be installed in Replay unchanged.
 
 The repository contains source and tools. Game executables, stock fastfiles, shaders, and prebuilt DLLs are not bundled in the source checkout. A ready-to-install [Nuketown example map](docs/NUKETOWN_EXAMPLE.md) is available as a separate release download.
 
@@ -89,9 +89,9 @@ Door conversion reads a limited set of authored brush-mover definitions; it does
 
 ## Troubleshooting
 
-- **No custom entry:** install the whole package, check `manifest.json` and its ID, then restart or refresh F6. Read the log for rejected packages.
+- **No custom entry:** install all five fastfiles together, check the folder ID and optional `map.json`, then restart or refresh F6. Read the log for rejected maps.
 - **Missing `.ff`:** distinguish missing stock game data from an incomplete custom package. Keep all generated companion fastfiles together.
-- **Crash or loading loop:** check `mw120rproxy.log`, `mw120rproxy.engine.log`, `mw120rproxy.trace.log`, and `mw120rproxy.exceptions.log`. For a bug report, include the map name, steps to reproduce, the first error and stack trace, and the map's `build_report.json`.
+- **Crash or loading loop:** check `mw120rproxy.log`, `mw120rproxy.engine.log`, `mw120rproxy.trace.log`, and `mw120rproxy.exceptions.log`. For a bug report, include the map name, steps to reproduce, and the first error and stack trace.
 - **No tilde console:** try F7; keyboard layouts differ.
 - **Updating:** close Replay before replacing the DLL or packages. Do not mix files from different map builds.
 

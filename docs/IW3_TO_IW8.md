@@ -39,7 +39,6 @@ Pass the generated CoD4 map fastfile directly to `build-iw3`:
 ```powershell
 .\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-iw3 `
     'D:\CoD4\zone\english\mp_example.ff' `
-    -o 'D:\Maps\mp_example\package' `
     --replay 'D:\Replay\game_dx12_ship_replay.exe' `
     --unlinker 'D:\Tools\OpenAssetTools\build\bin\Release_x86\Unlinker.exe' `
     --search-path 'D:\CoD4\main' `
@@ -47,13 +46,14 @@ Pass the generated CoD4 map fastfile directly to `build-iw3`:
 ```
 
 The target map id defaults to the `.ff` filename. Add a lower-case `mp_` id after the input path
-to rename it during conversion. A sibling `<map>_load.ff` is included automatically.
+to rename it during conversion. The output folder is created beside the source as
+`<map>_iw8`; use `-o` only to choose another location. A sibling `<map>_load.ff` is included automatically.
 `--search-path` is repeatable and lets Unlinker resolve referenced zones or IWD archives.
 
 `--unlinker` can be omitted when `Unlinker.exe` is beside `iw8-zonetool.exe`, under a nearby
 `tools` folder, on `PATH`, or set in `IW8_ZONETOOL_UNLINKER` or `MW120R_UNLINKER`.
 
-The output directory contains only:
+The output contains only:
 
 ```text
 mp_example.ff
@@ -63,8 +63,23 @@ ww_mp_example.ff
 techsets_mp_example.ff
 ```
 
-The native command keeps its OpenAssetTools output, normalized geometry, JSON, and collision input
-inside a private temporary directory. Those files are removed after the five fastfiles are written.
+The native command keeps its OpenAssetTools output, normalized geometry, and collision input inside
+a private temporary directory. Those files are removed after the five fastfiles are written.
+
+## Optional map.json
+
+No JSON is required. To set the lobby title or description, create one small file and pass it with
+`--metadata`:
+
+```json
+{
+  "title": "Example Map",
+  "description": "Converted from CoD4"
+}
+```
+
+`id` is also allowed when it matches the target map id. `map.json` is the only loose output file
+accepted beside the five fastfiles.
 
 Direct conversion carries over world geometry, placed static-model LOD0 geometry, collision,
 entities, source sun direction and color, vertex colors, and an available HUD minimap. It uses
@@ -79,11 +94,11 @@ footstep tags, and other authored sidecars, use the prepared-dump route document
 
 ```powershell
 .\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-package `
-    'D:\Maps\mp_example\package' mp_example
+    'D:\CoD4\zone\english\mp_example_iw8' mp_example
 
 .\mw120rproxy\tools\deploy_custom_map.ps1 `
     -GameRoot 'D:\Replay' `
-    -PackageDir 'D:\Maps\mp_example\package' `
+    -PackageDir 'D:\CoD4\zone\english\mp_example_iw8' `
     -Map mp_example
 ```
 

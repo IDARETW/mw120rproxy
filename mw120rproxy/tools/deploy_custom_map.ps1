@@ -33,6 +33,10 @@ function Test-NativeZones([string]$Directory) {
                 "techsets_$Map.ff")) {
             Copy-Item -LiteralPath (Join-Path $Directory $name) -Destination $check
         }
+        $metadata = Join-Path $Directory 'map.json'
+        if (Test-Path -LiteralPath $metadata) {
+            Copy-Item -LiteralPath $metadata -Destination $check
+        }
         & $converter validate-package $check $Map
         return $LASTEXITCODE -eq 0
     }
@@ -87,6 +91,14 @@ if (Test-Path -LiteralPath $manifestPath) {
 }
 else {
     $names = @("$Map.ff", "srv_$Map.ff", "eng_$Map.ff", "ww_$Map.ff", "techsets_$Map.ff")
+    $metadataPath = Join-Path $packageSource 'map.json'
+    if (Test-Path -LiteralPath $metadataPath) {
+        $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+        if ($metadata.id -and $metadata.id -cne $Map) {
+            throw 'map.json id must match the selected map.'
+        }
+        $names += 'map.json'
+    }
 }
 $files = foreach ($name in $names) {
     $source = Join-Path $packageSource $name

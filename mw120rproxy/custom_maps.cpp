@@ -317,6 +317,42 @@ std::array<std::string, 5> ZoneNames(const std::string& id) {
     return {id, "srv_" + id, "eng_" + id, "ww_" + id, "techsets_" + id};
 }
 
+bool ReadFastfileMetadata(custommaps::Package& package,
+                          const std::filesystem::path& directory,
+                          bool& present) {
+    const auto path = directory / "map.json";
+    present = std::filesystem::exists(path);
+    if (!present)
+        return true;
+    if ((GetFileAttributesW(path.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        package.error = "map.json must not be a link";
+        return false;
+    }
+
+    std::string text;
+    if (!ReadText(path, text) || !IsJsonDocument(text)) {
+        package.error = "map.json has invalid JSON";
+        return false;
+    }
+
+    std::string id;
+    std::string title;
+    std::string description;
+    if (!OptionalString(text, "id", id) || !OptionalString(text, "title", title) ||
+        !OptionalString(text, "description", description)) {
+        package.error = "map.json metadata must use strings";
+        return false;
+    }
+    if (!id.empty() && id != package.id) {
+        package.error = "map.json id must match the map folder";
+        return false;
+    }
+    if (!title.empty())
+        package.title = std::move(title);
+    package.description = std::move(description);
+    return true;
+}
+
 bool HasStockShaderHeader(const std::filesystem::path& path) {
     if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES ||
         (GetFileAttributesW(path.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
@@ -367,9 +403,15 @@ bool ValidateFastfileOnlyPackage(custommaps::Package& package,
         return false;
     }
 
+    bool hasMetadata = false;
+    if (!ReadFastfileMetadata(package, directory, hasMetadata))
+        return false;
+
     std::vector<std::string> expected;
     for (const auto& zone : ZoneNames(package.id))
         expected.push_back(zone + ".ff");
+    if (hasMetadata)
+        expected.emplace_back("map.json");
     std::sort(expected.begin(), expected.end());
 
     std::vector<std::string> actual;
@@ -387,12 +429,12 @@ bool ValidateFastfileOnlyPackage(custommaps::Package& package,
     }
     std::sort(actual.begin(), actual.end());
     if (actual != expected) {
-        package.error = "fastfile-only package must contain exactly five map zones";
+        package.error = "fastfile-only package must contain five map zones and optional map.json";
         return false;
     }
 
-    for (const auto& name : expected) {
-        const auto fastfile = directory / name;
+    for (const auto& zone : ZoneNames(package.id)) {
+        const auto fastfile = directory / (zone + ".ff");
         if ((GetFileAttributesW(fastfile.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
             !HasReplayFastfileHeader(fastfile)) {
             package.error = "zone fastfile has an invalid 1.20 header";

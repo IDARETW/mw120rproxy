@@ -11,9 +11,9 @@ fastfile directly or consumes a prepared map dump and produces the five fastfile
 
 No Python installation is required.
 
-To start directly from a generated CoD4 `.ff`, follow
-[Convert an IW3 fastfile](IW3_TO_IW8.md). The prepared layout below remains available for finished
-maps that supply converted materials and authored gameplay sidecars.
+To start directly from a generated CoD4 `.ff`, follow [Convert an IW3 fastfile](IW3_TO_IW8.md).
+That path needs no manually prepared directory or JSON files. The prepared layout below remains
+available for finished maps that supply converted materials and authored gameplay sidecars.
 
 ## Prepare the dump
 
@@ -47,7 +47,7 @@ To bake MWCOLL02 or MWCOLL03 collision in memory, add the supported Replay execu
 --replay 'D:\Games\Replay\game_dx12_ship_replay.exe' --collision 'D:\Maps\Example\collision.bin' --footsteps 'D:\Maps\Example\footsteps.bin'
 ```
 
-The package contains exactly:
+The output contains exactly:
 
 ```text
 mp_example.ff
@@ -56,6 +56,9 @@ eng_mp_example.ff
 ww_mp_example.ff
 techsets_mp_example.ff
 ```
+
+`map.json` is optional and is the only loose output file accepted. It can set the lobby `title`,
+`description`, and a matching `id`.
 
 ## Validate and install
 

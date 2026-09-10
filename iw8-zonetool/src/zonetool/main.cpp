@@ -41,16 +41,25 @@ struct Args
     std::string footstepsPath;
     std::string unlinkerExecutable;
     std::vector<std::string> searchPaths;
+    std::string metadataPath;
     std::string lightingProfile = "source";
     float sunIntensityScale = 6.0f;
+};
+
+struct MapMetadata
+{
+    bool present{};
+    std::string id;
+    std::string title;
+    std::string description;
 };
 
 void printUsage()
 {
     std::printf("iw8-zonetool - IW8 Replay 1.20 map compiler\n"
                 "usage:\n"
-                "  iw8-zonetool build-map <dump> <map> -o <output> [options]\n"
-                "  iw8-zonetool build-iw3 <map.ff> [map] -o <output> [options]\n"
+                "  iw8-zonetool build-map <dump> <map> [-o <output>] [options]\n"
+                "  iw8-zonetool build-iw3 <map.ff> [map] [-o <output>] [options]\n"
                 "  iw8-zonetool inspect <file.ff>\n"
                 "  iw8-zonetool validate-package <package_dir> <map>\n"
                 "options:\n"
@@ -59,6 +68,7 @@ void printUsage()
                 "  --footsteps <footsteps.bin>\n"
                 "  --unlinker <OpenAssetTools\\Unlinker.exe>\n"
                 "  --search-path <IW3 asset directory>\n"
+                "  --metadata <map.json>\n"
                 "  --lighting-profile source|aniyah-incursion\n"
                 "  --sun-intensity-scale <positive multiplier>\n"
                 "  -v  -q\n");
@@ -98,6 +108,10 @@ bool parseArgs(const int argc, char **argv, Args &args)
         else if (value == "--search-path" && index + 1 < argc)
         {
             args.searchPaths.emplace_back(argv[++index]);
+        }
+        else if (value == "--metadata" && index + 1 < argc)
+        {
+            args.metadataPath = argv[++index];
         }
         else if (value == "--lighting-profile" && index + 1 < argc)
         {
@@ -164,18 +178,125 @@ std::array<std::string, 5> zoneNames(const std::string &map)
     return {map, "srv_" + map, "eng_" + map, "ww_" + map, "techsets_" + map};
 }
 
-std::vector<std::string> expectedFiles(const std::string &map)
+std::vector<std::string> expectedFiles(const std::string &map, const bool includeMetadata = false)
 {
     std::vector<std::string> files;
     for (const std::string &zone : zoneNames(map))
     {
         files.push_back(zone + ".ff");
     }
+    if (includeMetadata)
+    {
+        files.emplace_back("map.json");
+    }
     std::sort(files.begin(), files.end());
     return files;
 }
 
-bool prepareOutputDirectory(const std::string &outputDirectory, const std::string &map)
+bool readMetadata(const std::string &path, MapMetadata &metadata)
+{
+    metadata = {};
+    if (path.empty())
+    {
+        return true;
+    }
+
+    std::ifstream input(path);
+    if (!input)
+    {
+        err("metadata: cannot read %s", path.c_str());
+        return false;
+    }
+
+    try
+    {
+        const nlohmann::json data = nlohmann::json::parse(input);
+        if (!data.is_object())
+        {
+            throw std::runtime_error("the root must be an object");
+        }
+        const auto readString = [&data](const char *key, std::string &value) {
+            const auto item = data.find(key);
+            if (item == data.end())
+            {
+                return true;
+            }
+            if (!item->is_string())
+            {
+                return false;
+            }
+            value = item->get<std::string>();
+            return true;
+        };
+        if (!readString("id", metadata.id) || !readString("title", metadata.title) ||
+            !readString("description", metadata.description))
+        {
+            throw std::runtime_error("id, title, and description must be strings");
+        }
+        metadata.present = true;
+    }
+    catch (const std::exception &exception)
+    {
+        err("metadata: %s is invalid: %s", path.c_str(), exception.what());
+        return false;
+    }
+    return true;
+}
+
+bool validateMetadata(const std::string &directory, const std::string &map, bool &present)
+{
+    const std::filesystem::path path = std::filesystem::path(directory) / "map.json";
+    present = std::filesystem::exists(path);
+    if (!present)
+    {
+        return true;
+    }
+
+    MapMetadata metadata;
+    if (!readMetadata(path.string(), metadata))
+    {
+        return false;
+    }
+    if (!metadata.id.empty() && metadata.id != map)
+    {
+        err("metadata: id '%s' does not match output map '%s'", metadata.id.c_str(), map.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool writeMetadata(const std::string &directory, const MapMetadata &metadata)
+{
+    if (!metadata.present)
+    {
+        return true;
+    }
+
+    nlohmann::json data = nlohmann::json::object();
+    if (!metadata.id.empty())
+    {
+        data["id"] = metadata.id;
+    }
+    if (!metadata.title.empty())
+    {
+        data["title"] = metadata.title;
+    }
+    if (!metadata.description.empty())
+    {
+        data["description"] = metadata.description;
+    }
+    std::ofstream output(std::filesystem::path(directory) / "map.json", std::ios::binary);
+    if (!output)
+    {
+        err("metadata: cannot write map.json");
+        return false;
+    }
+    output << data.dump(2) << '\n';
+    return output.good();
+}
+
+bool prepareOutputDirectory(const std::string &outputDirectory, const std::string &map,
+                            const bool includeMetadata)
 {
     std::error_code error;
     if (!std::filesystem::exists(outputDirectory, error))
@@ -188,14 +309,13 @@ bool prepareOutputDirectory(const std::string &outputDirectory, const std::strin
         return false;
     }
 
-    const std::vector<std::string> expected = expectedFiles(map);
+    const std::vector<std::string> expected = expectedFiles(map, includeMetadata);
     for (const auto &entry : std::filesystem::directory_iterator(outputDirectory, error))
     {
         if (error || !entry.is_regular_file(error) ||
             !std::binary_search(expected.begin(), expected.end(), entry.path().filename().string()))
         {
-            err("build-map: output directory must be empty or contain only this "
-                "map's five fastfiles");
+            err("build-map: output directory must be empty or contain only this map's files");
             return false;
         }
     }
@@ -250,6 +370,12 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
         return false;
     }
 
+    bool hasMetadata = false;
+    if (!validateMetadata(packageDirectory, map, hasMetadata))
+    {
+        return false;
+    }
+
     std::vector<std::string> actual;
     std::error_code error;
     for (const auto &entry : std::filesystem::directory_iterator(packageDirectory, error))
@@ -267,9 +393,9 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
         return false;
     }
     std::sort(actual.begin(), actual.end());
-    if (actual != expectedFiles(map))
+    if (actual != expectedFiles(map, hasMetadata))
     {
-        err("validate: package must contain exactly the five map fastfiles");
+        err("validate: output must contain exactly five map fastfiles and optional map.json");
         return false;
     }
 
@@ -493,9 +619,9 @@ std::vector<uint8_t> loadCollision(const Args &args, const std::string &dumpDire
 
 int writeMapPackage(const Args &args, const std::string &map, const std::string &outputDirectory,
                     const std::string &entities, const iw8::MapBounds &bounds,
-                    const std::string &dumpDirectory)
+                    const std::string &dumpDirectory, const MapMetadata &metadata)
 {
-    if (!prepareOutputDirectory(outputDirectory, map))
+    if (!prepareOutputDirectory(outputDirectory, map, metadata.present))
     {
         return 2;
     }
@@ -555,13 +681,18 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
     writeEmpty("ww_" + map + ".ff");
     writeEmpty("techsets_" + map + ".ff");
 
+    if (result == 0 && !writeMetadata(outputDirectory, metadata))
+    {
+        result = 1;
+    }
+
     if (result == 0 && !validatePackage(outputDirectory, map))
     {
         result = 1;
     }
     if (result == 0)
     {
-        info("build-map: wrote five fastfiles to %s", outputDirectory.c_str());
+        info("build-map: wrote map output to %s", outputDirectory.c_str());
     }
     return result;
 }
@@ -578,6 +709,17 @@ int buildMap(const Args &args)
     const std::string map = args.positional[1];
     if (!requireMapId(map))
     {
+        return 2;
+    }
+
+    MapMetadata metadata;
+    if (!readMetadata(args.metadataPath, metadata))
+    {
+        return 2;
+    }
+    if (!metadata.id.empty() && metadata.id != map)
+    {
+        err("metadata: id '%s' does not match map '%s'", metadata.id.c_str(), map.c_str());
         return 2;
     }
     const std::string outputDirectory = args.outputDirectory.empty()
@@ -664,21 +806,34 @@ int buildMap(const Args &args)
         info("common world: %d primary lights", commonWorld.primaryLightCount);
     }
 
-    return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory);
+    return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory, metadata);
 }
 
 int buildIw3(const Args &args)
 {
-    if (args.positional.empty() || args.positional.size() > 2 || args.outputDirectory.empty() ||
-        args.replayExecutable.empty())
+    if (args.positional.empty() || args.positional.size() > 2 || args.replayExecutable.empty())
     {
         printUsage();
         return 2;
     }
 
-    const std::string map = args.positional.size() == 2
-                                ? args.positional[1]
-                                : std::filesystem::path(args.positional[0]).stem().string();
+    const bool hasExplicitMap = args.positional.size() == 2;
+    std::string map = hasExplicitMap ? args.positional[1]
+                                     : std::filesystem::path(args.positional[0]).stem().string();
+    MapMetadata metadata;
+    if (!readMetadata(args.metadataPath, metadata))
+    {
+        return 2;
+    }
+    if (!metadata.id.empty())
+    {
+        if (hasExplicitMap && metadata.id != map)
+        {
+            err("metadata: id '%s' does not match map '%s'", metadata.id.c_str(), map.c_str());
+            return 2;
+        }
+        map = metadata.id;
+    }
     if (!requireMapId(map))
     {
         return 2;
@@ -698,6 +853,11 @@ int buildIw3(const Args &args)
     build.command = "build-map";
     build.positional = {prepared.root.string(), map};
     build.collisionPath = prepared.collision.string();
+    if (build.outputDirectory.empty())
+    {
+        build.outputDirectory =
+            (std::filesystem::path(args.positional[0]).parent_path() / (map + "_iw8")).string();
+    }
     return buildMap(build);
 }
 
