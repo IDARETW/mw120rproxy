@@ -1,6 +1,6 @@
 # MW120R Custom Maps
 
-> **Status: untested proof of concept.** This is a source-only snapshot for people who want to inspect, build, and help improve IW3-to-IW8 map conversion. It is not a finished mod release and has no public gameplay compatibility guarantee.
+> **This repository is purely a proof of concept.** This is a source-only snapshot for people who want to inspect, build, and help improve IW3-to-IW8 map conversion and any future iterations. It is not a finished mod release and has no public gameplay compatibility guarantee, the 1.20 base mod is meant purely for map testing, it is not a full-fletched mod base.
 
 The repository contains the current native Replay 1.20 package writer and the accompanying local-play proxy source. It does not include game executables, stock assets, converted maps, prebuilt DLLs, local research output, or test evidence. Build and test maps on a separate installation of Replay before relying on them.
 
