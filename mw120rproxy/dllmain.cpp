@@ -20,7 +20,6 @@
 #include "engine_diagnostics.h"
 #include "custom_physics.h"
 #include "custom_collision.h"
-#include "custom_render.h"
 #include "custom_omnvars.h"
 #include "custom_map_ui.h"
 #include "custom_images.h"
@@ -79,8 +78,6 @@ bool DoInstallHooks() {
         status = customphysics::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customcollision::Install(g_base);
-    if (status == hook::Status::Installed && g_config.customMapLoader)
-        status = customrender::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customomnvars::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)

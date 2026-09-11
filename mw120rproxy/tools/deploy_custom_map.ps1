@@ -1,78 +1,78 @@
 param(
-    [Parameter(Mandatory = $true)][string]$GameRoot,
-    [Parameter(Mandatory = $true)][string]$MapOutput
+    [string]$PackageDir = (Join-Path $PSScriptRoot '..\..\custom_map_sources\mp_test\replay_package_v13'),
+    [string]$Map = 'mp_test'
 )
-
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$gameRoot = (Resolve-Path -LiteralPath $GameRoot).Path
-$mapOutput = (Resolve-Path -LiteralPath $MapOutput).Path
+$gameRoot = 'D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)'
 $gameExe = Join-Path $gameRoot 'game_dx12_ship_replay.exe'
-$converter = Join-Path $repoRoot 'iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
-
-$mainZones = @(Get-ChildItem -LiteralPath $mapOutput -File -Filter 'mp_*.ff')
-if ($mainZones.Count -ne 1) {
-    throw 'Map output must contain exactly one primary mp_<name>.ff file.'
-}
-$Map = [IO.Path]::GetFileNameWithoutExtension($mainZones[0].Name)
 if ($Map -notmatch '^mp_[a-z0-9_]{1,60}$') {
-    throw 'Primary fastfile has an invalid map id.'
+    throw 'Invalid map id.'
 }
-if (-not (Test-Path -LiteralPath $gameExe)) {
-    throw "Game executable is missing: $gameExe"
+$packageSource = (Resolve-Path -LiteralPath $PackageDir).Path
+$converter = Join-Path $repoRoot '..\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
+& $converter validate-package $packageSource $Map
+if ($LASTEXITCODE -ne 0) {
+    throw 'Source package validation failed.'
 }
-if ((Get-FileHash -LiteralPath $gameExe -Algorithm MD5).Hash -ne
-    '1C238FE327F2ECC3B0DB924C5B425439') {
-    throw 'The selected game executable is not Replay 1.20.4.7623265.'
-}
-if (-not (Test-Path -LiteralPath $converter)) {
-    throw 'Build iw8-zonetool before installing a map.'
-}
-
-function Test-NativeZones([string]$Directory) {
-    $check = Join-Path ([IO.Path]::GetTempPath()) ('mw120r-zones-' + [Guid]::NewGuid())
-    New-Item -ItemType Directory -Path $check | Out-Null
-    try {
-        foreach ($name in @("$Map.ff", "srv_$Map.ff", "eng_$Map.ff", "ww_$Map.ff",
-                "techsets_$Map.ff")) {
-            Copy-Item -LiteralPath (Join-Path $Directory $name) -Destination $check
-        }
-        $metadata = Join-Path $Directory 'map.json'
-        if (Test-Path -LiteralPath $metadata) {
-            Copy-Item -LiteralPath $metadata -Destination $check
-        }
-        & $converter validate-output $check $Map
-        return $LASTEXITCODE -eq 0
-    }
-    finally {
-        [IO.Directory]::Delete($check, $true)
+$manifestPath = Join-Path $packageSource 'manifest.json'
+$manifest = $null
+if (Test-Path -LiteralPath $manifestPath) {
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    if ($manifest.schema -ne 1 -or $manifest.id -cne $Map -or !$manifest.title -or $manifest.gametypes -notcontains 'tdm') {
+        throw 'Invalid package manifest.'
     }
 }
-
-if (-not (Test-NativeZones $mapOutput)) {
-    throw 'Map output validation failed.'
+$shaderDependency = $null
+if ($manifest.shaderSource) {
+    if ($manifest.shaderSource -cne 'mp_frontend3') {
+        throw 'Unsupported Replay shader dependency.'
+    }
+    $shaderFile = Join-Path $gameRoot 'zone\techsets_mp_frontend3.ff'
+    $shaderItem = Get-Item -LiteralPath $shaderFile
+    if ($shaderItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Shader dependency is a link.'
+    }
+    $shaderHeader = [IO.File]::ReadAllBytes($shaderFile)
+    if ([Text.Encoding]::ASCII.GetString($shaderHeader, 0, 8) -cne 'IWffa100' -or
+        [BitConverter]::ToUInt32($shaderHeader, 8) -ne 11 -or [BitConverter]::ToUInt32($shaderHeader, 12) -ne 0xFF7) {
+        throw 'Shader dependency is not a stock Replay 1.20 fastfile.'
+    }
+    $shaderDependency = [pscustomobject]@{Path = $shaderFile
+        Bytes                                  = $shaderItem.Length
+        SHA256                                 = (Get-FileHash -LiteralPath $shaderFile).Hash
+    }
 }
-
-function Assert-GameClosed {
-    $expected = [IO.Path]::GetFullPath($gameExe)
+if ($manifest.layout -in @('replay-1.20-minimal-v10', 'replay-1.20-bsp-v11')) {
+    & python (Join-Path $PSScriptRoot 'verify_replay_map_layout.py') --game $gameExe --package $packageSource --map $Map
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Replay asset layout verification failed.'
+    }
+}
+function AssertGameClosed {
     $running = Get-CimInstance Win32_Process -Filter "Name = 'game_dx12_ship_replay.exe'" |
-        Where-Object {
-            (-not $_.ExecutablePath) -or [string]::Equals($_.ExecutablePath, $expected,
-                [StringComparison]::OrdinalIgnoreCase)
-        }
+        Where-Object { !$_.ExecutablePath -or [string]::Equals($_.ExecutablePath, $gameExe, [StringComparison]::OrdinalIgnoreCase) }
     if ($running) {
-        throw 'Close Replay before installing a map.'
+        throw 'Close Replay before deployment. No process is started or stopped.'
     }
 }
-
-function Assert-GamePath([string]$Candidate) {
+function AssertGamePath([string]$Candidate) {
     $resolved = [IO.Path]::GetFullPath($Candidate)
-    if (-not $resolved.StartsWith($gameRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Path outside the selected game directory: $resolved"
+    if (!$resolved.StartsWith($gameRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Path outside the named game directory: $resolved"
+    }
+    # Reject existing junction/symlink ancestors before directory moves.
+    $part = $resolved
+    while ($part.Length -gt $gameRoot.Length) {
+        if (Test-Path -LiteralPath $part) {
+            if ((Get-Item -LiteralPath $part).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Reparse point in deployment path: $part"
+            }
+        }
+        $part = Split-Path -Path $part -Parent
     }
 }
-
-Assert-GameClosed
+AssertGameClosed
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $mapsRoot = Join-Path $gameRoot 'mods\mw120r\maps'
 $installed = Join-Path $mapsRoot $Map
@@ -80,22 +80,18 @@ $stage = Join-Path $mapsRoot ('.' + $Map + '.stage-' + $stamp)
 $backup = Join-Path $gameRoot ('.proxy\backups\mw120r-map-' + $stamp)
 $previous = Join-Path $backup $Map
 foreach ($path in @($installed, $stage, $backup, $previous)) {
-    Assert-GamePath $path
+    AssertGamePath $path
 }
-
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-$manifestPath = Join-Path $mapOutput 'manifest.json'
-if (Test-Path -LiteralPath $manifestPath) {
-    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-    if ($manifest.schema -ne 1 -or $manifest.id -cne $Map -or !$manifest.title -or
-        $manifest.gametypes -notcontains 'tdm') {
-        throw 'Invalid package manifest.'
-    }
-    $names = @(Get-ChildItem -File -LiteralPath $mapOutput | ForEach-Object Name)
+if ($manifest.glass -and $manifest.glass -cnotin @('panes-v1', 'panes-v2')) {
+    throw 'Unsupported glass package.'
+}
+$names = @("$Map.ff", "srv_$Map.ff", "eng_$Map.ff", "ww_$Map.ff", "techsets_$Map.ff")
+if ($manifest) {
+    $names = @('manifest.json') + $names
 }
 else {
-    $names = @("$Map.ff", "srv_$Map.ff", "eng_$Map.ff", "ww_$Map.ff", "techsets_$Map.ff")
-    $metadataPath = Join-Path $mapOutput 'map.json'
+    $metadataPath = Join-Path $packageSource 'map.json'
     if (Test-Path -LiteralPath $metadataPath) {
         $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
         if ($metadata.id -and $metadata.id -cne $Map) {
@@ -104,26 +100,69 @@ else {
         $names += 'map.json'
     }
 }
+if ($manifest.preview -eq 'rgba8-v1') {
+    $names += 'preview.rgba'
+}
+if ($manifest.ambient -eq 'sh-probe-v1') {
+    $names += 'ambient.bin'
+}
+if ($manifest.ambient_grid) {
+    if ($manifest.ambient_grid -cne 'spatial-dc-v1') {
+        throw 'Unsupported spatial ambient package.'
+    }
+    $names += 'ambient_grid.bin'
+}
+if ($manifest.footsteps -eq 'triangles-v1') {
+    $names += 'footsteps.bin'
+}
+if ($manifest.doors) {
+    if ($manifest.doors -cne 'brush-poses-v1') {
+        throw 'Unsupported door package.'
+    }
+    & python -B (Join-Path $PSScriptRoot 'door_data.py') --validate (Join-Path $packageSource 'doors.bin')
+    if ($LASTEXITCODE -ne 0) { throw 'Door sidecar validation failed.' }
+    $names += 'doors.bin'
+}
+if ($manifest.glass) {
+    $names += 'glass.bin'
+}
+if ($manifest.collision) {
+    if ($manifest.collision -cnotin @('boxes-v1', 'convex-v2', 'convex-v3')) {
+        throw 'Unsupported collision package.'
+    }
+    $names += 'collision.bin'
+}
+if ($manifest.ladders) {
+    if ($manifest.ladders -cnotin @('faces-v1', 'faces-v2')) {
+        throw 'Unsupported ladder package.'
+    }
+    $names += 'ladders.bin'
+}
 $files = foreach ($name in $names) {
-    $source = Join-Path $mapOutput $name
+    $source = Join-Path $packageSource $name
     $destination = Join-Path $stage $name
     $item = Get-Item -LiteralPath $source
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw "Map output file is a link: $source"
+        throw "Reparse source file: $source"
     }
     Copy-Item -LiteralPath $source -Destination $destination
-    $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
-    if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $hash) {
+    $hash = (Get-FileHash -LiteralPath $source).Hash
+    if ((Get-FileHash -LiteralPath $destination).Hash -ne $hash) {
         throw "Staged hash mismatch: $name"
     }
-    [pscustomobject]@{ Name = $name; Bytes = $item.Length; SHA256 = $hash }
+    [pscustomobject]@{Name = $name
+        Bytes              = $item.Length
+        SHA256             = $hash
+    }
 }
-
-if (-not (Test-NativeZones $stage)) {
-    throw 'Staged map output validation failed.'
+& $converter validate-package $stage $Map
+if ($LASTEXITCODE -ne 0) {
+    throw 'Staged package validation failed.'
 }
-
-Assert-GameClosed
+AssertGameClosed
+foreach ($path in @($installed, $stage, $backup, $previous)) {
+    AssertGamePath $path
+}
 New-Item -ItemType Directory -Path $backup | Out-Null
 $movedOld = $false
 try {
@@ -133,22 +172,33 @@ try {
     }
     Move-Item -LiteralPath $stage -Destination $installed
     foreach ($file in $files) {
-        $installedFile = Join-Path $installed $file.Name
-        if ((Get-FileHash -LiteralPath $installedFile -Algorithm SHA256).Hash -ne $file.SHA256) {
+        if ((Get-FileHash -LiteralPath (Join-Path $installed $file.Name)).Hash -ne $file.SHA256) {
             throw "Installed hash mismatch: $($file.Name)"
         }
     }
 }
 catch {
-    if ($movedOld -and -not (Test-Path -LiteralPath $installed)) {
+    # Keep failed/new data for inspection and restore the complete prior directory.
+    if (Test-Path -LiteralPath $installed) {
+        $failed = Join-Path $backup 'failed-new-package'
+        AssertGamePath $installed
+        AssertGamePath $failed
+        Move-Item -LiteralPath $installed -Destination $failed
+    }
+    if ($movedOld) {
+        AssertGamePath $previous
+        AssertGamePath $installed
         Move-Item -LiteralPath $previous -Destination $installed
     }
     throw
 }
-
-[pscustomobject]@{
-    Destination = $installed
-    Source = $mapOutput
-    Backup = $backup
-    Files = @($files)
-} | ConvertTo-Json -Depth 4
+[pscustomobject]@{Destination = $installed
+    Source                    = $packageSource
+    Backup                    = $backup
+    Kind                      = 'Replay unsigned IWC stored custom-map package'
+    LiveTestPerformed         = $false
+    GameStarted               = $false
+    ShaderDependency          = $shaderDependency
+    Files                     = @($files)
+} |
+    ConvertTo-Json -Depth 6 | Tee-Object -FilePath (Join-Path $repoRoot 'evidence\custom_map_package_deployment.json')

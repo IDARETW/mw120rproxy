@@ -5,9 +5,11 @@
 #include "Game/IW3/IW3.h"
 #include "Game/IW3/CommonIW3.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <stdexcept>
 #include <iostream>
 #include <unordered_map>
+#include <vector>
 
 namespace replay_export {
 using Json = nlohmann::json;
@@ -87,6 +89,89 @@ class World final : public AbstractAssetDumper<IW3::AssetGfxWorld> {
                     {"intensity", w.sunParse.sunLight},
                     {"ambient", V3(w.sunParse.ambientColor)}};
         j["lightmaps"] = Json::array();
+
+        if (!w.dpvsPlanes.cellCount || w.dpvsPlanes.cellCount > 65535 || w.planeCount < 0 ||
+            w.planeCount > 65535 || w.nodeCount <= 0 || w.nodeCount > 65535 ||
+            !w.dpvsPlanes.planes || !w.dpvsPlanes.nodes || !w.cells)
+            throw std::runtime_error("Invalid IW3 DPVS topology");
+        j["dpvs"] = {{"planes", Json::array()},
+                     {"nodes", Json::array()},
+                     {"cells", Json::array()}};
+        for (int i = 0; i < w.planeCount; ++i) {
+            const auto& plane = w.dpvsPlanes.planes[i];
+            j["dpvs"]["planes"].push_back({{"normal", V3(plane.normal)},
+                                                  {"dist", plane.dist},
+                                                  {"type", static_cast<unsigned char>(plane.type)}});
+        }
+        for (int i = 0; i < w.nodeCount; ++i)
+            j["dpvs"]["nodes"].push_back(w.dpvsPlanes.nodes[i]);
+        for (unsigned i = 0; i < static_cast<unsigned>(w.dpvsPlanes.cellCount); ++i) {
+            const auto& cell = w.cells[i];
+            if (cell.aabbTreeCount < 0 || cell.portalCount < 0 ||
+                (cell.aabbTreeCount && !cell.aabbTree) || (cell.portalCount && !cell.portals))
+                throw std::runtime_error("Invalid IW3 DPVS cell");
+            Json out = {{"bounds", {V3(cell.mins), V3(cell.maxs)}},
+                         {"surfaces", Json::array()},
+                         {"models", Json::array()},
+                         {"trees", Json::array()},
+                         {"portals", Json::array()}};
+            for (int treeIndex = 0; treeIndex < cell.aabbTreeCount; ++treeIndex) {
+                const auto& tree = cell.aabbTree[treeIndex];
+                if (static_cast<unsigned>(tree.startSurfIndex) + tree.surfaceCount >
+                        static_cast<unsigned>(w.surfaceCount) ||
+                    (tree.smodelIndexCount && !tree.smodelIndexes))
+                    throw std::runtime_error("Invalid IW3 cell AABB tree");
+                if (tree.childCount) {
+                    const int treeSize = static_cast<int>(sizeof(IW3::GfxAabbTree));
+                    if (tree.childrenOffset <= 0 || tree.childrenOffset % treeSize != 0)
+                        throw std::runtime_error("Invalid IW3 cell AABB child offset");
+                    const auto firstChild = treeIndex + tree.childrenOffset / treeSize;
+                    if (firstChild < 0 || firstChild + tree.childCount > cell.aabbTreeCount)
+                        throw std::runtime_error("Invalid IW3 cell AABB child range");
+                }
+                Json outTree = {{"bounds", {V3(tree.mins), V3(tree.maxs)}},
+                                {"surfaces", Json::array()},
+                                {"models", Json::array()}};
+                for (unsigned surface = 0; surface < tree.surfaceCount; ++surface)
+                    outTree["surfaces"].push_back(tree.startSurfIndex + surface);
+                for (unsigned model = 0; model < tree.smodelIndexCount; ++model) {
+                    if (tree.smodelIndexes[model] >= w.dpvs.smodelCount)
+                        throw std::runtime_error("Invalid IW3 cell static-model index");
+                    outTree["models"].push_back(tree.smodelIndexes[model]);
+                }
+                out["surfaces"].insert(out["surfaces"].end(), outTree["surfaces"].begin(),
+                                       outTree["surfaces"].end());
+                out["models"].insert(out["models"].end(), outTree["models"].begin(),
+                                     outTree["models"].end());
+                out["trees"].push_back(std::move(outTree));
+            }
+            for (int portalIndex = 0; portalIndex < cell.portalCount; ++portalIndex) {
+                const auto& portal = cell.portals[portalIndex];
+                const auto adjacent = portal.cell - w.cells;
+                const unsigned vertexCount = static_cast<unsigned char>(portal.vertexCount);
+                if (adjacent < 0 || adjacent >= w.dpvsPlanes.cellCount ||
+                    (vertexCount && !portal.vertices))
+                    throw std::runtime_error("Invalid IW3 DPVS portal");
+                Json vertices = Json::array();
+                for (unsigned vertex = 0; vertex < vertexCount; ++vertex)
+                    vertices.push_back(V3(portal.vertices[vertex].v));
+                out["portals"].push_back(
+                    {{"plane", {portal.plane.coeffs[0], portal.plane.coeffs[1],
+                                portal.plane.coeffs[2], portal.plane.coeffs[3]}},
+                     {"cell", adjacent},
+                     {"vertices", std::move(vertices)},
+                     {"hull_axis", {V3(portal.hullAxis[0]), V3(portal.hullAxis[1])}}});
+            }
+            auto unique = [](Json& values) {
+                auto items = values.get<std::vector<unsigned>>();
+                std::sort(items.begin(), items.end());
+                items.erase(std::unique(items.begin(), items.end()), items.end());
+                values = std::move(items);
+            };
+            unique(out["surfaces"]);
+            unique(out["models"]);
+            j["dpvs"]["cells"].push_back(std::move(out));
+        }
         for (int i = 0; i < w.lightmapCount; ++i) {
             Json pair = Json::array();
             for (const auto* image : {w.lightmaps[i].primary, w.lightmaps[i].secondary}) {

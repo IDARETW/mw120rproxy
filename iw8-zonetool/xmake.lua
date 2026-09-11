@@ -15,7 +15,7 @@ target("iw8-zonetool")
 
     add_defines("WIN32", "NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS")
     add_includedirs("src", "src/common", "src/zonetool")
-    add_syslinks("bcrypt", "kernel32")
+    add_syslinks("bcrypt", "d3dcompiler", "kernel32")
     add_cxflags("/permissive-", "/EHsc", "/W4", {tools = "cl"})
     add_ldflags("/BASE:0x180000000", "/DYNAMICBASE:NO", {force = true})
 
@@ -32,4 +32,6 @@ target("iw8-zonetool")
     end
 
     add_files("src/zonetool/**.cpp")
+    add_files("src/zonetool/**.rc")
     add_files("src/common/**.cpp")
+    add_files("src/thirdparty/lz4/lz4.c")

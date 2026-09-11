@@ -104,27 +104,64 @@ struct Hull
 {
     std::vector<std::array<float, 3>> points;
     std::uint32_t contents = 1;
+    std::uint32_t model = 0;
 };
 
-std::vector<Hull> ReadCollision(const std::filesystem::path &path)
+struct CollisionInput
+{
+    std::vector<Hull> hulls;
+    std::vector<CollisionModel> models;
+};
+
+CollisionInput ReadCollision(const std::filesystem::path &path)
 {
     const auto bytes = ReadFile(path);
     if (bytes.size() < 12 || (std::memcmp(bytes.data(), "MWCOLL02", 8) != 0 &&
-                              std::memcmp(bytes.data(), "MWCOLL03", 8) != 0))
-        throw std::runtime_error("Collision input must use MWCOLL02 or MWCOLL03");
+                              std::memcmp(bytes.data(), "MWCOLL03", 8) != 0 &&
+                              std::memcmp(bytes.data(), "MWCOLL04", 8) != 0))
+        throw std::runtime_error("Collision input must use MWCOLL02, MWCOLL03 or MWCOLL04");
 
-    const bool tagged = std::memcmp(bytes.data(), "MWCOLL03", 8) == 0;
+    const bool grouped = std::memcmp(bytes.data(), "MWCOLL04", 8) == 0;
+    const bool tagged = grouped || std::memcmp(bytes.data(), "MWCOLL03", 8) == 0;
     const auto count = Read<std::uint32_t>(bytes.data() + 8);
-    if (count == 0 || count > 32768)
+    if (count == 0 || count > 262144)
         throw std::runtime_error("Collision hull count is invalid");
 
     std::size_t cursor = 12;
-    std::vector<Hull> hulls;
-    hulls.reserve(count);
+    CollisionInput result;
+    if (grouped)
+    {
+        if (cursor + 4 > bytes.size())
+            throw std::runtime_error("Collision model table is truncated");
+        const auto modelCount = Read<std::uint32_t>(bytes.data() + cursor);
+        cursor += 4;
+        if (modelCount == 0 || modelCount > std::numeric_limits<std::uint16_t>::max() ||
+            cursor + std::size_t(modelCount) * 24 > bytes.size())
+            throw std::runtime_error("Collision model count is invalid");
+        result.models.resize(modelCount);
+        for (auto &model : result.models)
+        {
+            std::memcpy(model.minimum.data(), bytes.data() + cursor, 12);
+            std::memcpy(model.maximum.data(), bytes.data() + cursor + 12, 12);
+            cursor += 24;
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                if (!std::isfinite(model.minimum[axis]) || !std::isfinite(model.maximum[axis]) ||
+                    model.minimum[axis] > model.maximum[axis])
+                    throw std::runtime_error("Collision model bounds are invalid");
+        }
+    }
+    else
+    {
+        result.models.resize(1);
+        result.models[0].minimum.fill(std::numeric_limits<float>::infinity());
+        result.models[0].maximum.fill(-std::numeric_limits<float>::infinity());
+    }
+
+    result.hulls.reserve(count);
     constexpr std::uint32_t supportedContents = 0x33681;
     for (std::uint32_t hullIndex = 0; hullIndex < count; ++hullIndex)
     {
-        if (cursor + (tagged ? 8u : 4u) > bytes.size())
+        if (cursor + (grouped ? 12u : tagged ? 8u : 4u) > bytes.size())
             throw std::runtime_error("Collision input is truncated");
         Hull hull;
         const auto vertexCount = Read<std::uint32_t>(bytes.data() + cursor);
@@ -134,8 +171,14 @@ std::vector<Hull> ReadCollision(const std::filesystem::path &path)
             hull.contents = Read<std::uint32_t>(bytes.data() + cursor);
             cursor += 4;
         }
+        if (grouped)
+        {
+            hull.model = Read<std::uint32_t>(bytes.data() + cursor);
+            cursor += 4;
+        }
         if (vertexCount < 4 || vertexCount > 252 || hull.contents == 0 ||
             (hull.contents & ~supportedContents) != 0 ||
+            hull.model >= result.models.size() ||
             cursor + std::size_t(vertexCount) * 12 > bytes.size())
             throw std::runtime_error("Collision hull data is invalid");
         hull.points.resize(vertexCount);
@@ -145,11 +188,23 @@ std::vector<Hull> ReadCollision(const std::filesystem::path &path)
             for (const auto value : point)
                 if (!std::isfinite(value))
                     throw std::runtime_error("Collision contains a non-finite vertex");
-        hulls.push_back(std::move(hull));
+        ++result.models[hull.model].hullCount;
+        if (!grouped)
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                for (const auto &point : hull.points)
+                {
+                    result.models[0].minimum[axis] =
+                        (std::min)(result.models[0].minimum[axis], point[axis]);
+                    result.models[0].maximum[axis] =
+                        (std::max)(result.models[0].maximum[axis], point[axis]);
+                }
+        result.hulls.push_back(std::move(hull));
     }
     if (cursor != bytes.size())
         throw std::runtime_error("Collision input has trailing data");
-    return hulls;
+    if (!result.models[0].hullCount)
+        throw std::runtime_error("Collision input has no world hulls");
+    return result;
 }
 
 struct FloorTriangle
@@ -698,13 +753,37 @@ struct ShapeTag
 #pragma pack(pop)
 static_assert(sizeof(ShapeTag) == 24);
 
+thread_local std::unique_ptr<ReplayHavok> g_preparedHavok;
+
 } // namespace
 
-std::vector<std::uint8_t> BakeCollision(const BakeInput &input)
+void PrepareCollisionBaker(const std::filesystem::path &replayExecutable)
 {
-    const auto hulls = ReadCollision(input.collision);
-    const FloorMaterials floors(input.footsteps);
-    ReplayHavok havok(input.replayExecutable);
+    if (!g_preparedHavok)
+        g_preparedHavok = std::make_unique<ReplayHavok>(replayExecutable);
+}
+
+struct ShapeGroup
+{
+    std::string name;
+    std::vector<std::size_t> hulls;
+};
+
+struct NativeHullCheck
+{
+    void *shape{};
+    std::uint8_t *instance{};
+    std::size_t source{};
+};
+
+std::vector<std::uint8_t> BuildShapeList(ReplayHavok &havok,
+                                         const std::vector<Hull> &hulls,
+                                         const std::vector<ShapeGroup> &groups,
+                                         const FloorMaterials &floors,
+                                         const bool useFloorMaterials)
+{
+    if (groups.empty())
+        return {};
 
     auto *config = static_cast<std::uint8_t *>(havok.Allocate(96));
     havok.Function<void *(void *)>(0x1E81300)(config);
@@ -713,132 +792,161 @@ std::vector<std::uint8_t> BakeCollision(const BakeInput &input)
     config[16] = 1;
     config[17] = 0;
 
-    auto *instances = static_cast<std::uint8_t *>(havok.Allocate(hulls.size() * 112));
     auto *vertices = static_cast<std::uint8_t *>(havok.Allocate(252 * 16));
     auto *vertexArray = static_cast<std::uint8_t *>(havok.Allocate(16));
-    std::vector<void *> nativeHulls;
     std::vector<ShapeTag> tags;
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint16_t> tagIndices;
-    std::array<float, 3> minimum{std::numeric_limits<float>::infinity(),
-                                 std::numeric_limits<float>::infinity(),
-                                 std::numeric_limits<float>::infinity()};
-    std::array<float, 3> maximum{-std::numeric_limits<float>::infinity(),
-                                 -std::numeric_limits<float>::infinity(),
-                                 -std::numeric_limits<float>::infinity()};
-    std::uint32_t allContents = 0;
-    std::uint32_t totalVertices = 0;
-    std::uint32_t totalTriangles = 0;
+    std::vector<std::uintptr_t> compounds;
+    std::vector<std::uintptr_t> names;
+    std::vector<std::uint32_t> vertexCounts;
+    std::vector<std::uint32_t> triangleCounts;
+    std::vector<std::array<float, 4>> bounds;
+    std::vector<std::uint32_t> contents;
+    std::vector<std::uint32_t> shapeCounts;
+    std::vector<std::vector<NativeHullCheck>> checks;
+    std::size_t builtHulls = 0;
 
-    for (std::size_t index = 0; index < hulls.size(); ++index)
+    for (const auto &group : groups)
     {
-        const auto &hull = hulls[index];
-        std::array<float, 3> center{};
-        for (const auto &point : hull.points)
-            for (std::size_t axis = 0; axis < 3; ++axis)
-                center[axis] += point[axis];
-        for (auto &value : center)
-            value /= static_cast<float>(hull.points.size());
-        const auto highest = std::max_element(
-            hull.points.begin(), hull.points.end(),
-            [](const auto &left, const auto &right) { return left[2] < right[2]; });
-        const auto material = floors.At(center[0], center[1], (*highest)[2]);
-        const auto key = std::make_pair(hull.contents, material);
-        auto tag = tagIndices.find(key);
-        if (tag == tagIndices.end())
-        {
-            const auto newIndex = static_cast<std::uint16_t>(tags.size());
-            const std::uint64_t userData = (std::uint64_t((hull.contents & 1) ? 1 : 3) << 48) |
-                                           (std::uint64_t(material) << 19);
-            tags.push_back({hull.contents, 0x1AB7BC33u, 0xFFFFu, {}, userData});
-            tag = tagIndices.emplace(key, newIndex).first;
-        }
-        allContents |= hull.contents;
+        if (group.hulls.empty())
+            throw std::runtime_error("Native collision shape group is empty");
+        auto *instances =
+            static_cast<std::uint8_t *>(havok.Allocate(group.hulls.size() * 112));
+        std::array<float, 3> minimum{std::numeric_limits<float>::infinity(),
+                                     std::numeric_limits<float>::infinity(),
+                                     std::numeric_limits<float>::infinity()};
+        std::array<float, 3> maximum{-std::numeric_limits<float>::infinity(),
+                                     -std::numeric_limits<float>::infinity(),
+                                     -std::numeric_limits<float>::infinity()};
+        std::uint32_t allContents = 0;
+        std::uint32_t totalVertices = 0;
+        std::uint32_t totalTriangles = 0;
+        std::vector<NativeHullCheck> groupChecks;
+        groupChecks.reserve(group.hulls.size());
 
-        for (std::size_t vertex = 0; vertex < hull.points.size(); ++vertex)
+        for (std::size_t localIndex = 0; localIndex < group.hulls.size(); ++localIndex)
         {
-            std::array<float, 4> converted{};
-            for (std::size_t axis = 0; axis < 3; ++axis)
+            const auto sourceIndex = group.hulls[localIndex];
+            if (sourceIndex >= hulls.size())
+                throw std::runtime_error("Native collision shape group has an invalid hull");
+            const auto &hull = hulls[sourceIndex];
+            std::array<float, 3> center{};
+            for (const auto &point : hull.points)
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    center[axis] += point[axis];
+            for (auto &value : center)
+                value /= static_cast<float>(hull.points.size());
+            const auto highest = std::max_element(
+                hull.points.begin(), hull.points.end(),
+                [](const auto &left, const auto &right) { return left[2] < right[2]; });
+            const auto material =
+                useFloorMaterials ? floors.At(center[0], center[1], (*highest)[2]) : 5u;
+            const auto key = std::make_pair(hull.contents, material);
+            auto tag = tagIndices.find(key);
+            if (tag == tagIndices.end())
             {
-                converted[axis] = (hull.points[vertex][axis] - center[axis]) / 32.0f;
-                minimum[axis] = (std::min)(minimum[axis], hull.points[vertex][axis] / 32.0f);
-                maximum[axis] = (std::max)(maximum[axis], hull.points[vertex][axis] / 32.0f);
+                if (tags.size() >= std::numeric_limits<std::uint16_t>::max())
+                    throw std::runtime_error("Native collision has too many shape tags");
+                const auto newIndex = static_cast<std::uint16_t>(tags.size());
+                const std::uint64_t userData =
+                    (std::uint64_t((hull.contents & 1) ? 1 : 3) << 48) |
+                    (std::uint64_t(material) << 19);
+                tags.push_back({hull.contents, 0x1AB7BC33u, 0xFFFFu, {}, userData});
+                tag = tagIndices.emplace(key, newIndex).first;
             }
-            std::memcpy(vertices + vertex * 16, converted.data(), 16);
-        }
-        Write(vertexArray, reinterpret_cast<std::uintptr_t>(vertices));
-        Write(vertexArray + 8, static_cast<std::uint32_t>(hull.points.size()));
-        Write(vertexArray + 12, std::uint32_t{16});
-        auto *shape =
-            havok.Function<void *(void *, float, void *)>(0x1E82060)(vertexArray, 0.0f, config);
-        if (!shape)
-            throw std::runtime_error("Native convex construction failed at hull " +
-                                     std::to_string(index));
-        nativeHulls.push_back(shape);
-        totalVertices += static_cast<std::uint32_t>(hull.points.size());
-        totalTriangles += static_cast<std::uint32_t>(hull.points.size() * 2 - 4);
+            allContents |= hull.contents;
 
-        auto *instance = instances + index * 112;
-        const std::array<float, 16> transform{1,
-                                              0,
-                                              0,
-                                              0,
-                                              0,
-                                              1,
-                                              0,
-                                              0,
-                                              0,
-                                              0,
-                                              1,
-                                              0,
-                                              center[0] / 32.0f,
-                                              center[1] / 32.0f,
-                                              center[2] / 32.0f,
-                                              1};
-        std::memcpy(instance, transform.data(), sizeof(transform));
-        Write(instance + 12, std::uint32_t{0x3F000040});
-        const std::array<float, 4> scale{1, 1, 1, 1};
-        std::memcpy(instance + 64, scale.data(), sizeof(scale));
-        Write(instance + 80, reinterpret_cast<std::uintptr_t>(shape));
-        Write(instance + 88, tag->second);
-        Write(instance + 90, std::uint16_t{0xFFFF});
-        Write(instance + 100, std::uint16_t{0xFFFF});
-        if ((index + 1) % 1000 == 0)
-            zt::info("collision: built %zu/%zu hulls", index + 1, hulls.size());
+            for (std::size_t vertex = 0; vertex < hull.points.size(); ++vertex)
+            {
+                std::array<float, 4> converted{};
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                {
+                    converted[axis] = (hull.points[vertex][axis] - center[axis]) / 32.0f;
+                    minimum[axis] =
+                        (std::min)(minimum[axis], hull.points[vertex][axis] / 32.0f);
+                    maximum[axis] =
+                        (std::max)(maximum[axis], hull.points[vertex][axis] / 32.0f);
+                }
+                std::memcpy(vertices + vertex * 16, converted.data(), 16);
+            }
+            Write(vertexArray, reinterpret_cast<std::uintptr_t>(vertices));
+            Write(vertexArray + 8, static_cast<std::uint32_t>(hull.points.size()));
+            Write(vertexArray + 12, std::uint32_t{16});
+            auto *shape = havok.Function<void *(void *, float, void *)>(0x1E82060)(
+                vertexArray, 0.0f, config);
+            if (!shape)
+                throw std::runtime_error("Native convex construction failed at hull " +
+                                         std::to_string(sourceIndex));
+            totalVertices += static_cast<std::uint32_t>(hull.points.size());
+            totalTriangles += static_cast<std::uint32_t>(hull.points.size() * 2 - 4);
+
+            auto *instance = instances + localIndex * 112;
+            const std::array<float, 16> transform{1,
+                                                  0,
+                                                  0,
+                                                  0,
+                                                  0,
+                                                  1,
+                                                  0,
+                                                  0,
+                                                  0,
+                                                  0,
+                                                  1,
+                                                  0,
+                                                  center[0] / 32.0f,
+                                                  center[1] / 32.0f,
+                                                  center[2] / 32.0f,
+                                                  1};
+            std::memcpy(instance, transform.data(), sizeof(transform));
+            Write(instance + 12, std::uint32_t{0x3F000040});
+            const std::array<float, 4> scale{1, 1, 1, 1};
+            std::memcpy(instance + 64, scale.data(), sizeof(scale));
+            Write(instance + 80, reinterpret_cast<std::uintptr_t>(shape));
+            Write(instance + 88, tag->second);
+            Write(instance + 90, std::uint16_t{0xFFFF});
+            Write(instance + 100, std::uint16_t{0xFFFF});
+            groupChecks.push_back({shape, instance, sourceIndex});
+            if (++builtHulls % 1000 == 0)
+                zt::info("collision: built %zu hulls", builtHulls);
+        }
+
+        auto *array = static_cast<std::uint8_t *>(havok.Allocate(16));
+        Write(array, reinterpret_cast<std::uintptr_t>(instances));
+        Write(array + 8, static_cast<std::uint32_t>(group.hulls.size()));
+        Write(array + 12, static_cast<std::uint32_t>(group.hulls.size()) | 0x80000000u);
+        auto *compound = havok.Function<void *(void *)>(0x161C770)(array);
+        if (!compound)
+            throw std::runtime_error("Native compound construction failed");
+
+        auto *name = static_cast<char *>(havok.Allocate(group.name.size() + 1));
+        std::memcpy(name, group.name.c_str(), group.name.size() + 1);
+        compounds.push_back(reinterpret_cast<std::uintptr_t>(compound));
+        names.push_back(reinterpret_cast<std::uintptr_t>(name));
+        vertexCounts.push_back(totalVertices);
+        triangleCounts.push_back(totalTriangles);
+        bounds.push_back({minimum[0], minimum[1], minimum[2], 0});
+        bounds.push_back({maximum[0], maximum[1], maximum[2], 0});
+        contents.push_back(allContents);
+        shapeCounts.push_back(static_cast<std::uint32_t>(group.hulls.size()));
+        checks.push_back(std::move(groupChecks));
     }
 
-    auto *array = static_cast<std::uint8_t *>(havok.Allocate(16));
-    Write(array, reinterpret_cast<std::uintptr_t>(instances));
-    Write(array + 8, static_cast<std::uint32_t>(hulls.size()));
-    Write(array + 12, static_cast<std::uint32_t>(hulls.size()) | 0x80000000u);
-    auto *world = havok.Function<void *(void *)>(0x161C770)(array);
-    if (!world)
-        throw std::runtime_error("Native compound construction failed");
-
     auto *root = static_cast<std::uint8_t *>(havok.Allocate(152));
-    auto *name = static_cast<char *>(havok.Allocate(32));
-    std::memcpy(name, "World Entity Main_Full", 23);
-    WriteArray(havok, root, 0,
-               std::vector<std::uintptr_t>{reinterpret_cast<std::uintptr_t>(world)});
-    WriteArray(havok, root, 16, std::vector<std::int32_t>{-1});
-    WriteArray(havok, root, 32,
-               std::vector<std::uintptr_t>{reinterpret_cast<std::uintptr_t>(name)});
-    WriteArray(havok, root, 48, std::vector<std::uint32_t>{totalVertices});
-    WriteArray(havok, root, 64, std::vector<std::uint32_t>{totalTriangles});
-    WriteArray(havok, root, 80,
-               std::vector<std::array<float, 4>>{{minimum[0], minimum[1], minimum[2], 0},
-                                                 {maximum[0], maximum[1], maximum[2], 0}});
+    WriteArray(havok, root, 0, compounds);
+    WriteArray(havok, root, 16, std::vector<std::int32_t>(groups.size(), -1));
+    WriteArray(havok, root, 32, names);
+    WriteArray(havok, root, 48, vertexCounts);
+    WriteArray(havok, root, 64, triangleCounts);
+    WriteArray(havok, root, 80, bounds);
     WriteArray(havok, root, 104, tags);
-    WriteArray(havok, root, 120, std::vector<std::uint32_t>{allContents});
-    WriteArray(havok, root, 136,
-               std::vector<std::uint32_t>{static_cast<std::uint32_t>(hulls.size())});
+    WriteArray(havok, root, 120, contents);
+    WriteArray(havok, root, 136, shapeCounts);
 
-    const auto capacity = (std::min)(kMaximumAllocation, 1024u * 1024u + hulls.size() * 8192u);
+    const auto capacity =
+        (std::min)(kMaximumAllocation, 1024u * 1024u + builtHulls * 8192u);
     auto output = havok.Save(root, capacity);
     auto *loaded = static_cast<std::uint8_t *>(havok.Load(output));
-    const auto restored =
-        Read<std::uintptr_t>(reinterpret_cast<void *>(Read<std::uintptr_t>(loaded)));
-    if (Read<std::uint32_t>(loaded + 8) != 1 ||
-        Read<std::uint32_t>(reinterpret_cast<void *>(restored + 80)) != hulls.size() ||
+    if (Read<std::uint32_t>(loaded + 8) != groups.size() ||
         Read<std::uint32_t>(loaded + 112) != tags.size())
         throw std::runtime_error("Native collision round trip lost shapes or tags");
     if (std::memcmp(reinterpret_cast<void *>(Read<std::uintptr_t>(loaded + 104)),
@@ -846,47 +954,102 @@ std::vector<std::uint8_t> BakeCollision(const BakeInput &input)
                     tags.size() * sizeof(ShapeTag)) != 0)
         throw std::runtime_error("Native collision round trip changed shape tags");
 
-    const auto restoredChildren = Read<std::uintptr_t>(reinterpret_cast<void *>(restored + 72));
-    const auto originalChildren = Read<std::uintptr_t>(static_cast<std::uint8_t *>(world) + 72);
+    const auto restoredCompounds = Read<std::uintptr_t>(loaded);
     auto *queryBounds = havok.Allocate(32);
-    for (std::size_t i = 0; i < nativeHulls.size(); ++i)
+    for (std::size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex)
     {
-        const auto child =
-            Read<std::uintptr_t>(reinterpret_cast<void *>(restoredChildren + i * 112 + 80));
-        if (!child ||
-            std::memcmp(reinterpret_cast<void *>(child + 24),
-                        static_cast<std::uint8_t *>(nativeHulls[i]) + 24, 24) != 0 ||
-            std::memcmp(reinterpret_cast<void *>(restoredChildren + i * 112),
-                        reinterpret_cast<void *>(originalChildren + i * 112), 80) != 0)
-            throw std::runtime_error("Native collision round trip changed hull " +
-                                     std::to_string(i));
-        const auto vtable = Read<std::uintptr_t>(reinterpret_cast<void *>(child));
-        const auto method = Read<std::uintptr_t>(reinterpret_cast<void *>(vtable + 32));
-        havok.Function<void(void *, void *, void *)>(method - havok.Base())(
-            reinterpret_cast<void *>(child), reinterpret_cast<void *>(restoredChildren + i * 112),
-            queryBounds);
-        const auto *actual = static_cast<const float *>(queryBounds);
-        std::array<float, 6> expected{};
-        for (std::size_t axis = 0; axis < 3; ++axis)
+        const auto restored = Read<std::uintptr_t>(
+            reinterpret_cast<void *>(restoredCompounds + groupIndex * sizeof(std::uintptr_t)));
+        if (!restored || Read<std::uint32_t>(reinterpret_cast<void *>(restored + 80)) !=
+                             groups[groupIndex].hulls.size())
+            throw std::runtime_error("Native collision round trip lost a compound");
+        const auto restoredChildren =
+            Read<std::uintptr_t>(reinterpret_cast<void *>(restored + 72));
+        const auto originalCompound = compounds[groupIndex];
+        const auto originalChildren =
+            Read<std::uintptr_t>(reinterpret_cast<void *>(originalCompound + 72));
+        for (std::size_t localIndex = 0; localIndex < checks[groupIndex].size(); ++localIndex)
         {
-            expected[axis] = hulls[i].points.front()[axis] / 32.0f;
-            expected[axis + 3] = expected[axis];
-            for (const auto &point : hulls[i].points)
+            const auto &check = checks[groupIndex][localIndex];
+            const auto &source = hulls[check.source];
+            const auto child = Read<std::uintptr_t>(
+                reinterpret_cast<void *>(restoredChildren + localIndex * 112 + 80));
+            if (!child ||
+                std::memcmp(reinterpret_cast<void *>(child + 24),
+                            static_cast<std::uint8_t *>(check.shape) + 24, 24) != 0 ||
+                std::memcmp(reinterpret_cast<void *>(restoredChildren + localIndex * 112),
+                            reinterpret_cast<void *>(originalChildren + localIndex * 112), 80) != 0)
+                throw std::runtime_error("Native collision round trip changed hull " +
+                                         std::to_string(check.source));
+            const auto vtable = Read<std::uintptr_t>(reinterpret_cast<void *>(child));
+            const auto method = Read<std::uintptr_t>(reinterpret_cast<void *>(vtable + 32));
+            havok.Function<void(void *, void *, void *)>(method - havok.Base())(
+                reinterpret_cast<void *>(child),
+                reinterpret_cast<void *>(restoredChildren + localIndex * 112), queryBounds);
+            const auto *actual = static_cast<const float *>(queryBounds);
+            std::array<float, 6> expected{};
+            for (std::size_t axis = 0; axis < 3; ++axis)
             {
-                expected[axis] = (std::min)(expected[axis], point[axis] / 32.0f);
-                expected[axis + 3] = (std::max)(expected[axis + 3], point[axis] / 32.0f);
+                expected[axis] = source.points.front()[axis] / 32.0f;
+                expected[axis + 3] = expected[axis];
+                for (const auto &point : source.points)
+                {
+                    expected[axis] = (std::min)(expected[axis], point[axis] / 32.0f);
+                    expected[axis + 3] =
+                        (std::max)(expected[axis + 3], point[axis] / 32.0f);
+                }
             }
+            const std::array<float, 6> measured{actual[0], actual[1], actual[2],
+                                                actual[4], actual[5], actual[6]};
+            for (std::size_t axis = 0; axis < measured.size(); ++axis)
+                if (!std::isfinite(measured[axis]) ||
+                    std::abs(measured[axis] - expected[axis]) > 0.05f)
+                    throw std::runtime_error("Native bounds query disagrees at hull " +
+                                             std::to_string(check.source));
         }
-        const std::array<float, 6> measured{actual[0], actual[1], actual[2],
-                                            actual[4], actual[5], actual[6]};
-        for (std::size_t axis = 0; axis < measured.size(); ++axis)
-            if (!std::isfinite(measured[axis]) || std::abs(measured[axis] - expected[axis]) > 0.05f)
-                throw std::runtime_error("Native bounds query disagrees at hull " +
-                                         std::to_string(i));
     }
-    zt::info("collision: baked %zu hulls and %zu shape tags into %zu bytes", hulls.size(),
-             tags.size(), output.size());
+    zt::info("collision: baked %zu hulls in %zu shapes and %zu tags into %zu bytes", builtHulls,
+             groups.size(), tags.size(), output.size());
     return output;
+}
+
+BakeResult BakeCollision(const BakeInput &input)
+{
+    std::unique_ptr<ReplayHavok> localHavok;
+    if (!g_preparedHavok)
+        localHavok = std::make_unique<ReplayHavok>(input.replayExecutable);
+    auto &havok = g_preparedHavok ? *g_preparedHavok : *localHavok;
+    const auto collision = ReadCollision(input.collision);
+    const FloorMaterials floors(input.footsteps);
+
+    BakeResult result;
+    result.models = collision.models;
+    ShapeGroup world{"World Entity Main_Full"};
+    std::vector<std::vector<std::size_t>> modelHulls(result.models.size());
+    for (std::size_t index = 0; index < collision.hulls.size(); ++index)
+    {
+        const auto model = collision.hulls[index].model;
+        modelHulls[model].push_back(index);
+        if (model == 0)
+            world.hulls.push_back(index);
+    }
+
+    std::vector<ShapeGroup> entities;
+    for (std::size_t model = 1; model < modelHulls.size(); ++model)
+    {
+        if (modelHulls[model].empty())
+            continue;
+        if (entities.size() >= std::numeric_limits<std::uint16_t>::max())
+            throw std::runtime_error("Collision has too many brush-model shapes");
+        result.models[model].shapeIndex = static_cast<std::uint16_t>(entities.size());
+        entities.push_back({"Brush Model " + std::to_string(model), std::move(modelHulls[model])});
+    }
+
+    result.world = BuildShapeList(havok, collision.hulls, {std::move(world)}, floors, true);
+    result.entities = BuildShapeList(havok, collision.hulls, entities, floors, false);
+    zt::info("collision: retained %zu source brush models (%zu collision shapes)",
+             result.models.size(), entities.size());
+    return result;
 }
 
 } // namespace iw8::havok

@@ -1,5 +1,8 @@
 # Build a custom map
 
+> **POC status:** this pipeline is for experimental conversion. Validate the five generated
+> fastfiles and test the map in a separate Replay install before using it for gameplay.
+
 The supported compiler is the native C++ source in `iw8-zonetool`. It accepts a generated IW3
 fastfile directly or consumes a prepared map dump and produces the five fastfiles read by MW120R,
 plus optional `map.json` metadata.

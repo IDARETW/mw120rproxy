@@ -10,7 +10,8 @@ bool ApplyGdiCompatibility(uintptr_t imageBase) {
     uint8_t actual[sizeof(game::kGdiCloneBootstrapPrologue)]{};
     if (!safemem::ReadBytes(target, actual, sizeof(actual)))
         return false;
-
+    // Repeated setup is allowed only when our one-byte patch AND the rest of
+    // the exact target prologue match. Never accept arbitrary patched code.
     if (actual[0] == 0xC3 &&
         std::memcmp(actual + 1, game::kGdiCloneBootstrapPrologue + 1, sizeof(actual) - 1) == 0)
         return true;

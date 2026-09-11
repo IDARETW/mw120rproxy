@@ -32,6 +32,7 @@ static constexpr size_t kSizeGfxCell = 0x28, kGC_portalCount = 0x18, kGC_portals
 void emitGlassMapBody(iw8::ZoneWriter &zw, const char *assetName);
 
 // Emit the converted GfxWorld.
-void emitGfxMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath = {});
+void emitGfxMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath,
+                    uint32_t primaryLightCount, uint32_t sunPrimaryLightIndex);
 
 } // namespace iw8maps

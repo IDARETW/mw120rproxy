@@ -1,5 +1,8 @@
 # Imported doors
 
+> **POC status:** this describes the current conversion and proxy code. Rebuild and test door maps
+> before relying on opening, closing, bashing, collision, or interaction behavior.
+
 Imported brush doors support Use to open and close, melee bashing, and running
 into a closed door to bash it open. Hinged doors swing away from the player.
 Adjacent double-door leaves operate together. Moving leaves remain solid, and a

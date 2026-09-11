@@ -39,5 +39,4 @@ bool ActiveZoneQPath(const char* request, char* qpathOut, size_t qpathOutSize);
 // Match only canonical stock zone request locations for the selected family.
 bool ResolveDiskRead(const char* request, std::string& pathOut);
 bool IsKnownMap(const char* mapName);
-bool ActiveWorldContract();
 }

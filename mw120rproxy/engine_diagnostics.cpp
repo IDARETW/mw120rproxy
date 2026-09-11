@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "replay_symbols.h"
 #include "asset_context.h"
+#include "engine_console_gate.h"
 #include <atomic>
 #include <cstdio>
 #include <cstdarg>
@@ -13,6 +14,9 @@
 namespace {
 HANDLE g_file = INVALID_HANDLE_VALUE;
 SRWLOCK g_lock = SRWLOCK_INIT;
+SRWLOCK g_printGateLock = SRWLOCK_INIT;
+engineconsole::Gate g_printGate;
+std::atomic<unsigned> g_suppressedPrints{0};
 unsigned long long g_bytes = 0;
 bool g_limitReported = false;
 std::atomic<unsigned> g_printErrors{0}, g_discErrors{0}, g_comErrors{0}, g_fatalErrors{0};
@@ -28,6 +32,8 @@ std::atomic<FatalText> g_fatalText{nullptr};
 using LinkAsset = uintptr_t (*)(int, uintptr_t*);
 std::atomic<LinkAsset> g_linkAsset{nullptr};
 
+// This file never uses the ordinary logger, native print functions or Lua.
+// Keep fatal evidence available even after the routine debug-output budget.
 void Write(bool error, const char* format, ...) {
     if (g_file == INVALID_HANDLE_VALUE)
         return;
@@ -122,8 +128,21 @@ uintptr_t PrintMessage(unsigned channel, const char* text, int flags) {
     safemem::ReadString(text, message, sizeof(message));
     // Com_PrintError passes flags=3; channel is the output category.
     const bool error = flags == 3;
-    Write(false, "PRINT channel=0x%X flags=%d %s%s", channel, flags, message,
-          *message && message[strlen(message) - 1] == '\n' ? "" : "\r\n");
+    bool record = error;
+    if (!error && TryAcquireSRWLockExclusive(&g_printGateLock)) {
+        record = g_printGate.Accept(engineconsole::Hash(channel, flags, message), false,
+                                    GetTickCount64());
+        ReleaseSRWLockExclusive(&g_printGateLock);
+    }
+    if (record) {
+        const auto suppressed = g_suppressedPrints.exchange(0, std::memory_order_relaxed);
+        if (suppressed)
+            Write(false, "Omitted %u repeated/burst non-error messages.\r\n", suppressed);
+        Write(false, "PRINT channel=0x%X flags=%d %s%s", channel, flags, message,
+              *message && message[strlen(message) - 1] == '\n' ? "" : "\r\n");
+    } else {
+        g_suppressedPrints.fetch_add(1, std::memory_order_relaxed);
+    }
     log120r::EngineConsole(channel, flags, message);
     if (error && g_printErrors.fetch_add(1) < 16)
         Stack();

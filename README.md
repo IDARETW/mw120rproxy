@@ -1,8 +1,12 @@
 # MW120R Custom Maps
 
-This project is made open source with the goal of providing a modding base for others who want to play, experiment with, and iterate on the code. Later iterations will be updated in this repo as the days progress.
+> **Status: untested proof of concept.** This is a source-only snapshot for people who want to inspect, build, and help improve IW3-to-IW8 map conversion. It is not a finished mod release and has no public gameplay compatibility guarantee.
 
-Load custom maps in **MW2019 Replay 1.20.4.7623265**. The repository includes normal Local Play map selection, a game console, and a native C++ map compiler that writes Replay fastfiles.
+The repository contains the current native Replay 1.20 package writer and the accompanying local-play proxy source. It does not include game executables, stock assets, converted maps, prebuilt DLLs, local research output, or test evidence. Build and test maps on a separate installation of Replay before relying on them.
+
+The included converter builds five Replay fastfiles from an IW3 map fastfile. The current `mp_test` conversion passed structural and offline Replay-parser checks; that is package validation, not proof that every converted map works in-game. Reflection-probe table emission is deliberately held back while its exact Replay 1.20 stream layout is still being reconstructed.
+
+Feature descriptions elsewhere in this repository document the intended conversion path and older experiments. Treat them as implementation notes for this POC, not as a statement that the listed gameplay features are currently supported on every converted map.
 
 ## Requirements
 
@@ -11,7 +15,7 @@ Load custom maps in **MW2019 Replay 1.20.4.7623265**. The repository includes no
 - Visual Studio C++ build tools with a Windows SDK, and XMake 2.8 or newer.
 - A converted MW120R map output folder to play a custom map. CoD4 `.ff` files can be passed directly to the converter, but they cannot be installed in Replay unchanged.
 
-The repository contains source and tools. Game executables, stock fastfiles, shaders, and prebuilt DLLs are not bundled in the source checkout. A ready-to-install [Nuketown example map](docs/NUKETOWN_EXAMPLE.md) is available as a separate release download.
+The repository contains source and tools. Game executables, stock fastfiles, shaders, and prebuilt DLLs are not bundled in the source checkout. The older [Nuketown example map](docs/NUKETOWN_EXAMPLE.md) is retained as a historical package and is not validation for this source snapshot.
 
 ## Build and install
 
@@ -84,7 +88,7 @@ Stale safe-mode markers are cleared at startup to prevent the safe-mode prompt a
 
 CoD4 scripts, general destructible objects, and bot navigation are not supported. Model physics is not imported automatically; use clip brushes for solid props. Test converted maps in-game, especially maps with unusual materials or scripted objects.
 
-Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Opening, closing, and the interaction prompt have been tested on Super Mario 64. Glass debris remains under investigation.
+Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Door behavior and glass debris both need fresh testing against this POC.
 
 ## Troubleshooting
 

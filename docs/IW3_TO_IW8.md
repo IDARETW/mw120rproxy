@@ -1,5 +1,8 @@
 # Convert an IW3 fastfile for Replay 1.20
 
+> **Proof of concept:** validate every output and test it in a separate Replay installation. The
+> converter is not a compatibility guarantee for arbitrary IW3 maps.
+
 IW3 fastfiles cannot be installed in MW2019 unchanged. The native `build-iw3` command reads a
 generated CoD4 multiplayer fastfile, converts its map data, bakes Replay collision, and writes the
 five fastfiles used by MW120R. It does not require a manual map export or Python.

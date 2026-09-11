@@ -2,6 +2,7 @@
 #include "developer_ui.h"
 #include "custom_map_ui.h"
 #include "custom_glass.h"
+#include "custom_surfaces.h"
 #include "command_text.h"
 #include "custom_maps.h"
 #include "custom_map_loader.h"
@@ -448,6 +449,7 @@ uintptr_t __fastcall DrawOverlay(uintptr_t self, int localClient) {
     try {
         PollControl();
         customglass::PumpEffects();
+        customsurfaces::PumpMovementReport();
         customdoors::PumpSounds();
         if (!g_pendingFrames && CanSelect())
             custommapui::SyncSelection(DvarString("NSQLTTMRMP").c_str());

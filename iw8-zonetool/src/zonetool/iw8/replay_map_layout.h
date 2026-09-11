@@ -13,4 +13,9 @@ inline constexpr size_t GlassWorldSize = 0x10;
 inline constexpr size_t GfxWorldSize = 0x4590;
 // Load_GfxWorld allocates this in stream 4, using cellCount*ceil(cellCount/32).
 inline constexpr size_t CellVisBits = 0x3EF0;
+// Replay 1.20 Load_GfxWorld RVA 0xD93A41 loads an aligned byte16 array, then
+// initializes the runtime Tome pointer at RVA 0xD93A87.
+inline constexpr size_t UmbraTomeSize = 0x4450;
+inline constexpr size_t UmbraTomeData = 0x4458;
+inline constexpr size_t UmbraTome = 0x4460;
 } // namespace replaymap

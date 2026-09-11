@@ -8,6 +8,9 @@
 #include <atomic>
 #include "engine_console_gate.h"
 
+// Lean logger: file + OutputDebugString + plain console. No pinned-prompt / VT-color polish
+// (mw164proxy grew that later for its interactive console feature; out of scope for this
+// starter scaffold — add it back the same way if/when a console command feature lands here).
 namespace {
 std::mutex g_mtx;
 std::wstring g_logPath;
@@ -44,10 +47,8 @@ DWORD WINAPI EngineConsoleWorker(void*) {
             lastReport = now;
             const auto count = g_consoleSuppressed.exchange(0);
             if (count)
-                fprintf(
-                    stdout,
-                    "[Engine] %u repeated/burst messages omitted from this window; see mw120rproxy.engine.log\n",
-                    count);
+                fprintf(stdout, "[Engine] %u repeated/burst messages omitted from this window\n",
+                        count);
         }
         fflush(stdout);
     }

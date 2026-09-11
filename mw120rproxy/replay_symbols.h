@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
-
+// Names tied to this exact Replay image by the recorded caller/field evidence.
+// Generic IDA names are retained where no semantic name has been verified.
 namespace replaysymbols {
 struct Symbol {
     uintptr_t rva, size;

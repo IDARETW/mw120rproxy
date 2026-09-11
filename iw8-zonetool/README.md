@@ -1,5 +1,7 @@
 # IW8 ZoneTool for Replay 1.20
 
+> **Untested proof of concept.** The tool has offline package validation for the maintained `mp_test` fixture, but it is still under active reconstruction and must be tested on a separate Replay installation before use on a map you care about.
+
 This source builds custom multiplayer map zones for the 1.20.4 Replay executable used by
 mw120rproxy. It keeps the usual ZoneTool split between common file code, source dump readers,
 conversion code, and game-specific IW8 asset writers.
@@ -11,6 +13,10 @@ or other output file. The only exception is an optional `map.json` when `--metad
 
 The project has no Python scripts or Python dependency. It builds as a single Windows x64 C++
 executable with XMake and Visual Studio Build Tools.
+
+The writer currently omits authored reflection-probe tables. The IW3 reader retains probe data for
+continued ABI work, but the final Replay `GfxWorldReflectionProbeData` layout is not emitted until
+its nested load-stream order is verified against Replay 1.20.
 
 ## Build
 
@@ -34,17 +40,29 @@ xmake-out\x64\Release\iw8-zonetool.exe
 `build-iw3` accepts a CoD4 map fastfile and performs the extraction, normalization, collision
 bake, and IW8 zone build in one command:
 
-```bat
-iw8-zonetool.exe build-iw3 D:\CoD4\zone\english\mp_example.ff ^
-  --replay "D:\Replay\game_dx12_ship_replay.exe" ^
-  --unlinker "D:\Tools\OpenAssetTools\Unlinker.exe"
+```powershell
+$map = 'C:\Maps\mp_example'
+$replay = 'D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)\game_dx12_ship_replay.exe'
+$unlinker = '.\mw120rproxy\tools\_vendor\OpenAssetTools\build\bin\Release_x86\Unlinker.exe'
+$zoneTool = '.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
+
+& $zoneTool build-iw3 "$map\mp_example.ff" mp_example `
+    -o "$map\converted" `
+    --replay $replay `
+    --unlinker $unlinker `
+    --search-path $map
 ```
 
-The map id is taken from the fastfile name. Pass a second positional value to rename it during
-conversion. The tool creates `mp_example_iw8` beside the source fastfile and writes the five zones
-there; use `-o` only when you want another destination. A sibling `mp_example_load.ff` is read
-automatically. Repeat `--search-path` for CoD4 directories or IWD locations needed by the source
-zone.
+The example above is PowerShell. For Command Prompt syntax, including its required double quotes,
+see [`docs/IW3_FASTFILE.md`](docs/IW3_FASTFILE.md). Do not wrap a Command Prompt executable path
+in single quotes.
+
+The map id is taken from the fastfile name. It must start with `mp_`, use lower-case letters,
+numbers, or underscores, and be no longer than 15 characters. Pass a second positional value to
+rename a longer source map during conversion. The tool creates `mp_example_iw8` beside the source
+fastfile and writes the five zones there; use `-o` only when you want another destination. A
+sibling `mp_example_load.ff` is read automatically. Repeat `--search-path` for CoD4 directories or
+IWD locations needed by the source zone.
 
 This command uses the native OpenAssetTools Unlinker with the supplied IW3 Replay map exporters.
 It keeps extracted files in a private temporary directory and removes them after the five fastfiles
@@ -73,8 +91,8 @@ The patched Unlinker setup and complete command are documented in
 
 ### Build a prepared map
 
-Give `build-map` a prepared map dump and a lower-case `mp_` map id. The output folder is created
-beside the dump unless `-o` selects another destination:
+Give `build-map` a prepared map dump and a lower-case `mp_` map id no longer than 15 characters.
+The output folder is created beside the dump unless `-o` selects another destination:
 
 ```bat
 iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example

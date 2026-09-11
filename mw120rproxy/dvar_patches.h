@@ -2,6 +2,9 @@
 #include <cstdint>
 #include "inline_hook.h"
 
+// Offline bool-dvar override + full dvar trace for 1.20.4.7623265-replay. Lean port of
+// mw164proxy's dvar_patches (itself a port of mw169proxy's, which is a port of mw124proxy's; the
+// web-panel List/Upsert/LiveSet surface is dropped). No-ops until game::kDvarRegisterBoolRVA is filled.
 namespace dvars {
 // Seed the built-in offline override table (call once at startup). When onlineMpRoute is set, also apply
 // the A/B online-MP route block (UI-online dvars on, direct-service dvars off).

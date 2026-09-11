@@ -1,5 +1,8 @@
 # Custom-map lighting
 
+> **POC status:** lighting output has offline coverage only. Exposure, shadow range, indirect
+> light, and viewmodel response require in-game verification on each converted map.
+
 MW120R uses the lighting serialized by the native zonetool. The proxy does not replace a converted map's sun direction, color, or intensity. This page describes the prepared-dump route; direct `build-iw3` conversion uses the source sun without requiring a lighting JSON file.
 
 ## Source sun

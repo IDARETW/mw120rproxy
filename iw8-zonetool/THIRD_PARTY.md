@@ -13,3 +13,11 @@ under the MIT License. The source file retains its copyright and SPDX license no
 `tools/oat/ReplayMapDumpers.h` extends OpenAssetTools v0.33.0 with IW3 world and collision
 exporters. It is distributed under GPL-3.0; the license text is stored beside the header. The
 complete OpenAssetTools project and its `Unlinker.exe` are external dependencies.
+
+## LZ4
+
+`src/thirdparty/lz4` contains LZ4 by Yann Collet and contributors. It is used under the BSD
+2-Clause License; the license text is stored in that directory.
+
+- Project: https://github.com/lz4/lz4
+- License: https://github.com/lz4/lz4/blob/dev/LICENSE

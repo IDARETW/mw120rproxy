@@ -1,0 +1,6 @@
+#include "resources.h"
+
+IDR_IW3_MATERIAL_TEMPLATE RCDATA "resources/material_template.json"
+IDR_IW3_TECHSET_TEMPLATE RCDATA "resources/techset_template.json"
+IDR_IW3_PIXEL_SHADER RCDATA "resources/map_surface_realtime.hlsl"
+IDR_IW3_VERTEX_SHADER RCDATA "resources/replay_world_vertex.hlsl"

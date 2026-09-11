@@ -39,7 +39,7 @@ std::string ToUtf8(const std::wstring& text) {
 }
 
 bool IsMapId(const std::string& id) {
-    if (id.size() < 4 || id.size() > 63 || id.rfind("mp_", 0) != 0)
+    if (id.size() < 4 || id.size() > 15 || id.rfind("mp_", 0) != 0)
         return false;
     return std::all_of(id.begin(), id.end(), [](unsigned char ch) {
         return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_';
@@ -390,11 +390,11 @@ bool ZoneFromRequest(const char* request, std::string& zoneOut) {
 bool ValidateFastfileOnlyPackage(custommaps::Package& package,
                                  const std::filesystem::path& directory) {
     if (!IsMapId(package.id)) {
-        package.error = "map folder must use the mp_ map form";
+        package.error = "package directory must use an mp_ map id of at most 15 characters";
         return false;
     }
     if ((GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        package.error = "map folders must not be links";
+        package.error = "package directories must not be links";
         return false;
     }
     if (std::filesystem::exists(g_gameRoot / "zone" / (package.id + ".ff")) ||
@@ -418,18 +418,18 @@ bool ValidateFastfileOnlyPackage(custommaps::Package& package,
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
         if (error || !entry.is_regular_file(error)) {
-            package.error = "fastfile-only map output contains an unreadable entry";
+            package.error = "fastfile-only package contains an unreadable entry";
             return false;
         }
         actual.push_back(entry.path().filename().string());
     }
     if (error) {
-        package.error = "fastfile-only map output cannot be read";
+        package.error = "fastfile-only package cannot be read";
         return false;
     }
     std::sort(actual.begin(), actual.end());
     if (actual != expected) {
-        package.error = "fastfile-only map output must contain five map zones and optional map.json";
+        package.error = "fastfile-only package must contain five map zones and optional map.json";
         return false;
     }
 
@@ -441,7 +441,7 @@ bool ValidateFastfileOnlyPackage(custommaps::Package& package,
             return false;
         }
     }
-    package.visibility = "all-visible-v1";
+    package.visibility = "native-umbra-v1";
     package.worldFormat = "replay-1.20-native-v1";
     package.valid = true;
     return true;
@@ -471,11 +471,11 @@ void ValidatePackage(custommaps::Package& package, const std::filesystem::path& 
         return;
     }
     if (package.id != ToUtf8(directory.filename().wstring())) {
-        package.error = "manifest id must match the map folder";
+        package.error = "manifest id must match the package directory";
         return;
     }
     if ((GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        package.error = "map folders must not be links";
+        package.error = "package directories must not be links";
         return;
     }
     if (std::filesystem::exists(g_gameRoot / "zone" / (package.id + ".ff")) ||
@@ -507,7 +507,7 @@ void ValidatePackage(custommaps::Package& package, const std::filesystem::path& 
         return;
     }
     if (!OptionalString(text, "visibility", package.visibility) ||
-        (!package.visibility.empty() && package.visibility != "all-visible-v1")) {
+        (!package.visibility.empty() && package.visibility != "native-umbra-v1")) {
         package.error = "unsupported visibility contract";
         return;
     }
@@ -759,18 +759,6 @@ bool IsKnownMap(const char* mapName) {
     return std::any_of(g_packages.begin(), g_packages.end(), [mapName](const Package& package) {
         return package.valid && package.id == mapName;
     });
-}
-
-bool ActiveWorldContract() {
-    std::lock_guard<std::mutex> lock(g_lock);
-    const auto package =
-        std::find_if(g_packages.begin(), g_packages.end(), [](const Package& item) {
-            return item.valid && item.id == g_selected;
-        });
-    if (package == g_packages.end())
-        return false;
-    return (package->visibility.empty() || package->visibility == "all-visible-v1") &&
-           (package->worldFormat.empty() || package->worldFormat == "replay-1.20-native-v1");
 }
 
 bool ResolveDiskRead(const char* request, std::string& pathOut) {

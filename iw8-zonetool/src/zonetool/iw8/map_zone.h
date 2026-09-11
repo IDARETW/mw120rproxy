@@ -2,12 +2,18 @@
 #include "iw8_map_structs.h" // pinned clipMap_t/MapEnts/ComWorld field maps (compile-validates sizes)
 #include "iw8_structs.h"
 #include "iw8_zonebuffer.h"
+#include "replay_havok.h"
 #include "replay_map_layout.h"
 #include "replay_netconst.h"
 #include "replay_spawns.h"
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace iw8
 {
@@ -27,6 +33,9 @@ static constexpr size_t kCM_name = 0x00, kCM_isInUse = 0x08, kCM_mapEnts = 0x18,
                         kCM_checksum = 0xF0;
 // MapEnts field offsets
 static constexpr size_t kME_name = 0x00, kME_entityString = 0x08, kME_numEntityChars = 0x10;
+static constexpr size_t kME_havokEntsShapeDataSize = 0x148,
+                        kME_havokEntsShapeData = 0x150, kME_numSubModels = 0x158,
+                        kME_cmodels = 0x160;
 // ComWorld field offsets (com_map(24)=0xA8) — pinned: name@0, isInUse@8, primaryLightCount@0x30.
 static constexpr size_t kCW_name = 0x00, kCW_isInUse = 0x08, kCW_primaryLightCount = 0x30;
 static_assert(offsetof(iw8::maps::ComWorld, name) == kCW_name, "ComWorld.name off");
@@ -47,11 +56,89 @@ inline void stampf(uint8_t *p, size_t off, float v)
     std::memcpy(p + off, &v, 4);
 }
 
+inline uint64_t packOffset(const uint32_t stream, const uint64_t offset)
+{
+    if (offset >= std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("Replay packed offset exceeds 32 bits");
+    return (static_cast<uint64_t>(stream & 0xF) << 32) | (offset + 1);
+}
+
+inline void emitPhysicsAssetReference(ZoneBuffer &zb)
+{
+    uint8_t asset[0x58]{};
+    stamp64(asset, 0, PTR_FOLLOWS);
+    zb.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
+    zb.align(7);
+    zb.write(asset, sizeof(asset));
+    zb.pushStream(XFILE_BLOCK_VIRTUAL);
+    zb.writeStr(",scriptbrushmodeldummydefault");
+    zb.popStream();
+    zb.popStream();
+}
+
+inline void emitCmodels(ZoneBuffer &zb, const havok::BakeResult &collision)
+{
+    if (collision.models.empty())
+        return;
+    if (collision.models.size() > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("Replay cmodel count exceeds 32 bits");
+
+    zb.align(7);
+    const uint64_t arrayStart = zb.streamSize(XFILE_BLOCK_VIRTUAL);
+    const uint64_t insertionOffset =
+        (arrayStart + collision.models.size() * sizeof(maps::cmodel_t) + 7) & ~uint64_t{7};
+    const uint64_t alias = packOffset(XFILE_BLOCK_VIRTUAL, insertionOffset);
+    bool insertedReference = false;
+    for (std::size_t index = 0; index < collision.models.size(); ++index)
+    {
+        const auto &model = collision.models[index];
+        uint8_t cmodel[sizeof(maps::cmodel_t)]{};
+        float radiusSquared = 0.0f;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            const float midpoint = (model.minimum[axis] + model.maximum[axis]) * 0.5f;
+            const float halfSize = (model.maximum[axis] - model.minimum[axis]) * 0.5f;
+            if (!std::isfinite(midpoint) || !std::isfinite(halfSize) || halfSize < 0.0f)
+                throw std::runtime_error("Replay cmodel has invalid bounds");
+            stampf(cmodel, axis * 4, midpoint);
+            stampf(cmodel, 12 + axis * 4, halfSize);
+            radiusSquared += halfSize * halfSize;
+        }
+        stampf(cmodel, 0x18, std::sqrt(radiusSquared));
+        const bool hasShape = index > 0 &&
+                              model.shapeIndex != std::numeric_limits<uint16_t>::max();
+        if (hasShape)
+        {
+            stamp64(cmodel, 0x20, insertedReference ? alias : PTR_INSERT);
+            std::memcpy(cmodel + 0x28, &model.shapeIndex, sizeof(model.shapeIndex));
+            insertedReference = true;
+        }
+        else
+        {
+            const uint16_t shape = index == 0 ? 0 : std::numeric_limits<uint16_t>::max();
+            std::memcpy(cmodel + 0x28, &shape, sizeof(shape));
+        }
+        const uint16_t noNavObstacle = std::numeric_limits<uint16_t>::max();
+        std::memcpy(cmodel + 0x2A, &noNavObstacle, sizeof(noNavObstacle));
+        zb.write(cmodel, sizeof(cmodel));
+    }
+
+    if (insertedReference)
+    {
+        zb.align(7);
+        if (zb.streamSize(XFILE_BLOCK_VIRTUAL) != insertionOffset)
+            throw std::runtime_error("Replay cmodel insertion offset drifted");
+        zb.reserveCalc(8);
+        emitPhysicsAssetReference(zb);
+    }
+}
+
 // Emit one MapEnts asset body: struct(0x408)->TEMP_PRELOAD(1), then name + entityString ->
 // VIRTUAL(8). Caller is responsible for the surrounding push/pop. `ents` is the IW8 numeric-keyId
 // entityString (NUL added here).
 inline void emitMapEntsBody(ZoneBuffer &zb, const char *assetName, const std::string &ents,
-                            const ReplaySpawns *spawns = nullptr)
+                            const ReplaySpawns *spawns = nullptr,
+                            const havok::BakeResult *collision = nullptr)
 {
     uint8_t me[kSizeMapEnts];
     std::memset(me, 0, sizeof(me));
@@ -62,6 +149,21 @@ inline void emitMapEntsBody(ZoneBuffer &zb, const char *assetName, const std::st
     {
         stamp32(me, 0x128, static_cast<uint32_t>(spawns->records.size()));
         stamp64(me, 0x130, PTR_FOLLOWS);
+    }
+    if (collision)
+    {
+        if (!collision->entities.empty())
+        {
+            stamp32(me, kME_havokEntsShapeDataSize,
+                    static_cast<uint32_t>(collision->entities.size()));
+            stamp64(me, kME_havokEntsShapeData, PTR_FOLLOWS);
+        }
+        if (!collision->models.empty())
+        {
+            stamp32(me, kME_numSubModels,
+                    static_cast<uint32_t>(collision->models.size()));
+            stamp64(me, kME_cmodels, PTR_FOLLOWS);
+        }
     }
     // Both DynEnt spatial populations are queried on the first client frame,
     // even with no dynamic entities. Replay DDFC10/DDFAE0: two inline 56-byte
@@ -85,6 +187,13 @@ inline void emitMapEntsBody(ZoneBuffer &zb, const char *assetName, const std::st
     zb.writeT<uint8_t>(0); // entityString + NUL
     if (spawns)
         spawns->writeRecords(zb);
+    if (collision && !collision->entities.empty())
+    {
+        zb.align(15);
+        zb.write(collision->entities.data(), collision->entities.size());
+    }
+    if (collision)
+        emitCmodels(zb, *collision);
     for (unsigned i = 0; i < 2; ++i)
     {
         zb.align(7);
@@ -213,10 +322,28 @@ struct MapBounds
 // These are native linear-light values, not display RGB or an exposure scale.
 struct MapSun
 {
+    struct PrimaryLight
+    {
+        uint8_t type = 0;
+        uint8_t exponent = 0;
+        float color[3]{};
+        float direction[3]{};
+        float up[3]{};
+        float origin[3]{};
+        float radius = 0.0f;
+        float cosHalfFovOuter = 0.0f;
+        float cosHalfFovInner = 0.0f;
+        float rotationLimit = 0.0f;
+        float translationLimit = 0.0f;
+        std::string definition;
+    };
+
     float intensity = 24.649917602539062f;
     float color[3]{0.9941421151161194f, 1.0032469034194946f, 0.9850855469703674f};
     float direction[3]{-0.5795004963874817f, 0.4210316836833954f, 0.6977904438972473f};
     float up[3]{};
+    uint32_t sunPrimaryLightIndex = 1;
+    std::vector<PrimaryLight> primaryLights;
 };
 
 // Emit one ComWorld asset body (com_map 24): struct(0xA8)->TEMP_PRELOAD(1),
@@ -224,6 +351,12 @@ struct MapSun
 // world. The authored map still owns its sun direction, color and intensity.
 inline void emitComWorldBody(ZoneBuffer &zb, const char *assetName, const MapSun &lighting = {})
 {
+    const uint32_t primaryLightCount = lighting.primaryLights.empty()
+                                           ? 2u
+                                           : static_cast<uint32_t>(lighting.primaryLights.size());
+    if (primaryLightCount < 2 || lighting.sunPrimaryLightIndex >= primaryLightCount)
+        throw std::runtime_error("invalid primary-light table");
+
     uint8_t cw[kSizeComWorld];
     std::memset(cw, 0, sizeof(cw));
     stamp64(cw, kCW_name, PTR_FOLLOWS);
@@ -236,9 +369,9 @@ inline void emitComWorldBody(ZoneBuffer &zb, const char *assetName, const MapSun
     stampf(cw, 0x2C, 1500.0f);
     // Primary light zero is the reserved unlit entry. Replay's light-copy caller
     // passes [0, count-1] without a zero-count guard (18D9690).
-    stamp32(cw, kCW_primaryLightCount, 2);
+    stamp32(cw, kCW_primaryLightCount, primaryLightCount);
     stamp64(cw, 0x38, PTR_FOLLOWS);
-    stamp32(cw, 0x44, 2); // firstScriptablePrimaryLight
+    stamp32(cw, 0x44, primaryLightCount); // firstScriptablePrimaryLight
     stamp32(cw, 0x48, 1); // one resident transient-table entry
     stamp64(cw, 0x50, PTR_FOLLOWS);
     std::memset(cw + 0x78, 0xFF, 0x30); // stock initial state for an empty Umbra gate set
@@ -251,19 +384,49 @@ inline void emitComWorldBody(ZoneBuffer &zb, const char *assetName, const MapSun
     zb.pushStream(XFILE_BLOCK_VIRTUAL);
     zb.writeStr(assetName); // name
     zb.align(7);
-    const uint8_t primaryLight[0xA0]{}; // Replay Load_ComWorld DF27B0
-    zb.write(primaryLight, sizeof(primaryLight));
-    // Light zero is reserved; stage zero selects this directional light.
-    uint8_t sun[0xA0]{};
-    sun[1] = 1;
-    stampf(sun, 0x10, lighting.intensity);
-    for (unsigned k = 0; k < 3; ++k)
+    for (uint32_t index = 0; index < primaryLightCount; ++index)
     {
-        stampf(sun, 0x20 + 4 * k, lighting.color[k]);
-        stampf(sun, 0x2C + 4 * k, lighting.direction[k]);
-        stampf(sun, 0x38 + 4 * k, lighting.up[k]);
+        uint8_t light[0xA0]{}; // Replay 1.20 Load_ComWorld DF27B0
+        const MapSun::PrimaryLight *source =
+            lighting.primaryLights.empty() ? nullptr : &lighting.primaryLights[index];
+        if (source)
+        {
+            light[1] = source->type;
+            stampf(light, 0x10, index == 0 ? 0.0f : 1.0f);
+            for (unsigned component = 0; component < 3; ++component)
+            {
+                stampf(light, 0x20 + 4 * component, source->color[component]);
+                stampf(light, 0x2C + 4 * component, source->direction[component]);
+                stampf(light, 0x38 + 4 * component, source->up[component]);
+                stampf(light, 0x44 + 4 * component, source->origin[component]);
+            }
+            stampf(light, 0x50, source->radius);
+            stampf(light, 0x6C, source->cosHalfFovOuter);
+            stampf(light, 0x70, source->cosHalfFovInner);
+            stampf(light, 0x80, source->type >= 2 ? 0.0018f : 0.0f);
+            stampf(light, 0x84, source->type >= 2 ? 0.2f : 0.0f);
+            stampf(light, 0x8C, source->rotationLimit);
+            stampf(light, 0x90, source->translationLimit);
+            stamp64(light, 0x98, source->definition.empty() ? PTR_NULL : PTR_FOLLOWS);
+        }
+        if (index == lighting.sunPrimaryLightIndex)
+        {
+            light[1] = 1;
+            stampf(light, 0x10, lighting.intensity);
+            for (unsigned component = 0; component < 3; ++component)
+            {
+                stampf(light, 0x20 + 4 * component, lighting.color[component]);
+                stampf(light, 0x2C + 4 * component, lighting.direction[component]);
+                stampf(light, 0x38 + 4 * component, lighting.up[component]);
+            }
+            stamp64(light, 0x98, PTR_NULL);
+        }
+        zb.write(light, sizeof(light));
     }
-    zb.write(sun, sizeof(sun));
+    if (!lighting.primaryLights.empty())
+        for (const auto &light : lighting.primaryLights)
+            if (!light.definition.empty())
+                zb.writeStr(light.definition.c_str());
     zb.align(1);
     zb.writeT<uint16_t>(0x8000); // stock resident transient-table entry
     zb.popStream();
@@ -297,7 +460,7 @@ inline void emitLevelNetConstStrings(ZoneBuffer &zb, unsigned type)
 
 inline void buildSrvMapZone(ZoneBuffer &zb, const char *assetName, const std::string &ents,
                             const MapBounds &bounds, const MapSun &lighting,
-                            const std::vector<uint8_t> &collision)
+                            const havok::BakeResult &collision)
 {
     const ReplaySpawns spawns(ents);
     // 1) XAssetList root -> TEMP(0): 3 assets.
@@ -339,7 +502,7 @@ inline void buildSrvMapZone(ZoneBuffer &zb, const char *assetName, const std::st
     // 3a) map_ents(29)
     zb.align(7);
     zb.reserveCalc(8); // native DB_InsertPointer slot
-    emitMapEntsBody(zb, assetName, ents, &spawns);
+    emitMapEntsBody(zb, assetName, ents, &spawns, &collision);
 
     // 3b) col_map(23): clipMap struct -> TEMP_PRELOAD, name -> VIRTUAL, mapEnts(-2) inline MapEnts.
     zb.align(7);
@@ -369,8 +532,8 @@ inline void buildSrvMapZone(ZoneBuffer &zb, const char *assetName, const std::st
         stampf(cm, kCM_bpMax + 4, 100000.f);
         stampf(cm, kCM_bpMax + 8, 100000.f);
     }
-    stamp32(cm, kCM_havokSize, static_cast<uint32_t>(collision.size()));
-    stamp64(cm, kCM_havokData, collision.empty() ? PTR_NULL : PTR_FOLLOWS);
+    stamp32(cm, kCM_havokSize, static_cast<uint32_t>(collision.world.size()));
+    stamp64(cm, kCM_havokData, collision.world.empty() ? PTR_NULL : PTR_FOLLOWS);
     stamp32(cm, kCM_checksum, 0);
 
     zb.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
@@ -382,7 +545,7 @@ inline void buildSrvMapZone(ZoneBuffer &zb, const char *assetName, const std::st
     zb.pushStream(XFILE_BLOCK_VIRTUAL);
     zb.writeStr(assetName); // clipMap name
     zb.popStream();
-    emitMapEntsBody(zb, assetName, ents, &spawns); // mapEnts=-2 duplicate
+    emitMapEntsBody(zb, assetName, ents, &spawns, &collision); // mapEnts=-2 duplicate
     zb.pushStream(XFILE_BLOCK_VIRTUAL);
     zb.align(7);
     // Load_clipMap_t E0FD30 -> Load_StageArray E05480, 40 bytes.
@@ -391,10 +554,10 @@ inline void buildSrvMapZone(ZoneBuffer &zb, const char *assetName, const std::st
     stage[0x16] = 1;
     zb.write(stage, sizeof(stage));
     zb.writeStr("default");
-    if (!collision.empty())
+    if (!collision.world.empty())
     {
         zb.align(15);
-        zb.write(collision.data(), collision.size());
+        zb.write(collision.world.data(), collision.world.size());
     }
     zb.popStream();
     zb.popStream();

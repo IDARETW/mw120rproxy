@@ -25,20 +25,54 @@ resulting `Unlinker.exe`; it is the only external conversion program used by `bu
 
 ## Convert a map
 
-Build `iw8-zonetool`, then run:
+Build `iw8-zonetool`, set these values to paths that exist on your computer, and run the command
+from the MW120R source folder in PowerShell:
 
 ```powershell
-.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-iw3 `
-    'D:\CoD4\zone\english\mp_example.ff' `
-    --replay 'D:\Replay\game_dx12_ship_replay.exe' `
-    --unlinker 'D:\Tools\OpenAssetTools\build\bin\Release_x86\Unlinker.exe' `
-    --search-path 'D:\CoD4\main' `
-    --search-path 'D:\CoD4\usermaps\mp_example'
+$mapName = 'mp_example'
+$mapFolder = 'C:\Maps\mp_example'
+$replay = 'D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)\game_dx12_ship_replay.exe'
+$unlinker = '.\mw120rproxy\tools\_vendor\OpenAssetTools\build\bin\Release_x86\Unlinker.exe'
+$zoneTool = '.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
+$output = Join-Path $mapFolder 'converted'
+
+foreach ($file in @($zoneTool, (Join-Path $mapFolder "$mapName.ff"), $replay, $unlinker)) {
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+        throw "File not found: $file"
+    }
+}
+
+& $zoneTool build-iw3 `
+    (Join-Path $mapFolder "$mapName.ff") `
+    $mapName `
+    -o $output `
+    --replay $replay `
+    --unlinker $unlinker `
+    --search-path $mapFolder
+
+if ($LASTEXITCODE -ne 0) {
+    throw "IW3 conversion failed with exit code $LASTEXITCODE"
+}
 ```
 
-The map id defaults to the `.ff` filename. The output folder is created beside the source as
-`<map>_iw8`; use `-o` only when you need another location. To rename it, add the target id
-immediately after the input path:
+The values above are examples. `--unlinker` must name the `Unlinker.exe` that was actually built
+after installing this project's exporters. Keeping the `.ff`, sibling `_load.ff`, and `.iwd`
+files together lets one `--search-path` cover a downloaded map.
+
+PowerShell and Command Prompt quote executable paths differently. In PowerShell, use the `&`
+operator as shown above. In Command Prompt, use double quotes and do not use single quotes:
+
+```bat
+".\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe" build-iw3 "C:\Maps\mp_example\mp_example.ff" mp_example -o "C:\Maps\mp_example\converted" --replay "D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)\game_dx12_ship_replay.exe" --unlinker ".\mw120rproxy\tools\_vendor\OpenAssetTools\build\bin\Release_x86\Unlinker.exe" --search-path "C:\Maps\mp_example"
+```
+
+If a Command Prompt command begins with `'.\iw8-zonetool`, Windows includes the single quote in
+the filename and reports `The system cannot find the path specified.`
+
+The map id defaults to the `.ff` filename. It must begin with `mp_`, contain only lower-case
+letters, numbers, or underscores, and fit the game's 15-character map-id field. The output folder
+is created beside the source as `<map>_iw8`; use `-o` only when you need another location. To
+rename a longer source map, add a shorter target id immediately after the input path:
 
 ```powershell
 iw8-zonetool.exe build-iw3 'D:\CoD4\mp_old.ff' mp_new `
@@ -51,6 +85,10 @@ lets Unlinker resolve assets stored outside the map zone. `--unlinker` may be om
 `Unlinker.exe` is beside `iw8-zonetool.exe`, under `tools`, available on `PATH`, or named by the
 `IW8_ZONETOOL_UNLINKER` environment variable. The earlier `MW120R_UNLINKER` variable is also
 accepted.
+
+If conversion reports that Unlinker cannot be started or that the file does not exist, run
+`Test-Path -LiteralPath '<your Unlinker.exe path>'` in PowerShell. Fix that path before changing
+any other option.
 
 The output directory contains these five fastfiles:
 

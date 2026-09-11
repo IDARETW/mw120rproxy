@@ -1,5 +1,8 @@
 # Nuketown example map
 
+> **Historical package:** this release predates the current source-only POC. It is retained as an
+> example download and does not validate the current converter or proxy sources.
+
 This is a ready-to-install conversion of **Nuketown by >>N.B.Z.I.<<** for
 MW120R and **MW2019 Replay 1.20.4.7623265**. The map is listed in Local Play as
 **Nuketown (CoD4)** and uses the ID `mp_nuketown`.

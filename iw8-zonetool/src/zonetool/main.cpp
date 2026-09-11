@@ -8,6 +8,7 @@
 #include "dumpsrc/material_dumpsrc.h"
 #include "dumpsrc/xmodel_dump.h"
 #include "iw3/iw3_fastfile.h"
+#include "iw7/iw7_fastfile.h"
 #include "iw8/iw8_ffheader.h"
 #include "iw8/iw8_zone.h"
 #include "iw8/map_zone.h"
@@ -43,7 +44,7 @@ struct Args
     std::vector<std::string> searchPaths;
     std::string metadataPath;
     std::string lightingProfile = "source";
-    float sunIntensityScale = 6.0f;
+    float sunIntensityScale = 1.0f;
 };
 
 struct MapMetadata
@@ -60,6 +61,7 @@ void printUsage()
                 "usage:\n"
                 "  iw8-zonetool build-map <dump> <map> [-o <output>] [options]\n"
                 "  iw8-zonetool build-iw3 <map.ff> [map] [-o <output>] [options]\n"
+                "  iw8-zonetool inspect-iw7 <file.ff>\n"
                 "  iw8-zonetool inspect <file.ff>\n"
                 "  iw8-zonetool validate-output <map_output> <map>\n"
                 "options:\n"
@@ -153,7 +155,7 @@ bool parseArgs(const int argc, char **argv, Args &args)
 
 bool isMapId(const std::string &map)
 {
-    if (map.size() < 4 || map.size() > 63 || !map.starts_with("mp_"))
+    if (map.size() < 4 || map.size() > 15 || !map.starts_with("mp_"))
     {
         return false;
     }
@@ -169,7 +171,8 @@ bool requireMapId(const std::string &map)
     {
         return true;
     }
-    err("map id '%s' is invalid; use lower-case mp_<name>", map.c_str());
+    err("map id '%s' is invalid; use at most 15 lower-case characters in mp_<name>",
+        map.c_str());
     return false;
 }
 
@@ -313,7 +316,8 @@ bool prepareOutputDirectory(const std::string &outputDirectory, const std::strin
     for (const auto &entry : std::filesystem::directory_iterator(outputDirectory, error))
     {
         if (error || !entry.is_regular_file(error) ||
-            !std::binary_search(expected.begin(), expected.end(), entry.path().filename().string()))
+            std::find(expected.begin(), expected.end(), entry.path().filename().string()) ==
+                expected.end())
         {
             err("build-map: output directory must be empty or contain only this map's files");
             return false;
@@ -411,13 +415,12 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
     return valid;
 }
 
-const char *defaultEntities = "{\n"
-                              "\"classname\" \"worldspawn\"\n"
-                              "}\n"
-                              "{\n"
-                              "\"origin\" \"0 0 64\"\n"
-                              "\"classname\" \"info_player_deathmatch\"\n"
-                              "}\n";
+const char *defaultEntities = "{ 212 \"worldspawn\" }\n"
+                              "{ 212 \"info_player_start\" 709 \"0 0 64\" 80 \"0 0 0\" }\n"
+                              "{ 212 \"mp_tdm_spawn\" 709 \"0 0 64\" 80 \"0 0 0\" }\n"
+                              "{ 212 \"mp_tdm_spawn_allies_start\" 709 \"-64 0 64\" 80 \"0 0 0\" }\n"
+                              "{ 212 \"mp_tdm_spawn_axis_start\" 709 \"64 0 64\" 80 \"0 180 0\" }\n"
+                              "{ 212 \"script_model\" 709 \"0 0 16\" 80 \"0 0 0\" }\n";
 
 struct AssetTally
 {
@@ -467,7 +470,7 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
     }
     else
     {
-        warn("assets: no images/%s.iwi or .ffImg; HUD compass will use the default material",
+        warn("assets: no images/%s.dds, .iwi, or .ffImg; HUD compass will use the default material",
              compassName.c_str());
     }
 
@@ -582,7 +585,111 @@ iw8::MapSun loadLighting(const Args &args, const std::string &dumpDirectory,
         {
             throw std::runtime_error("invalid sun lighting data");
         }
+
+        if (data.contains("primary_lights"))
+        {
+            const auto &sourceLights = data.at("primary_lights");
+            if (!sourceLights.is_array() || sourceLights.size() < 2 ||
+                sourceLights.size() > 65535)
+            {
+                throw std::runtime_error("invalid source primary-light array");
+            }
+            lighting.sunPrimaryLightIndex = data.at("sun_primary_light_index").get<uint32_t>();
+            if (lighting.sunPrimaryLightIndex >= sourceLights.size())
+            {
+                throw std::runtime_error("invalid source sun primary-light index");
+            }
+
+            const auto readVector = [](const nlohmann::json &value, const char *name) {
+                if (!value.is_array() || value.size() != 3)
+                    throw std::runtime_error(std::string("invalid primary-light ") + name);
+                std::array<float, 3> result{};
+                for (size_t component = 0; component < result.size(); ++component)
+                {
+                    result[component] = value.at(component).get<float>();
+                    if (!std::isfinite(result[component]))
+                        throw std::runtime_error(std::string("invalid primary-light ") + name);
+                }
+                return result;
+            };
+
+            lighting.primaryLights.reserve(sourceLights.size());
+            for (const auto &source : sourceLights)
+            {
+                iw8::MapSun::PrimaryLight light;
+                const unsigned type = source.at("type").get<unsigned>();
+                const unsigned exponent = source.at("exponent").get<unsigned>();
+                if (type > 3 || exponent > 255)
+                    throw std::runtime_error("invalid IW3 primary-light type or exponent");
+                light.type = static_cast<uint8_t>(type);
+                light.exponent = static_cast<uint8_t>(exponent);
+
+                const auto color = readVector(source.at("color"), "color");
+                const auto direction = readVector(source.at("direction"), "direction");
+                const auto origin = readVector(source.at("origin"), "origin");
+                if (std::ranges::any_of(color, [](const float value) { return value < 0.0f; }))
+                    throw std::runtime_error("invalid primary-light color");
+                std::copy(color.begin(), color.end(), light.color);
+                std::copy(origin.begin(), origin.end(), light.origin);
+
+                const float sourceDirectionLength = std::sqrt(
+                    direction[0] * direction[0] + direction[1] * direction[1] +
+                    direction[2] * direction[2]);
+                if (type != 0 && sourceDirectionLength <= 0.000001f)
+                    throw std::runtime_error("primary-light direction has zero length");
+                if (sourceDirectionLength > 0.000001f)
+                    for (size_t component = 0; component < direction.size(); ++component)
+                        light.direction[component] = direction[component] / sourceDirectionLength;
+
+                if (type >= 2)
+                {
+                    const std::array<float, 3> reference =
+                        std::abs(light.direction[2]) < 0.999f
+                            ? std::array<float, 3>{0.0f, 0.0f, 1.0f}
+                            : std::array<float, 3>{0.0f, 1.0f, 0.0f};
+                    const float projection = reference[0] * light.direction[0] +
+                                             reference[1] * light.direction[1] +
+                                             reference[2] * light.direction[2];
+                    float sourceUpLength = 0.0f;
+                    for (size_t component = 0; component < reference.size(); ++component)
+                    {
+                        light.up[component] =
+                            reference[component] - projection * light.direction[component];
+                        sourceUpLength += light.up[component] * light.up[component];
+                    }
+                    sourceUpLength = std::sqrt(sourceUpLength);
+                    for (float &component : light.up)
+                        component /= sourceUpLength;
+                }
+
+                light.radius = source.at("radius").get<float>();
+                light.cosHalfFovOuter = source.at("cos_half_fov_outer").get<float>();
+                light.cosHalfFovInner = source.at("cos_half_fov_inner").get<float>();
+                light.rotationLimit = source.at("rotation_limit").get<float>();
+                light.translationLimit = source.at("translation_limit").get<float>();
+                light.definition = source.at("definition").get<std::string>();
+                if (!std::isfinite(light.radius) || light.radius < 0.0f ||
+                    !std::isfinite(light.cosHalfFovOuter) ||
+                    !std::isfinite(light.cosHalfFovInner) ||
+                    !std::isfinite(light.rotationLimit) ||
+                    !std::isfinite(light.translationLimit) || light.definition.size() > 255)
+                {
+                    throw std::runtime_error("invalid primary-light scalar data");
+                }
+                if (type == 2 &&
+                    (light.cosHalfFovOuter <= 0.0f ||
+                     light.cosHalfFovOuter >= light.cosHalfFovInner ||
+                     light.cosHalfFovInner > 1.0f))
+                {
+                    throw std::runtime_error("invalid IW3 spot-light field of view");
+                }
+                lighting.primaryLights.push_back(std::move(light));
+            }
+        }
     }
+
+    if (lighting.primaryLights.empty())
+        lighting.primaryLights.resize(2);
 
     lighting.intensity *= args.sunIntensityScale;
     if (!std::isfinite(lighting.intensity))
@@ -594,8 +701,8 @@ iw8::MapSun loadLighting(const Args &args, const std::string &dumpDirectory,
     return lighting;
 }
 
-std::vector<uint8_t> loadCollision(const Args &args, const std::string &dumpDirectory,
-                                   const std::string &assetName)
+iw8::havok::BakeResult loadCollision(const Args &args, const std::string &dumpDirectory,
+                                     const std::string &assetName)
 {
     if (!args.collisionPath.empty())
     {
@@ -607,10 +714,11 @@ std::vector<uint8_t> loadCollision(const Args &args, const std::string &dumpDire
             {args.replayExecutable, args.collisionPath, args.footstepsPath});
     }
 
-    std::vector<uint8_t> collision;
+    iw8::havok::BakeResult collision;
     const std::string path = path_join(dumpDirectory, assetName + ".havok");
-    if (!read_file(path, collision) || collision.size() < 16 ||
-        collision.size() > 256 * 1024 * 1024 || std::memcmp(collision.data() + 4, "TAG0", 4) != 0)
+    if (!read_file(path, collision.world) || collision.world.size() < 16 ||
+        collision.world.size() > 256 * 1024 * 1024 ||
+        std::memcmp(collision.world.data() + 4, "TAG0", 4) != 0)
     {
         throw std::runtime_error("native collision is missing; pass --replay and --collision");
     }
@@ -627,13 +735,24 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
     }
 
     const std::string assetName = "maps/mp/" + map + ".d3dbsp";
+    const iw8::MapSun lighting = loadLighting(args, dumpDirectory, assetName);
     int result = 0;
 
     {
         iw8::ZoneBuffer buffer;
-        const iw8::MapSun lighting = loadLighting(args, dumpDirectory, assetName);
-        const std::vector<uint8_t> collision = loadCollision(args, dumpDirectory, assetName);
-        info("collision: serialized native world, %zu bytes", collision.size());
+        auto collision = loadCollision(args, dumpDirectory, assetName);
+        if (collision.models.empty())
+        {
+            iw8::havok::CollisionModel worldModel;
+            if (bounds.valid)
+            {
+                std::copy_n(bounds.mn, 3, worldModel.minimum.begin());
+                std::copy_n(bounds.mx, 3, worldModel.maximum.begin());
+            }
+            collision.models.push_back(worldModel);
+        }
+        info("collision: serialized native world %zu bytes, entities %zu bytes, %zu brush models",
+             collision.world.size(), collision.entities.size(), collision.models.size());
         iw8::buildSrvMapZone(buffer, assetName.c_str(), entities, bounds, lighting, collision);
         if (!iw8_write(path_join(outputDirectory, "srv_" + map + ".ff"), buffer.data(),
                        writeParams(buffer)))
@@ -652,9 +771,14 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
 
         replayrender::RegisterMaterial(writer, renderPath);
         iw8::impact::Register(writer, map);
-        writer.add(ASSET_TYPE_GFX_MAP, assetName, [assetName, renderPath](iw8::ZoneWriter &output) {
-            iw8maps::emitGfxMapBody(output, assetName.c_str(), renderPath);
-        });
+        const auto primaryLightCount = static_cast<uint32_t>(lighting.primaryLights.size());
+        const auto sunPrimaryLightIndex = lighting.sunPrimaryLightIndex;
+        writer.add(ASSET_TYPE_GFX_MAP, assetName,
+                   [assetName, renderPath, primaryLightCount,
+                    sunPrimaryLightIndex](iw8::ZoneWriter &output) {
+                       iw8maps::emitGfxMapBody(output, assetName.c_str(), renderPath,
+                                               primaryLightCount, sunPrimaryLightIndex);
+                   });
         writer.add(ASSET_TYPE_GLASS_MAP, assetName, [assetName](iw8::ZoneWriter &output) {
             iw8maps::emitGlassMapBody(output, assetName.c_str());
         });
@@ -761,8 +885,9 @@ int buildMap(const Args &args)
     if (!foundEntities)
     {
         entities = defaultEntities;
-        warn("entities: using the built-in worldspawn and deathmatch spawn");
+        warn("entities: using the built-in Replay TDM spawn set");
     }
+    convert::validateIw8EntityString(entities);
 
     iw8::MapBounds bounds;
     const dumpsrc::ClipMapDump clipMap = source.loadClipMap();
@@ -839,6 +964,8 @@ int buildIw3(const Args &args)
         return 2;
     }
 
+    iw8::havok::PrepareCollisionBaker(args.replayExecutable);
+
     iw3::ImportOptions options;
     options.fastfile = args.positional[0];
     options.map = map;
@@ -869,6 +996,51 @@ int inspect(const Args &args)
         return 2;
     }
     return inspect_ff(args.positional[0]) ? 0 : 1;
+}
+
+int inspectIw7(const Args &args)
+{
+    if (args.positional.empty())
+    {
+        printUsage();
+        return 2;
+    }
+
+    iw7::FastfileInfo fastfile;
+    std::string failure;
+    if (!iw7::inspectFastfile(args.positional[0], fastfile, failure))
+    {
+        err("inspect-iw7: %s", failure.c_str());
+        return 1;
+    }
+
+    info("inspect-iw7: version %u, %s", fastfile.version,
+         fastfile.signedFile ? "signed" : "unsigned");
+    info("inspect-iw7: %u script strings, %u assets, %llu decompressed bytes",
+         fastfile.scriptStringCount, fastfile.assetCount,
+         static_cast<unsigned long long>(fastfile.uncompressedSize));
+    info("inspect-iw7: %u shared streams, %u image streams", fastfile.sharedStreamCount,
+         fastfile.imageStreamCount);
+
+    const std::vector<std::string> packages = iw7::requiredPackages(fastfile);
+    if (packages.empty())
+    {
+        info("inspect-iw7: no external image packages");
+    }
+    else
+    {
+        std::string list;
+        for (const std::string &package : packages)
+        {
+            if (!list.empty())
+            {
+                list += ", ";
+            }
+            list += package;
+        }
+        info("inspect-iw7: external packages: %s", list.c_str());
+    }
+    return 0;
 }
 
 int validate(const Args &args)
@@ -902,6 +1074,10 @@ try
     if (args.command == "inspect")
     {
         return inspect(args);
+    }
+    if (args.command == "inspect-iw7")
+    {
+        return inspectIw7(args);
     }
     if (args.command == "validate-output" || args.command == "validate-package")
     {

@@ -14,7 +14,7 @@ enum Iw5MapType : uint8_t
     IW5_MAPTYPE_CUBE = 5
 };
 
-// ---- Stage A result: the parsed .ffImg (IW5 field set, verbatim) --------------------------------
+// ---- Stage A result: a parsed .dds, .ffImg, or .iwi image ---------------------------------------
 struct ImageDumpFile
 {
     bool loaded = false;  // header+name parsed and the file was well-formed
@@ -68,7 +68,7 @@ struct Iw8ImageDef
 // ============================= ENTRY POINTS (one per owned .cpp)
 // ==================================
 
-// Stage A (read_image.cpp): parse images/<cleanName>.ffImg under <dumpDir>. `nameOrStem` may be the
+// Stage A (read_image.cpp): parse an image under <dumpDir>/images. `nameOrStem` may be the
 // TRUE asset name ("*lightmap0_primary") or the on-disk stem ("_lightmap0_primary") — either
 // resolves. Returns loaded=false (with a warning) if the file is missing or malformed.
 ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameOrStem);
@@ -76,7 +76,7 @@ ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameO
 // Convenience: clean a TRUE asset name to its on-disk .ffImg stem (IW5 ClearAssetName: '*' -> '_').
 std::string cleanImageName(const std::string &name);
 
-// Enumerate the .ffImg files present under <dumpDir>/images. Returns the on-disk stems (no
+// Enumerate supported image files under <dumpDir>/images. Returns the on-disk stems (no
 // extension).
 std::vector<std::string> listImageDumps(const std::string &dumpDir);
 

@@ -1,8 +1,7 @@
 #pragma once
 #include <cstdint>
 namespace engineconsole {
-// Bounded console-only filtering. The engine file and native console retain the
-// original messages; this gate only protects the external development window.
+// Bound repeated and burst output without changing native engine print calls.
 struct Gate {
     struct Recent {
         uint64_t hash = 0, time = 0;

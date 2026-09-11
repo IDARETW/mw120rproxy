@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include "str_obf.h" // OBF() — compile-time string obfuscation for all log format strings
 
 // Minimal logger: a log file next to the DLL (mw120rproxy.log), OutputDebugString,
 // and the console when one is open. Thread-safe (single mutex). No CRT global
@@ -13,5 +14,5 @@ void EngineConsole(unsigned channel, int flags, const char* text);
 void Shutdown();
 }
 
-// Optional format arguments use MSVC comma elision.
-#define LOG(fmt, ...) ::log120r::Linef(fmt, ##__VA_ARGS__)
+// fmt must be a string literal (OBF requires it). Trailing args follow via MSVC comma-elision.
+#define LOG(fmt, ...) ::log120r::Linef(OBF(fmt), ##__VA_ARGS__)

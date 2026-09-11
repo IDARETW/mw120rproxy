@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <cstring>
 
+// Fault-free reads/writes of game memory. We validate every address with
+// VirtualQuery (which never faults) and only then touch it. This keeps the detours
+// safe even if the game (or an anti-tamper layer) has a vectored exception handler
+// that would turn a "guarded" bad read into a fatal dialog before our SEH frame runs.
 namespace safemem {
 inline bool RegionReadable(const void* p, size_t& avail) {
     avail = 0;

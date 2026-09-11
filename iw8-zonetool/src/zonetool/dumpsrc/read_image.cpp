@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 
 namespace dumpimg
 {
@@ -95,7 +96,7 @@ std::vector<std::string> listImageDumps(const std::string &dumpDir)
         {
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
-        if (extension == ".ffimg" || extension == ".iwi")
+        if (extension == ".dds" || extension == ".ffimg" || extension == ".iwi")
         {
             out.push_back(std::filesystem::path(f).stem().string());
         }
@@ -123,7 +124,11 @@ ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameO
     }
     if (buf.empty() && !read_file(path, buf))
     {
-        // Case-insensitive fallback for both supported dump extensions.
+        path = path_join(imagesDir, stem + ".dds");
+    }
+    if (buf.empty() && !read_file(path, buf))
+    {
+        // Case-insensitive fallback for every supported dump extension.
         bool found = false;
         std::vector<std::string> files;
         if (list_dir(imagesDir, files))
@@ -137,7 +142,7 @@ ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameO
                     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 }
                 if (candidate.stem().string() == stem &&
-                    (extension == ".ffimg" || extension == ".iwi"))
+                    (extension == ".dds" || extension == ".ffimg" || extension == ".iwi"))
                 {
                     path = path_join(imagesDir, f);
                     if (read_file(path, buf))
@@ -150,7 +155,7 @@ ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameO
         }
         if (!found)
         {
-            warn("dumpimg: no .ffImg or .iwi for '%s' under %s", nameOrStem.c_str(),
+            warn("dumpimg: no .dds, .ffImg, or .iwi for '%s' under %s", nameOrStem.c_str(),
                  imagesDir.c_str());
             return d;
         }
@@ -200,6 +205,74 @@ ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameO
         d.loaded = true;
         info("dumpimg: read IW3 IWI '%s' %ux%u fmt=%d resident px=%zu", d.name.c_str(), width,
              height, format, d.pixels.size());
+        return d;
+    }
+
+    if (extension == ".dds")
+    {
+        constexpr size_t headerSize = 128;
+        constexpr uint32_t fourCcDxt1 = 0x31545844;
+        constexpr uint32_t fourCcDxt3 = 0x33545844;
+        constexpr uint32_t fourCcDxt5 = 0x35545844;
+        if (buf.size() < headerSize || std::memcmp(buf.data(), "DDS ", 4) != 0)
+        {
+            warn("dumpimg: '%s' has an invalid DDS header", path.c_str());
+            return d;
+        }
+        auto u32 = [&](const size_t offset) {
+            uint32_t value = 0;
+            std::memcpy(&value, buf.data() + offset, sizeof(value));
+            return value;
+        };
+        if (u32(4) != 124 || u32(76) != 32)
+        {
+            warn("dumpimg: '%s' has an unsupported DDS header", path.c_str());
+            return d;
+        }
+        const uint32_t height = u32(12);
+        const uint32_t width = u32(16);
+        const uint32_t mipLevels = std::max(1u, u32(28));
+        const uint32_t format = u32(84);
+        const uint32_t caps2 = u32(112);
+        const uint32_t elements = (caps2 & 0x200u) ? 6u : 1u;
+        if (!width || !height || width > 8192 || height > 8192 || mipLevels > 14 ||
+            (format != fourCcDxt1 && format != fourCcDxt3 && format != fourCcDxt5) ||
+            (elements == 6 && (caps2 & 0xFC00u) != 0xFC00u))
+        {
+            warn("dumpimg: '%s' needs a complete DXT1, DXT3, or DXT5 DDS", path.c_str());
+            return d;
+        }
+        const uint64_t blockBytes = format == fourCcDxt1 ? 8 : 16;
+        uint64_t expected = 0;
+        for (uint32_t level = 0; level < mipLevels; ++level)
+        {
+            const uint64_t levelWidth = std::max(1u, width >> level);
+            const uint64_t levelHeight = std::max(1u, height >> level);
+            expected += ((levelWidth + 3) / 4) * ((levelHeight + 3) / 4) * blockBytes;
+        }
+        expected *= elements;
+        if (expected > std::numeric_limits<int32_t>::max() ||
+            expected != buf.size() - headerSize)
+        {
+            warn("dumpimg: '%s' has an inconsistent DDS mip payload", path.c_str());
+            return d;
+        }
+
+        d.mapType = elements == 6 ? IW5_MAPTYPE_CUBE : IW5_MAPTYPE_2D;
+        d.width = static_cast<int32_t>(width);
+        d.height = static_cast<int32_t>(height);
+        d.depth = 1;
+        d.mipLevels = static_cast<uint8_t>(mipLevels);
+        d.dimensions[0] = d.width;
+        d.dimensions[1] = d.height;
+        d.dimensions[2] = d.depth;
+        d.format = static_cast<int32_t>(format);
+        d.dataSize = static_cast<int32_t>(expected);
+        d.name = stem;
+        d.pixels.assign(buf.begin() + headerSize, buf.end());
+        d.loaded = true;
+        info("dumpimg: read DDS '%s' %ux%u elements=%u mips=%u resident px=%zu",
+             d.name.c_str(), width, height, elements, mipLevels, d.pixels.size());
         return d;
     }
 

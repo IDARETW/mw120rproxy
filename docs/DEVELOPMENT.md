@@ -1,5 +1,8 @@
 # Development
 
+> **POC status:** source builds and offline package checks are useful development gates, but they
+> do not establish in-game compatibility. Test every converted map on a separate Replay install.
+
 The repository builds two C++ targets:
 
 - `mw120rproxy`: the Replay 1.20 XInput proxy.
