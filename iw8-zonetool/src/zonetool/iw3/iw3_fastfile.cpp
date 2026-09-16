@@ -560,19 +560,371 @@ std::filesystem::path FindSingleExport(const std::filesystem::path &root,
 Json ReadJson(const std::filesystem::path &path);
 std::string TrimSourceAssetField(std::string_view value);
 
+bool IsValidFxAssetName(const std::string &name)
+{
+    if (name.empty() || name.size() > 256 || name.find('\0') != std::string::npos)
+        return false;
+    const std::filesystem::path path(name);
+    if (path.has_root_path())
+        return false;
+    for (const auto &part : path)
+        if (part == "." || part == "..")
+            return false;
+    return true;
+}
+
+template <typename T>
+T FxInteger(const Json &value, const char *field)
+{
+    if (!value.is_number_integer() && !value.is_number_unsigned())
+        throw std::runtime_error(std::string("IW3 FX field is not an integer: ") + field);
+    const auto number = value.get<std::int64_t>();
+    if (number < static_cast<std::int64_t>(std::numeric_limits<T>::lowest()) ||
+        number > static_cast<std::int64_t>(std::numeric_limits<T>::max()))
+        throw std::runtime_error(std::string("IW3 FX integer is out of range: ") + field);
+    return static_cast<T>(number);
+}
+
+float FxFloat(const Json &value, const char *field)
+{
+    if (!value.is_number())
+        throw std::runtime_error(std::string("IW3 FX field is not numeric: ") + field);
+    const double number = value.get<double>();
+    if (!std::isfinite(number) || number < -std::numeric_limits<float>::max() ||
+        number > std::numeric_limits<float>::max())
+        throw std::runtime_error(std::string("IW3 FX float is invalid: ") + field);
+    return static_cast<float>(number);
+}
+
+template <std::size_t Count>
+std::array<float, Count> FxFloatArray(const Json &value, const char *field)
+{
+    if (!value.is_array() || value.size() != Count)
+        throw std::runtime_error(std::string("IW3 FX array has the wrong size: ") + field);
+    std::array<float, Count> result{};
+    for (std::size_t index = 0; index < Count; ++index)
+        result[index] = FxFloat(value.at(index), field);
+    return result;
+}
+
+PreparedFxFloatRange FxFloatRange(const Json &value, const char *field)
+{
+    if (!value.is_object())
+        throw std::runtime_error(std::string("IW3 FX range is not an object: ") + field);
+    return {FxFloat(value.at("base"), field), FxFloat(value.at("amplitude"), field)};
+}
+
+PreparedFxIntRange FxIntRange(const Json &value, const char *field)
+{
+    if (!value.is_object())
+        throw std::runtime_error(std::string("IW3 FX range is not an object: ") + field);
+    return {FxInteger<std::int32_t>(value.at("base"), field),
+            FxInteger<std::int32_t>(value.at("amplitude"), field)};
+}
+
+PreparedFxVec3Range FxVec3Range(const Json &value, const char *field)
+{
+    if (!value.is_object())
+        throw std::runtime_error(std::string("IW3 FX vector range is not an object: ") + field);
+    return {FxFloatArray<3>(value.at("base"), field),
+            FxFloatArray<3>(value.at("amplitude"), field)};
+}
+
+template <std::size_t Count>
+std::array<PreparedFxFloatRange, Count> FxFloatRangeArray(const Json &value,
+                                                         const char *field)
+{
+    if (!value.is_array() || value.size() != Count)
+        throw std::runtime_error(std::string("IW3 FX range array has the wrong size: ") + field);
+    std::array<PreparedFxFloatRange, Count> result{};
+    for (std::size_t index = 0; index < Count; ++index)
+        result[index] = FxFloatRange(value.at(index), field);
+    return result;
+}
+
+PreparedFxVisualState FxVisualState(const Json &value)
+{
+    if (!value.is_object())
+        throw std::runtime_error("IW3 FX visual state is not an object");
+    const auto &colors = value.at("color");
+    if (!colors.is_array() || colors.size() != 4)
+        throw std::runtime_error("IW3 FX visual-state color has the wrong size");
+    PreparedFxVisualState result;
+    for (std::size_t index = 0; index < result.color.size(); ++index)
+        result.color[index] = FxInteger<std::uint8_t>(colors.at(index), "visual color");
+    result.rotationDelta = FxFloat(value.at("rotation_delta"), "visual rotation delta");
+    result.rotationTotal = FxFloat(value.at("rotation_total"), "visual rotation total");
+    result.size = FxFloatArray<2>(value.at("size"), "visual size");
+    result.scale = FxFloat(value.at("scale"), "visual scale");
+    return result;
+}
+
+PreparedFxVelocityFrame FxVelocityFrame(const Json &value)
+{
+    if (!value.is_object())
+        throw std::runtime_error("IW3 FX velocity frame is not an object");
+    return {FxVec3Range(value.at("velocity"), "velocity"),
+            FxVec3Range(value.at("total_delta"), "velocity total delta")};
+}
+
+std::string FxEffectReference(const Json &value, const char *field,
+                              std::set<std::pair<std::string, std::string>> &references)
+{
+    if (value.is_null())
+        return {};
+    if (!value.is_string())
+        throw std::runtime_error(std::string("IW3 FX reference is not a string: ") + field);
+    const auto name = value.get<std::string>();
+    if (!IsValidFxAssetName(name))
+        throw std::runtime_error(std::string("IW3 FX reference has an invalid name: ") + field);
+    references.emplace("fx", name);
+    return name;
+}
+
+PreparedFxVisual FxVisual(const Json &value, const std::uint8_t elementType,
+                          std::set<std::pair<std::string, std::string>> &references)
+{
+    PreparedFxVisual result;
+    if (elementType == 9)
+    {
+        if (!value.is_array() || value.size() != 2)
+            throw std::runtime_error("IW3 FX decal visual must contain two material slots");
+        result.kind = PreparedFxVisualKind::decal;
+        for (const auto &slot : value)
+        {
+            if (slot.is_null())
+            {
+                result.names.emplace_back();
+                continue;
+            }
+            if (!slot.is_string() || !IsValidFxAssetName(slot.get<std::string>()))
+                throw std::runtime_error("IW3 FX decal has an invalid material name");
+            result.names.push_back(slot.get<std::string>());
+            references.emplace("material", result.names.back());
+        }
+        return result;
+    }
+
+    if (!value.is_object())
+        throw std::runtime_error("IW3 FX visual is not an object");
+    const auto type = value.at("type").get<std::string>();
+    std::string expected;
+    std::string dependencyType;
+    if (elementType <= 4)
+    {
+        result.kind = PreparedFxVisualKind::material;
+        expected = dependencyType = "material";
+    }
+    else if (elementType == 5)
+    {
+        result.kind = PreparedFxVisualKind::xmodel;
+        expected = dependencyType = "xmodel";
+    }
+    else if (elementType == 8)
+    {
+        result.kind = PreparedFxVisualKind::sound;
+        expected = dependencyType = "sound";
+    }
+    else if (elementType == 10)
+    {
+        result.kind = PreparedFxVisualKind::effect;
+        expected = dependencyType = "fx";
+    }
+    else
+    {
+        result.kind = PreparedFxVisualKind::none;
+        expected = "none";
+    }
+    if (type != expected)
+        throw std::runtime_error("IW3 FX visual type does not match its element type");
+    if (result.kind == PreparedFxVisualKind::none)
+        return result;
+
+    const auto &nameValue = value.at("name");
+    if (nameValue.is_null() && result.kind == PreparedFxVisualKind::sound)
+    {
+        result.names.emplace_back();
+        return result;
+    }
+    if (!nameValue.is_string() || !IsValidFxAssetName(nameValue.get<std::string>()))
+        throw std::runtime_error("IW3 FX visual has an invalid asset name");
+    result.names.push_back(nameValue.get<std::string>());
+    references.emplace(dependencyType, result.names.front());
+    return result;
+}
+
+std::optional<PreparedFxTrail> FxTrail(const Json &value)
+{
+    if (value.is_null())
+        return std::nullopt;
+    if (!value.is_object())
+        throw std::runtime_error("IW3 FX trail is not an object");
+    PreparedFxTrail result;
+    result.scrollTimeMsec = FxInteger<std::int32_t>(value.at("scroll_time_msec"), "trail scroll");
+    result.repeatDist = FxInteger<std::int32_t>(value.at("repeat_dist"), "trail repeat distance");
+    result.splitDist = FxInteger<std::int32_t>(value.at("split_dist"), "trail split distance");
+    const auto &vertices = value.at("vertices");
+    const auto &indices = value.at("indices");
+    if (!vertices.is_array() || vertices.size() > 16384 || !indices.is_array() ||
+        indices.size() > 16384)
+        throw std::runtime_error("IW3 FX trail arrays exceed the source limits");
+    result.vertices.reserve(vertices.size());
+    for (const auto &vertex : vertices)
+    {
+        if (!vertex.is_object())
+            throw std::runtime_error("IW3 FX trail vertex is not an object");
+        result.vertices.push_back({FxFloatArray<2>(vertex.at("position"), "trail position"),
+                                   FxFloatArray<2>(vertex.at("normal"), "trail normal"),
+                                   FxFloat(vertex.at("tex_coord"), "trail texcoord")});
+    }
+    result.indices.reserve(indices.size());
+    for (const auto &index : indices)
+    {
+        const auto parsed = FxInteger<std::uint16_t>(index, "trail index");
+        if (parsed >= result.vertices.size())
+            throw std::runtime_error("IW3 FX trail index is outside the vertex array");
+        result.indices.push_back(parsed);
+    }
+    return result;
+}
+
+PreparedFxElement FxElement(const Json &value,
+                            std::set<std::pair<std::string, std::string>> &references)
+{
+    if (!value.is_object())
+        throw std::runtime_error("IW3 FX element is not an object");
+    PreparedFxElement result;
+    result.flags = FxInteger<std::int32_t>(value.at("flags"), "element flags");
+    const auto &spawn = value.at("spawn");
+    if (!spawn.is_object())
+        throw std::runtime_error("IW3 FX spawn definition is not an object");
+    const auto &raw = spawn.at("raw");
+    if (!raw.is_array() || raw.size() != 2)
+        throw std::runtime_error("IW3 FX raw spawn union has the wrong size");
+    result.spawn.raw = {FxInteger<std::int32_t>(raw.at(0), "spawn raw interval"),
+                        FxInteger<std::int32_t>(raw.at(1), "spawn raw count")};
+    const auto &looping = spawn.at("looping");
+    const auto &oneShot = spawn.at("one_shot");
+    if (!looping.is_object() || !oneShot.is_object())
+        throw std::runtime_error("IW3 FX spawn views are not objects");
+    result.spawn.loopingIntervalMsec =
+        FxInteger<std::int32_t>(looping.at("interval_msec"), "spawn interval");
+    result.spawn.loopingCount = FxInteger<std::int32_t>(looping.at("count"), "spawn count");
+    result.spawn.oneShotCount = FxIntRange(oneShot.at("count"), "one-shot count");
+    if (result.spawn.raw[0] != result.spawn.loopingIntervalMsec ||
+        result.spawn.raw[1] != result.spawn.loopingCount ||
+        result.spawn.raw[0] != result.spawn.oneShotCount.base ||
+        result.spawn.raw[1] != result.spawn.oneShotCount.amplitude)
+        throw std::runtime_error("IW3 FX spawn union views disagree");
+
+    result.spawnRange = FxFloatRange(value.at("spawn_range"), "spawn range");
+    result.fadeInRange = FxFloatRange(value.at("fade_in_range"), "fade-in range");
+    result.fadeOutRange = FxFloatRange(value.at("fade_out_range"), "fade-out range");
+    result.spawnFrustumCullRadius =
+        FxFloat(value.at("spawn_frustum_cull_radius"), "spawn frustum radius");
+    result.spawnDelayMsec = FxIntRange(value.at("spawn_delay_msec"), "spawn delay");
+    result.lifeSpanMsec = FxIntRange(value.at("life_span_msec"), "life span");
+    result.spawnOrigin = FxFloatRangeArray<3>(value.at("spawn_origin"), "spawn origin");
+    result.spawnOffsetRadius =
+        FxFloatRange(value.at("spawn_offset_radius"), "spawn offset radius");
+    result.spawnOffsetHeight =
+        FxFloatRange(value.at("spawn_offset_height"), "spawn offset height");
+    result.spawnAngles = FxFloatRangeArray<3>(value.at("spawn_angles"), "spawn angles");
+    result.angularVelocity =
+        FxFloatRangeArray<3>(value.at("angular_velocity"), "angular velocity");
+    result.initialRotation = FxFloatRange(value.at("initial_rotation"), "initial rotation");
+    result.gravity = FxFloatRange(value.at("gravity"), "gravity");
+    result.reflectionFactor = FxFloatRange(value.at("reflection_factor"), "reflection factor");
+
+    const auto &atlas = value.at("atlas");
+    if (!atlas.is_object())
+        throw std::runtime_error("IW3 FX atlas is not an object");
+    result.atlas = {FxInteger<std::uint8_t>(atlas.at("behavior"), "atlas behavior"),
+                    FxInteger<std::uint8_t>(atlas.at("index"), "atlas index"),
+                    FxInteger<std::uint8_t>(atlas.at("fps"), "atlas fps"),
+                    FxInteger<std::uint8_t>(atlas.at("loop_count"), "atlas loop count"),
+                    FxInteger<std::uint8_t>(atlas.at("col_index_bits"), "atlas column bits"),
+                    FxInteger<std::uint8_t>(atlas.at("row_index_bits"), "atlas row bits"),
+                    FxInteger<std::int16_t>(atlas.at("entry_count"), "atlas entry count")};
+
+    result.type = FxInteger<std::uint8_t>(value.at("elem_type"), "element type");
+    static constexpr std::array<const char *, 11> typeNames{
+        "sprite_billboard", "sprite_oriented", "tail",       "trail", "cloud", "model",
+        "omni_light",       "spot_light",      "sound",      "decal", "runner"};
+    if (result.type >= typeNames.size() || value.at("elem_type_name").get<std::string>() !=
+                                               typeNames[result.type])
+        throw std::runtime_error("IW3 FX element type and name disagree");
+    result.visualCount = FxInteger<std::uint8_t>(value.at("visual_count"), "visual count");
+    result.velocityIntervalCount =
+        FxInteger<std::uint8_t>(value.at("vel_interval_count"), "velocity interval count");
+    result.visualStateIntervalCount =
+        FxInteger<std::uint8_t>(value.at("vis_state_interval_count"),
+                                "visual-state interval count");
+
+    const auto &velocitySamples = value.at("velocity_samples");
+    if (!velocitySamples.is_array() || velocitySamples.size() > 256 ||
+        (!velocitySamples.empty() &&
+         velocitySamples.size() != static_cast<std::size_t>(result.velocityIntervalCount) + 1) ||
+        (velocitySamples.empty() && result.velocityIntervalCount != 0))
+        throw std::runtime_error("IW3 FX velocity sample count is inconsistent");
+    result.velocitySamples.reserve(velocitySamples.size());
+    for (const auto &sample : velocitySamples)
+    {
+        if (!sample.is_object())
+            throw std::runtime_error("IW3 FX velocity sample is not an object");
+        result.velocitySamples.push_back(
+            {FxVelocityFrame(sample.at("local")), FxVelocityFrame(sample.at("world"))});
+    }
+
+    const auto &visualSamples = value.at("visual_samples");
+    if (!visualSamples.is_array() || visualSamples.size() > 256 ||
+        (!visualSamples.empty() &&
+         visualSamples.size() != static_cast<std::size_t>(result.visualStateIntervalCount) + 1) ||
+        (visualSamples.empty() && result.visualStateIntervalCount != 0))
+        throw std::runtime_error("IW3 FX visual sample count is inconsistent");
+    result.visualSamples.reserve(visualSamples.size());
+    for (const auto &sample : visualSamples)
+    {
+        if (!sample.is_object())
+            throw std::runtime_error("IW3 FX visual sample is not an object");
+        result.visualSamples.push_back(
+            {FxVisualState(sample.at("base")), FxVisualState(sample.at("amplitude"))});
+    }
+
+    if (!value.at("visuals_present").is_boolean())
+        throw std::runtime_error("IW3 FX visual presence flag is not boolean");
+    result.visualsPresent = value.at("visuals_present").get<bool>();
+    const auto &visuals = value.at("visuals");
+    if (!visuals.is_array() || visuals.size() != result.visualCount ||
+        result.visualsPresent != !visuals.empty())
+        throw std::runtime_error("IW3 FX visual array does not match its source count");
+    result.visuals.reserve(visuals.size());
+    for (const auto &visual : visuals)
+        result.visuals.push_back(FxVisual(visual, result.type, references));
+
+    result.collisionMins = FxFloatArray<3>(value.at("collision_mins"), "collision minimum");
+    result.collisionMaxs = FxFloatArray<3>(value.at("collision_maxs"), "collision maximum");
+    for (std::size_t axis = 0; axis < 3; ++axis)
+        if (result.collisionMins[axis] > result.collisionMaxs[axis])
+            throw std::runtime_error("IW3 FX collision bounds are reversed");
+    result.effectOnImpact =
+        FxEffectReference(value.at("effect_on_impact"), "effect on impact", references);
+    result.effectOnDeath =
+        FxEffectReference(value.at("effect_on_death"), "effect on death", references);
+    result.effectEmitted =
+        FxEffectReference(value.at("effect_emitted"), "emitted effect", references);
+    result.emitDist = FxFloatRange(value.at("emit_dist"), "emit distance");
+    result.emitDistVariance =
+        FxFloatRange(value.at("emit_dist_variance"), "emit distance variance");
+    result.trail = FxTrail(value.at("trail"));
+    result.sortOrder = FxInteger<std::uint8_t>(value.at("sort_order"), "sort order");
+    result.lightingFrac = FxInteger<std::uint8_t>(value.at("lighting_frac"), "lighting fraction");
+    result.useItemClip = FxInteger<std::uint8_t>(value.at("use_item_clip"), "item clip flag");
+    return result;
+}
+
 std::vector<PreparedFx> ReadPreparedFx(const std::filesystem::path &root)
 {
-    const auto validName = [](const std::string &name) {
-        if (name.empty() || name.size() > 256 || name.find('\0') != std::string::npos)
-            return false;
-        const std::filesystem::path path(name);
-        if (path.has_root_path())
-            return false;
-        for (const auto &part : path)
-            if (part == "." || part == "..")
-                return false;
-        return true;
-    };
     const auto fxRoot = root / "fx";
     std::vector<PreparedFx> effects;
     std::error_code error;
@@ -587,36 +939,78 @@ std::vector<PreparedFx> ReadPreparedFx(const std::filesystem::path &root)
         if (!iterator->is_regular_file(error) || !iterator->path().filename().string().ends_with(".iw3.json"))
             continue;
 
-        const Json graph = ReadJson(iterator->path());
-        if (graph.value("schema", 0) != 1 || graph.value("asset_type", std::string{}) != "iw3_fx")
-            throw std::runtime_error("invalid IW3 FX source export: " + iterator->path().string());
-        const auto name = graph.value("name", std::string{});
-        if (!validName(name))
-            throw std::runtime_error("IW3 FX source export has an invalid name: " +
-                                     iterator->path().string());
-
-        PreparedFx prepared;
-        prepared.name = name;
-        prepared.sourcePath = iterator->path();
-        const auto dependencies = graph.value("dependencies", Json::array());
-        if (!dependencies.is_array() || dependencies.size() > 4096)
-            throw std::runtime_error("IW3 FX source export has an invalid dependency list: " +
-                                     iterator->path().string());
-        for (const auto &dependency : dependencies)
+        try
         {
-            if (!dependency.is_object())
-                throw std::runtime_error("IW3 FX source export has an invalid dependency: " +
-                                         iterator->path().string());
-            const auto dependencyName = dependency.value("name", std::string{});
-            const auto dependencyType = dependency.value("type", std::string{});
-            if (!validName(dependencyName) || dependencyType.empty() ||
-                (dependencyType != "fx" && dependencyType != "material" &&
-                 dependencyType != "image" && dependencyType != "xmodel"))
-                throw std::runtime_error("IW3 FX source export has an unsupported dependency: " +
-                                         iterator->path().string());
-            prepared.dependencies.push_back({dependencyName, dependencyType});
+            const Json graph = ReadJson(iterator->path());
+            if (graph.value("schema", 0) != 1 ||
+                graph.value("asset_type", std::string{}) != "iw3_fx")
+                throw std::runtime_error("schema or asset type is unsupported");
+            const auto &layout = graph.at("layout");
+            if (!layout.is_object() || layout.value("FxEffectDef", 0) != 32 ||
+                layout.value("FxElemDef", 0) != 252 || layout.value("FxTrailDef", 0) != 28)
+                throw std::runtime_error("source ABI layout does not match IW3 multiplayer");
+
+            PreparedFx prepared;
+            prepared.name = graph.at("name").get<std::string>();
+            if (!IsValidFxAssetName(prepared.name))
+                throw std::runtime_error("effect name is invalid");
+            prepared.sourcePath = iterator->path();
+            prepared.flags = FxInteger<std::int32_t>(graph.at("flags"), "effect flags");
+            prepared.totalSize = FxInteger<std::int32_t>(graph.at("total_size"), "effect size");
+            prepared.msecLoopingLife =
+                FxInteger<std::int32_t>(graph.at("msec_looping_life"), "effect looping life");
+
+            const auto &counts = graph.at("element_counts");
+            if (!counts.is_object())
+                throw std::runtime_error("element counts are not an object");
+            prepared.elementCounts = {
+                FxInteger<std::uint32_t>(counts.at("looping"), "looping element count"),
+                FxInteger<std::uint32_t>(counts.at("one_shot"), "one-shot element count"),
+                FxInteger<std::uint32_t>(counts.at("emission"), "emission element count")};
+            const auto total = FxInteger<std::uint32_t>(counts.at("total"), "total element count");
+            const std::uint64_t computedTotal = static_cast<std::uint64_t>(prepared.elementCounts[0]) +
+                                                prepared.elementCounts[1] +
+                                                prepared.elementCounts[2];
+            const auto &elements = graph.at("elements");
+            if (computedTotal != total || total > 4096 || !elements.is_array() ||
+                elements.size() != total)
+                throw std::runtime_error("element counts do not match the element array");
+
+            std::set<std::pair<std::string, std::string>> declaredDependencies;
+            const auto &dependencies = graph.at("dependencies");
+            if (!dependencies.is_array() || dependencies.size() > 4096)
+                throw std::runtime_error("dependency list is invalid");
+            for (const auto &dependency : dependencies)
+            {
+                if (!dependency.is_object())
+                    throw std::runtime_error("dependency is not an object");
+                const auto dependencyName = dependency.at("name").get<std::string>();
+                const auto dependencyType = dependency.at("type").get<std::string>();
+                if (!IsValidFxAssetName(dependencyName) ||
+                    (dependencyType != "fx" && dependencyType != "material" &&
+                     dependencyType != "image" && dependencyType != "xmodel" &&
+                     dependencyType != "sound"))
+                    throw std::runtime_error("dependency type or name is unsupported");
+                if (!declaredDependencies.emplace(dependencyType, dependencyName).second)
+                    throw std::runtime_error("dependency is duplicated");
+                prepared.dependencies.push_back({dependencyName, dependencyType});
+            }
+
+            std::set<std::pair<std::string, std::string>> elementReferences;
+            prepared.elements.reserve(elements.size());
+            for (const auto &element : elements)
+                prepared.elements.push_back(FxElement(element, elementReferences));
+            for (const auto &reference : elementReferences)
+                if (!declaredDependencies.contains(reference))
+                    throw std::runtime_error("element reference is absent from the dependency list: " +
+                                             reference.first + " " + reference.second);
+            effects.push_back(std::move(prepared));
         }
-        effects.push_back(std::move(prepared));
+        catch (const std::exception &error)
+        {
+            throw std::runtime_error("invalid IW3 FX source export '" + iterator->path().string() +
+                                     "': " + error.what());
+        }
     }
     if (error)
         throw std::runtime_error("cannot enumerate IW3 FX source exports");
@@ -3186,8 +3580,22 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     std::erase_if(result.fxEffects, [&reachableFx](const PreparedFx &effect) {
         return !reachableFx.contains(effect.name);
     });
-    zt::info("iw3: collected %zu map-reachable source FX graph(s) from %zu declaration(s)",
-             result.fxEffects.size(), declaredFx.size());
+    std::array<std::size_t, 11> fxElementTypes{};
+    std::size_t fxElementCount = 0;
+    for (const auto &effect : result.fxEffects)
+        for (const auto &element : effect.elements)
+        {
+            ++fxElementTypes.at(element.type);
+            ++fxElementCount;
+        }
+    zt::info("iw3: validated %zu element(s) in %zu map-reachable source FX graph(s) from "
+             "%zu declaration(s)",
+             fxElementCount, result.fxEffects.size(), declaredFx.size());
+    zt::info("iw3: FX elements sprite=%zu oriented=%zu tail=%zu trail=%zu cloud=%zu model=%zu "
+             "omni=%zu spot=%zu sound=%zu decal=%zu runner=%zu",
+             fxElementTypes[0], fxElementTypes[1], fxElementTypes[2], fxElementTypes[3],
+             fxElementTypes[4], fxElementTypes[5], fxElementTypes[6], fxElementTypes[7],
+             fxElementTypes[8], fxElementTypes[9], fxElementTypes[10]);
     std::set<std::string> fxMaterialNames;
     for (const auto &effect : result.fxEffects)
         for (const auto &dependency : effect.dependencies)
@@ -3297,8 +3705,9 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
             }
     const auto mapDirectory = result.root / "maps" / "mp";
     std::filesystem::create_directories(mapDirectory);
+    const std::vector<std::string> fxMaterials(fxMaterialNames.begin(), fxMaterialNames.end());
     const RenderPlan renderPlan =
-        PrepareRenderAssets(exportRoot, world, materialNames, modelMaterialNames,
+        PrepareRenderAssets(exportRoot, world, materialNames, modelMaterialNames, fxMaterials,
                             options.searchPaths, mapDirectory, options.map);
     BuildPreparedStaticModels(sourceStaticModels, renderPlan, options.map, "smodel", result.xmodels,
                               result.staticModels, true);

@@ -21,6 +21,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <regex>
 #include <set>
 #include <span>
@@ -63,6 +64,24 @@ struct SourceMaterial
     SurfaceKind kind{SurfaceKind::opaque};
     unsigned flags{};
     unsigned cullMode{1}; // Replay: none=0, back=1, front=2.
+};
+
+enum class FxMaterialFamily
+{
+    unsupported,
+    alphaFeather,
+    additiveFeather,
+};
+
+struct SourceFxMaterial
+{
+    std::string name;
+    std::string techniqueSet;
+    std::string image;
+    std::array<float, 4> tint{1, 1, 1, 1};
+    unsigned rows{1};
+    unsigned columns{1};
+    FxMaterialFamily family{FxMaterialFamily::unsupported};
 };
 
 std::vector<std::uint8_t> ReadBytes(const std::filesystem::path &path)
@@ -957,9 +976,9 @@ std::array<float, Size> Literal(const Json &value, const std::array<float, Size>
     return result;
 }
 
-SourceMaterial ReadMaterial(const std::filesystem::path &root,
-                            const std::vector<std::filesystem::path> &sourcePaths,
-                            const std::string &name)
+std::filesystem::path FindMaterial(const std::filesystem::path &root,
+                                   const std::vector<std::filesystem::path> &sourcePaths,
+                                   const std::string &name)
 {
     if (name.empty() || name.find("..") != std::string::npos ||
         name.find(':') != std::string::npos || name.find('\\') != std::string::npos ||
@@ -971,25 +990,132 @@ SourceMaterial ReadMaterial(const std::filesystem::path &root,
         relativePaths.push_back(std::filesystem::path("materials") / (name.substr(3) + ".json"));
 
     std::error_code error;
-    std::filesystem::path path;
     std::vector<std::filesystem::path> roots{root};
     roots.insert(roots.end(), sourcePaths.begin(), sourcePaths.end());
     for (const auto &source : roots)
-    {
         for (const auto &relative : relativePaths)
         {
             const auto candidate = source / relative;
             if (std::filesystem::is_regular_file(candidate, error))
-            {
-                path = candidate;
-                break;
-            }
+                return candidate;
             error.clear();
         }
-        if (!path.empty())
-            break;
+    return {};
+}
+
+std::array<float, 4> FxLiteral(const Json &value, const char *field)
+{
+    if (!value.is_array() || value.size() != 4)
+        throw std::runtime_error(std::string("invalid IW3 FX material ") + field);
+    std::array<float, 4> result{};
+    for (std::size_t index = 0; index < result.size(); ++index)
+    {
+        const double component = value.at(index).get<double>();
+        if (!std::isfinite(component) || std::abs(component) > 1000000.0)
+            throw std::runtime_error(std::string("invalid IW3 FX material ") + field);
+        result[index] = static_cast<float>(component);
     }
-    if (!std::filesystem::is_regular_file(path, error))
+    return result;
+}
+
+SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
+                                const std::vector<std::filesystem::path> &sourcePaths,
+                                const std::string &name)
+{
+    const auto path = FindMaterial(root, sourcePaths, name);
+    if (path.empty())
+        throw std::runtime_error("missing IW3 FX material '" + name +
+                                 "'; add the matching IW3 main and raw directories with "
+                                 "--search-path");
+    const Json source = ReadJson(path);
+    SourceFxMaterial material;
+    material.name = name;
+    material.techniqueSet = source.at("techniqueSet").get<std::string>();
+    if (material.techniqueSet == "effect_zfeather")
+        material.family = FxMaterialFamily::alphaFeather;
+    else if (material.techniqueSet == "effect_zfeather_add")
+        material.family = FxMaterialFamily::additiveFeather;
+    else
+        return material;
+
+    if (source.at("_game") != "iw3" || source.at("_type") != "material" ||
+        source.at("_version") != 1 || source.at("cameraRegion") != "emissive" ||
+        source.at("stateFlags") != 16)
+        throw std::runtime_error("unsupported IW3 FX material metadata: " + name);
+    const auto &atlas = source.at("textureAtlas");
+    material.rows = atlas.at("rows").get<unsigned>();
+    material.columns = atlas.at("columns").get<unsigned>();
+    if (!material.rows || !material.columns || material.rows > 255 || material.columns > 255 ||
+        !std::has_single_bit(material.columns) ||
+        static_cast<std::uint64_t>(material.rows) * material.columns > 65535)
+        throw std::runtime_error("unsupported IW3 FX material atlas: " + name);
+
+    const auto &textures = source.at("textures");
+    if (!textures.is_array() || textures.size() != 1)
+        throw std::runtime_error("IW3 FX material must have one color texture: " + name);
+    const auto &texture = textures.front();
+    if (texture.at("name") != "colorMap" || texture.at("semantic") != "colorMap")
+        throw std::runtime_error("IW3 FX material has an unsupported texture semantic: " + name);
+    material.image = texture.at("image").get<std::string>();
+    if (material.image.empty() || material.image.find("..") != std::string::npos ||
+        material.image.find(':') != std::string::npos ||
+        material.image.find('\\') != std::string::npos || material.image.front() == '/')
+        throw std::runtime_error("IW3 FX material has an invalid image name: " + name);
+    const auto &sampler = texture.at("samplerState");
+    const std::string filter = sampler.at("filter").get<std::string>();
+    const std::string mipMap = sampler.at("mipMap").get<std::string>();
+    if (sampler.at("clampU").get<bool>() || sampler.at("clampV").get<bool>() ||
+        sampler.at("clampW").get<bool>() ||
+        (filter != "linear" && filter != "aniso2x") ||
+        (mipMap != "disabled" && mipMap != "nearest" && mipMap != "linear"))
+        throw std::runtime_error("IW3 FX material sampler has no pinned Replay mapping: " + name);
+
+    bool foundColorState = false;
+    for (const auto &state : source.at("stateBits"))
+    {
+        if (!state.value("colorWriteRgb", false) || state.value("polymodeLine", false))
+            continue;
+        if (foundColorState)
+            throw std::runtime_error("IW3 FX material has multiple color states: " + name);
+        foundColorState = true;
+        const bool shared = state.at("blendOpRgb") == "add" &&
+                            state.at("depthTest") == "less_equal" &&
+                            !state.at("depthWrite").get<bool>();
+        const bool alpha = state.at("alphaTest") == "gt0" &&
+                           state.at("srcBlendRgb") == "srcalpha" &&
+                           state.at("dstBlendRgb") == "invsrcalpha";
+        const bool additive = state.at("alphaTest") == "disabled" &&
+                              state.at("srcBlendRgb") == "one" &&
+                              state.at("dstBlendRgb") == "one";
+        if (!shared || (material.family == FxMaterialFamily::alphaFeather ? !alpha : !additive))
+            throw std::runtime_error("IW3 FX material blend state has no pinned Replay mapping: " +
+                                     name);
+    }
+    if (!foundColorState)
+        throw std::runtime_error("IW3 FX material has no color state: " + name);
+
+    bool foundFeather = false, foundTint = false;
+    for (const auto &constant : source.at("constants"))
+    {
+        const std::string key = constant.at("name").get<std::string>();
+        if (key == "featherParms")
+            FxLiteral(constant.at("literal"), "feather parameters"), foundFeather = true;
+        else if (key == "colorTint")
+            material.tint = FxLiteral(constant.at("literal"), "color tint"), foundTint = true;
+        else
+            throw std::runtime_error("IW3 FX material has an unsupported constant: " + name);
+    }
+    if (!foundFeather || !foundTint)
+        throw std::runtime_error("IW3 FX material is missing feather constants: " + name);
+    return material;
+}
+
+SourceMaterial ReadMaterial(const std::filesystem::path &root,
+                            const std::vector<std::filesystem::path> &sourcePaths,
+                            const std::string &name)
+{
+    const auto path = FindMaterial(root, sourcePaths, name);
+    if (path.empty())
     {
         // CoD4's stock placeholders are not exported as material JSON. They
         // are untextured lit surfaces, so the conversion can represent them
@@ -1569,11 +1695,88 @@ std::string ImageName(const std::string &map, const unsigned channel,
     const auto digest = Sha256(pixels);
     return "mw120r/" + map + "_" + std::to_string(channel) + "_" + Hex(std::span(digest).first(8));
 }
+
+std::string FxMaterialName(const std::string &map, const SourceFxMaterial &source)
+{
+    const std::string key = map + '\x1f' + source.name + '\x1f' + source.techniqueSet;
+    const auto bytes = std::span(reinterpret_cast<const std::uint8_t *>(key.data()), key.size());
+    const auto digest = Sha256(bytes);
+    return "elcq/mw120r_fx_" + Hex(std::span(digest).first(8));
+}
+
+Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
+{
+    constexpr std::string_view alphaTechset =
+        "elcq/unlit_6_effect_bad_ta0_802_1004_0_1_0_0_0_100000023_0_0_2_0_0";
+    constexpr std::string_view additiveTechset =
+        "elcq/unlit_6_effect_bad_tca_802_10a4_0_1_0_0_0_100060023_0_0_3_0_0";
+    const bool additive = source.family == FxMaterialFamily::additiveFeather;
+    if (source.family != FxMaterialFamily::alphaFeather && !additive)
+        throw std::runtime_error("IW3 FX material family is not ready for Replay emission");
+
+    std::vector<std::uint8_t> info(32);
+    Put<std::uint32_t>(info, 0, 1u);
+    Put<std::uint32_t>(info, 0xC, 0x40200Cu);
+    info[0x10] = 4;
+    info[0x11] = 35;
+    info[0x12] = 16;
+    info[0x14] = 1;
+    info[0x15] = additive ? 4 : 3;
+    info[0x16] = 2;
+    info[0x1A] = static_cast<std::uint8_t>(source.rows);
+    info[0x1B] = static_cast<std::uint8_t>(source.columns);
+
+    std::vector<std::uint8_t> constants;
+    const auto appendConstant = [&](const std::uint32_t index, const auto &value) {
+        const std::size_t offset = constants.size();
+        constants.resize(offset + 20);
+        Put(constants, offset, index);
+        std::memcpy(constants.data() + offset + 4, value.data(), 16);
+    };
+    if (additive)
+    {
+        // Native Replay one-image additive atlas contract. Index 9 is the
+        // fixed effect-color setup used by the shipped tca/10a4 family.
+        appendConstant(9u,
+                       std::array<std::uint32_t, 4>{0xFFFFFFFFu, 0x00FF17E7u,
+                                                    0x4C2B5CAFu, 0u});
+    }
+    appendConstant(36u, source.tint);
+    const std::array<float, 4> atlas{static_cast<float>(source.columns),
+                                     static_cast<float>(source.rows),
+                                     1.0f / static_cast<float>(source.columns),
+                                     1.0f / static_cast<float>(source.rows)};
+    appendConstant(94u, atlas);
+    const std::array<std::uint32_t, 4> atlasBits{
+        source.rows * source.columns, source.columns - 1,
+        static_cast<std::uint32_t>(std::countr_zero(source.columns)), 0u};
+    appendConstant(95u, atlasBits);
+
+    std::vector<std::uint8_t> vertexConstants(160);
+    std::memcpy(vertexConstants.data() + 128, atlas.data(), 16);
+    std::memcpy(vertexConstants.data() + 144, atlasBits.data(), 16);
+    std::vector<std::uint8_t> bufferIndices(195, 0xFF);
+    bufferIndices[29] = 0;
+    bufferIndices[30] = 1;
+
+    return {{"schema", 1},
+            {"source", source.name},
+            {"info", Hex(info)},
+            {"techset", additive ? additiveTechset : alphaTechset},
+            {"textures", Json::array({{{"header", "1200000000000000"},
+                                        {"image", ""}}})},
+            {"constants", Hex(constants)},
+            {"bufferIndices", Hex(bufferIndices)},
+            {"buffers", Json::array({Json::array({Hex(vertexConstants), "", "", ""}),
+                                      Json::array({"", "", "", ""})})},
+            {"imageDefinitions", Json::array()}};
+}
 } // namespace
 
 RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Json &world,
                                const std::vector<std::string> &surfaceMaterials,
                                const std::vector<std::string> &modelMaterials,
+                               const std::vector<std::string> &fxMaterials,
                                const std::vector<std::filesystem::path> &sourcePaths,
                                const std::filesystem::path &mapDirectory, const std::string &map)
 {
@@ -1973,9 +2176,10 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
 
     std::set<std::string> neededModelMaterials(modelMaterials.begin(), modelMaterials.end());
     std::map<std::pair<unsigned, unsigned>, std::pair<std::string, std::string>> modelTechsetFiles;
-    std::set<std::string> writtenModelImages;
+    std::set<std::string> writtenResidentImages;
     const auto residentImage = [&](Json &definition, const unsigned channel, Image source,
-                                   const std::array<float, 4> &tint) {
+                                   const std::array<float, 4> &tint,
+                                   const std::string_view domain) {
         if (channel == 0)
             source = Resize(source, source.width, source.height, true, tint);
         unsigned levels = 1, width = source.width, height = source.height;
@@ -1989,9 +2193,11 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         auto pixels = MipChain(std::move(source), levels, channel == 0);
         const auto digest = Sha256(pixels);
         const std::string id = Hex(std::span(digest).first(8));
-        const std::string filename = map + "_model_" + std::to_string(channel) + "_" + id + ".rgba";
-        const std::string name = "mw120r/" + map + "_model_" + std::to_string(channel) + "_" + id;
-        if (writtenModelImages.insert(filename).second)
+        const std::string filename = map + "_" + std::string(domain) + "_" +
+                                     std::to_string(channel) + "_" + id + ".rgba";
+        const std::string name = "mw120r/" + map + "_" + std::string(domain) + "_" +
+                                 std::to_string(channel) + "_" + id;
+        if (writtenResidentImages.insert(filename).second)
             WriteBytes(mapDirectory / filename, pixels);
         definition["textures"][channel]["image"] = name;
         definition["imageDefinitions"].push_back({{"name", name},
@@ -2050,20 +2256,38 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         direct["techset"] = techsetEntry->second.first;
         direct["techsetDefinition"] = techsetEntry->second.second;
         direct["imageDefinitions"] = Json::array();
-        residentImage(direct, 0, image(source.color).front(), source.tint);
+        residentImage(direct, 0, image(source.color).front(), source.tint, "model");
         residentImage(direct, 1,
                       source.normal.empty()
                           ? Image{1, 1, std::vector<std::uint8_t>{128, 128, 128, 128}}
                           : image(source.normal).front(),
-                      {1, 1, 1, 1});
+                      {1, 1, 1, 1}, "model");
         residentImage(direct, 2,
                       source.response.empty() ? Image{1, 1, std::vector<std::uint8_t>{0, 0, 0, 0}}
                                               : image(source.response).front(),
-                      {1, 1, 1, 1});
+                      {1, 1, 1, 1}, "model");
         WriteJson(mapDirectory / materialFile, direct);
         plan.assetMaterials.push_back(
             {{"schema", 1}, {"material", materialName}, {"materialDefinition", materialFile}});
         plan.materials.at(source.name).modelMaterial = materialName;
+    }
+
+    for (const std::string &name : fxMaterials)
+    {
+        const SourceFxMaterial source = ReadFxMaterial(exportRoot, sourcePaths, name);
+        if (source.family == FxMaterialFamily::unsupported)
+            continue;
+        const auto &sourceImage = image(source.image);
+        if (sourceImage.size() != 1)
+            throw std::runtime_error("IW3 FX material color map is a cubemap: " + name);
+        const std::string materialName = FxMaterialName(map, source);
+        const std::string id = materialName.substr(materialName.rfind('_') + 1);
+        const std::string materialFile = stem + ".fx." + id + ".material.json";
+        Json direct = BuildFxMaterialDefinition(source);
+        residentImage(direct, 0, sourceImage.front(), {1, 1, 1, 1}, "fx");
+        WriteJson(mapDirectory / materialFile, direct);
+        plan.assetMaterials.push_back(
+            {{"schema", 1}, {"material", materialName}, {"materialDefinition", materialFile}});
     }
     return plan;
 }

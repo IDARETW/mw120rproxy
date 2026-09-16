@@ -173,7 +173,10 @@ recognized. It also converts surface information into native footstep and collis
 and angles, including DM, Domination, Sabotage, Search and Destroy, CTF, and TDM markers.
 
 Arbitrary IW3 gameplay scripts, scripted doors/movers, destructible systems, and arbitrary FX
-graphs are not translated by this path yet. The Unlinker now collects map-local and shared FX
-source graphs and their typed dependencies for the native VFX writer under development; the
-current output still uses the fixed Replay impact table. Successful structural validation checks
-the generated package; it is not a gameplay or visual acceptance test for every converted feature.
+graphs are not translated by this path yet. The Unlinker collects map-local and shared FX source
+graphs and their typed dependencies. `build-iw3` validates that typed graph data against the IW3
+multiplayer ABI and embeds supported single-image `effect_zfeather` and `effect_zfeather_add`
+materials as native Replay effect-quad materials and images. Unsupported material families and
+partially translated graphs are not emitted. The current output still uses the fixed Replay impact
+table. Successful structural validation checks the generated package; it is not a gameplay or visual
+acceptance test for every converted feature.

@@ -65,6 +65,7 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot,
                                const nlohmann::json &world,
                                const std::vector<std::string> &surfaceMaterials,
                                const std::vector<std::string> &modelMaterials,
+                               const std::vector<std::string> &fxMaterials,
                                const std::vector<std::filesystem::path> &sourcePaths,
                                const std::filesystem::path &mapDirectory,
                                const std::string &map);

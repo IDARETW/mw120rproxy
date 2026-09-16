@@ -45,6 +45,14 @@ std::vector<uint8_t> unhex(const std::string &s)
 
 namespace
 {
+bool nativeEffectTechset(const std::string_view name)
+{
+    return name ==
+               "elcq/unlit_6_effect_bad_ta0_802_1004_0_1_0_0_0_100000023_0_0_2_0_0" ||
+           name ==
+               "elcq/unlit_6_effect_bad_tca_802_10a4_0_1_0_0_0_100060023_0_0_3_0_0";
+}
+
 std::optional<uint8_t> generatedTextureSlot(const char *name)
 {
     if (!std::strcmp(name, "sourceAtlas"))
@@ -290,6 +298,8 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
         m.constants = unhex(d.at("constants"));
         m.bufferIndices = unhex(d.at("bufferIndices"));
         m.techset = d.at("techset");
+        const bool nativeEffectAlias = ownedEffect && nativeEffectTechset(m.techset) &&
+                                       !d.contains("techsetDefinition");
         if (d.contains("techsetDefinition"))
         {
             const auto tf = d.at("techsetDefinition").get<std::string>();
@@ -408,10 +418,23 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
                 }
             }
         }
+        if (ownedEffect && nativeEffectAlias)
+        {
+            uint32_t materialType{};
+            if (m.materialInfo.size() != 32)
+                throw std::runtime_error("Replay effect material metadata is incomplete");
+            std::memcpy(&materialType, m.materialInfo.data() + 0xC, sizeof(materialType));
+            if (materialType != 0x40200Cu || m.materialInfo[0x14] != 1 ||
+                (m.materialInfo[0x15] != 3 && m.materialInfo[0x15] != 4) ||
+                m.materialInfo[0x16] != 2 || !m.materialInfo[0x1A] ||
+                !m.materialInfo[0x1B])
+                throw std::runtime_error("Replay effect material alias has invalid metadata");
+        }
         if (m.materialInfo.size() != 32 || m.bufferIndices.size() != 195 ||
             (!m.techset.starts_with("w/lit_3_") && m.techset != "tw/mw120r_graybox_v1" &&
              !(owned && m.techset.starts_with("tw/mw120r_mp_") && !m.techniques.empty()) &&
-             !(ownedEffect && m.techset.starts_with("tw/mw120r_fx_") && !m.techniques.empty())) ||
+             !(ownedEffect && m.techset.starts_with("tw/mw120r_fx_") && !m.techniques.empty()) &&
+             !nativeEffectAlias) ||
             m.techset.size() > 200)
             throw std::runtime_error("Invalid Replay material metadata");
         if (d.contains("imageDefinitions"))
@@ -456,6 +479,17 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
             m.buffers.size() != m.materialInfo[0x16] || m.materialInfo[0x17] ||
             m.materialInfo[0x18] || m.materialInfo[0x19])
             throw std::runtime_error("Material metadata counts do not match arrays");
+        if (nativeEffectAlias &&
+            (m.images.size() != 1 || m.textureHeaders.size() != 8 ||
+             m.textureHeaders[0] != 18 ||
+             std::any_of(m.textureHeaders.begin() + 1, m.textureHeaders.end(),
+                         [](const uint8_t value) { return value != 0; }) ||
+             m.buffers.size() != 2 || m.buffers.front()[0].size() != 160 ||
+             !m.buffers.front()[1].empty() || !m.buffers.front()[2].empty() ||
+             !m.buffers.front()[3].empty() || !m.buffers.back()[0].empty() ||
+             !m.buffers.back()[1].empty() || !m.buffers.back()[2].empty() ||
+             !m.buffers.back()[3].empty()))
+            throw std::runtime_error("Replay effect material alias has invalid bindings");
     }
     return m;
 }
