@@ -185,8 +185,11 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
 }
 } // namespace
 
-Image LoadImageDefinition(const std::string &path, const nlohmann::json &source, const bool cubemap)
+Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
+                          const uint32_t expectedMapType)
 {
+    const bool cubemap = expectedMapType == 0x8000u;
+    const bool array = expectedMapType == 0x20000u;
     Image image;
     image.name = source.at("name");
     image.format = source.value("format", 7u);
@@ -198,24 +201,32 @@ Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
     image.mipCount = source.value("mipCount", 1u);
     const auto width = source.at("width").get<unsigned>();
     const auto height = source.at("height").get<unsigned>();
-    const auto pixels = source.at("rgba8").get<std::string>();
+    const bool bc6h = image.format == 42;
+    const char *pixelField = bc6h ? "bc6h" : "rgba8";
+    const auto pixels = source.at(pixelField).get<std::string>();
     const uint32_t mapType = image.flags & 0x38000u;
     if (!image.name.starts_with("mw120r/") || image.name.size() > 128 || !width || !height ||
         width > 4096 || height > 4096 || !depth || !numElements || depth > 4096 ||
         numElements > 2048 || semantic > UINT8_MAX || category > UINT8_MAX || !image.mipCount ||
-        image.mipCount > 13 || image.format < 6 || image.format > 7 ||
-        mapType != (cubemap ? 0x8000u : 0u) || std::filesystem::path(pixels).filename() != pixels ||
+        image.mipCount > 13 || (image.format != 6 && image.format != 7 && !bc6h) ||
+        mapType != expectedMapType || std::filesystem::path(pixels).filename() != pixels ||
         pixels.find("..") != std::string::npos)
         throw std::runtime_error("Invalid resident Replay image definition");
     if (cubemap && (width != height || depth != 1 || numElements != 1))
         throw std::runtime_error("Replay reflection image must be one square cubemap");
+    if (array && (width != height || depth != 1 || numElements < 1))
+        throw std::runtime_error("Replay reflection array must contain square 2D images");
+    if (!cubemap && !array && numElements != 1)
+        throw std::runtime_error("Replay 2D image has an array element count");
 
     size_t length = 0;
     unsigned mipWidth = width, mipHeight = height;
-    const size_t slices = cubemap ? 6u : image.numElements;
+    const size_t slices = cubemap ? 6u : numElements;
     for (unsigned level = 0; level < image.mipCount; ++level)
     {
-        const size_t subresource = size_t(mipWidth) * mipHeight * 4;
+        const size_t subresource =
+            bc6h ? size_t((mipWidth + 3) / 4) * ((mipHeight + 3) / 4) * 16
+                 : size_t(mipWidth) * mipHeight * 4;
         if (subresource > (SIZE_MAX - 15) ||
             ((subresource + 15) & ~size_t{15}) > (SIZE_MAX - length) / slices)
             throw std::runtime_error("Resident Replay image allocation exceeds address space");
@@ -229,7 +240,8 @@ Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
     std::error_code error;
     if (length > UINT32_MAX || !std::filesystem::is_regular_file(pixelPath, error) ||
         std::filesystem::file_size(pixelPath) != length)
-        throw std::runtime_error("RGBA8 image length does not match dimensions");
+        throw std::runtime_error(std::string(bc6h ? "BC6H" : "RGBA8") +
+                                 " image length does not match dimensions: " + image.name);
     image.width = static_cast<uint16_t>(width);
     image.height = static_cast<uint16_t>(height);
     image.depth = static_cast<uint16_t>(depth);
@@ -239,7 +251,8 @@ Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
     image.pixels.resize(length);
     std::ifstream input(pixelPath, std::ios::binary);
     if (!input.read(reinterpret_cast<char *>(image.pixels.data()), length))
-        throw std::runtime_error("Cannot read RGBA8 image pixels");
+        throw std::runtime_error(std::string("Cannot read ") + (bc6h ? "BC6H" : "RGBA8") +
+                                 " image pixels");
     return image;
 }
 
@@ -404,7 +417,7 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
         if (d.contains("imageDefinitions"))
             for (const auto &im : d.at("imageDefinitions"))
             {
-                Image image = LoadImageDefinition(path, im, false);
+                Image image = LoadImageDefinition(path, im, 0);
                 if (std::any_of(m.imageDefinitions.begin(), m.imageDefinitions.end(),
                                 [&](const Image &x) { return x.name == image.name; }))
                     throw std::runtime_error("Duplicate Replay image definition");
@@ -754,7 +767,7 @@ Mesh Load(const std::string &path)
         const auto origin = vector(source.at("origin"), 3);
         std::copy(origin.begin(), origin.end(), probe.origin.begin());
         probe.volume = LoadBounds(source.at("volume"));
-        probe.image = LoadImageDefinition(path, source.at("image"), true);
+        probe.image = LoadImageDefinition(path, source.at("image"), 0x8000u);
         if (!reflectionImages.insert(probe.image.name).second)
             throw std::runtime_error("Duplicate Replay reflection-probe image");
         const auto &sh = source.at("sh");
@@ -773,6 +786,10 @@ Mesh Load(const std::string &path)
         }
         m.reflectionProbes.push_back(std::move(probe));
     }
+    m.reflectionProbeArrayImage =
+        LoadImageDefinition(path, j.at("reflectionProbeArrayImage"), 0x20000u);
+    if (m.reflectionProbeArrayImage.numElements != m.reflectionProbes.size())
+        throw std::runtime_error("Replay reflection array does not match probe count");
     for (const auto &source : planes)
     {
         const auto normal = vector(source.at("normal"), 3);
@@ -1402,6 +1419,101 @@ void EmitStaticModels(ZoneWriter &writer, const StaticModels &models)
         writer.writeT<uint32_t>(0);
 }
 
+void StampReflectionProbes(std::vector<uint8_t> &world, const Mesh &mesh,
+                           const ZoneWriter &writer)
+{
+    constexpr size_t drawOffset = 0x648;
+    constexpr size_t dataSize = 0xD0;
+    if (world.size() < drawOffset + dataSize || mesh.reflectionProbes.empty() ||
+        mesh.reflectionProbes.size() > UINT16_MAX)
+        throw std::runtime_error("Invalid Replay reflection-probe world");
+    auto *data = world.data() + drawOffset;
+    put(data, 0x00, static_cast<uint32_t>(mesh.reflectionProbes.size()));
+    put(data, 0x18, PTR_FOLLOWS); // GfxReflectionProbe[]
+    put(data, 0x28,
+        writer.assetAlias(ASSET_TYPE_IMAGE, mesh.reflectionProbeArrayImage.name));
+    put(data, 0x58, static_cast<uint32_t>(mesh.reflectionProbes.size() + 1));
+    put(data, 0x60, PTR_FOLLOWS); // GfxReflectionProbeInstance[]
+    put(data, 0x68, PTR_FOLLOWS); // four GfxSH9Color vectors per probe
+}
+
+void EmitReflectionProbes(ZoneWriter &writer, const Mesh &mesh)
+{
+    if (mesh.reflectionProbes.empty())
+        throw std::runtime_error("Replay reflection-probe table is empty");
+
+    writer.align(7);
+    for (size_t index = 0; index < mesh.reflectionProbes.size(); ++index)
+    {
+        const auto &source = mesh.reflectionProbes[index];
+        uint8_t probe[48]{};
+        put(probe, 0x00, PTR_FOLLOWS); // livePath
+        std::memcpy(probe + 0x08, source.origin.data(), sizeof(source.origin));
+        put(probe, 0x20, PTR_FOLLOWS); // probeInstances[]
+        put(probe, 0x28, static_cast<uint16_t>(index ? 1 : 2));
+        put(probe, 0x2A, std::numeric_limits<uint16_t>::max());
+        writer.write(probe, sizeof(probe));
+    }
+    for (size_t index = 0; index < mesh.reflectionProbes.size(); ++index)
+    {
+        writer.writeStr("_e" + std::to_string(index) + "_p15");
+        writer.align(1);
+        if (!index)
+        {
+            writer.writeT<uint16_t>(0);
+            writer.writeT<uint16_t>(1);
+        }
+        else
+        {
+            writer.writeT(static_cast<uint16_t>(index + 1));
+        }
+    }
+
+    const auto emitInstance = [&](const ReflectionProbe &source, const uint16_t imageIndex,
+                                  const bool fallback) {
+        uint8_t instance[144]{};
+        put(instance, 0x00, PTR_FOLLOWS); // livePath
+        std::memcpy(instance + 0x08, source.origin.data(), sizeof(source.origin));
+        put(instance, 0x14, imageIndex);
+        instance[0x17] = fallback ? 1 : 0;
+        put(instance, 0x24, 1.0f); // identity quaternion W
+        const auto center = fallback ? source.origin : source.volume.midpoint;
+        const std::array<float, 3> halfSize =
+            fallback ? std::array<float, 3>{131072.0f, 131072.0f, 131072.0f}
+                     : source.volume.halfSize;
+        std::memcpy(instance + 0x28, center.data(), sizeof(center));
+        constexpr std::array<float, 3> xAxis{1.0f, 0.0f, 0.0f};
+        constexpr std::array<float, 3> yAxis{0.0f, 1.0f, 0.0f};
+        constexpr std::array<float, 3> zAxis{0.0f, 0.0f, 1.0f};
+        std::memcpy(instance + 0x34, xAxis.data(), sizeof(xAxis));
+        std::memcpy(instance + 0x40, yAxis.data(), sizeof(yAxis));
+        std::memcpy(instance + 0x4C, zAxis.data(), sizeof(zAxis));
+        std::memcpy(instance + 0x58, halfSize.data(), sizeof(halfSize));
+        put(instance, 0x64,
+            fallback ? std::numeric_limits<float>::lowest()
+                     : (imageIndex ? 10.0f : -1.0f));
+        const std::array<float, 3> feather =
+            fallback ? std::array<float, 3>{8.0f, 8.0f, 8.0f}
+                     : imageIndex ? std::array<float, 3>{1.0f, 1.0f, 4.0f}
+                                  : std::array<float, 3>{4.0f, 4.0f, 4.0f};
+        std::memcpy(instance + 0x68, feather.data(), sizeof(feather));
+        writer.write(instance, sizeof(instance));
+    };
+
+    writer.align(7);
+    emitInstance(mesh.reflectionProbes.front(), 0, true);
+    for (size_t index = 0; index < mesh.reflectionProbes.size(); ++index)
+        emitInstance(mesh.reflectionProbes[index], static_cast<uint16_t>(index), false);
+    writer.writeStr("");
+    for (size_t index = 0; index < mesh.reflectionProbes.size(); ++index)
+        writer.writeStr("b" + std::to_string(index) + "_e" + std::to_string(index) + "_p15");
+
+    writer.align(63);
+    for (const auto &probe : mesh.reflectionProbes)
+        for (const auto &channel : probe.sh)
+            writer.write(channel.data(), channel.size() * sizeof(channel.front()));
+}
+
 void EmitMaterial(ZoneWriter &w, const Material &m, bool definition)
 {
     w.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
@@ -1477,7 +1589,9 @@ void RegisterImageDefinition(ZoneWriter &w, const Image &image,
 {
     if (!registered.emplace(19, image.name).second)
         return;
-    w.add(static_cast<IW8_XAssetType>(19), image.name, [image](ZoneWriter &out) {
+    const Image *definition = &image;
+    w.add(static_cast<IW8_XAssetType>(19), image.name, [definition](ZoneWriter &out) {
+        const auto &image = *definition;
         // Exact Replay Load_GfxImage E2FD20: 232 bytes, name in virtual,
         // resident pixel payload in TEMP_PRELOAD (E2FFF0), aligned to 16.
         // Image_LoadPixels 19387D0 creates the native GPU texture; no handles
@@ -1641,15 +1755,19 @@ void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
         out.popStream();
     });
 }
-void RegisterMaterial(ZoneWriter &w, const std::string &path)
+void RegisterMaterial(ZoneWriter &w, const Mesh &mesh)
 {
-    const auto m = Load(path);
     std::set<std::pair<unsigned, std::string>> registered;
-    RegisterMaterialDefinition(w, m, registered);
-    for (const auto &material : m.additionalMaterials)
+    RegisterMaterialDefinition(w, mesh, registered);
+    for (const auto &material : mesh.additionalMaterials)
         RegisterMaterialDefinition(w, material, registered);
-    for (const auto &material : m.assetMaterials)
+    for (const auto &material : mesh.assetMaterials)
         RegisterMaterialDefinition(w, material, registered);
+}
+void RegisterReflectionProbeImage(ZoneWriter &w, const Mesh &mesh)
+{
+    std::set<std::pair<unsigned, std::string>> registered;
+    RegisterImageDefinition(w, mesh.reflectionProbeArrayImage, registered);
 }
 void EmitSurfaces(ZoneWriter &w, const Mesh &m)
 {

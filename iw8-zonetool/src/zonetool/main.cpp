@@ -948,7 +948,8 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
         iw8::ZoneWriter writer;
         const auto dynamicCounts = prepared ? iw8::CountDynamicEntities(prepared->dynamicEntities)
                                             : iw8::DynamicEntityCounts{};
-        replayrender::RegisterMaterial(writer, renderPath);
+        replayrender::RegisterMaterial(writer, renderMesh);
+        replayrender::RegisterReflectionProbeImage(writer, renderMesh);
         iw8::impact::Register(writer, map);
         if (glassInitCount)
             iw8::writePhysicsAsset(writer, glassPhysics);
@@ -967,8 +968,8 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
         if (!renderMesh.glassPanes.empty())
         {
             writer.add(ASSET_TYPE_FX_MAP, assetName,
-                       [assetName, renderPath](iw8::ZoneWriter &output) {
-                           iw8maps::emitFxMapBody(output, assetName.c_str(), renderPath);
+                       [assetName, &renderMesh](iw8::ZoneWriter &output) {
+                           iw8maps::emitFxMapBody(output, assetName.c_str(), renderMesh);
                        });
         }
         const auto primaryLightCount = static_cast<uint32_t>(lighting.primaryLights.size());
@@ -976,16 +977,16 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
         const replayrender::StaticModels staticModels =
             prepared ? prepared->staticModels : replayrender::StaticModels{};
         writer.add(ASSET_TYPE_GFX_MAP, assetName,
-                   [assetName, renderPath, primaryLightCount, sunPrimaryLightIndex,
-                    staticModels, dynamicCounts](iw8::ZoneWriter &output) {
+                   [assetName, renderPath, &renderMesh, primaryLightCount,
+                    sunPrimaryLightIndex, staticModels, dynamicCounts](iw8::ZoneWriter &output) {
                        iw8maps::emitGfxMapBody(output, assetName.c_str(), renderPath,
-                                               primaryLightCount, sunPrimaryLightIndex,
+                                               renderMesh, primaryLightCount, sunPrimaryLightIndex,
                                                staticModels, dynamicCounts.models,
                                                dynamicCounts.brushes);
                    });
         writer.add(ASSET_TYPE_GLASS_MAP, assetName,
-                   [assetName, renderPath](iw8::ZoneWriter &output) {
-                       iw8maps::emitGlassMapBody(output, assetName.c_str(), renderPath);
+                   [assetName, &renderMesh](iw8::ZoneWriter &output) {
+                       iw8maps::emitGlassMapBody(output, assetName.c_str(), renderMesh);
                    });
         const dumpsrc::DumpSource source(dumpDirectory, map);
         addMapAssets(writer, dumpDirectory, source, map);

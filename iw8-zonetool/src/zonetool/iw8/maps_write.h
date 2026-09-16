@@ -32,11 +32,14 @@ static constexpr size_t kGW_cellVisBits = replaymap::CellVisBits;
 static constexpr size_t kSizeGfxCell = 0x28, kGC_portalCount = 0x18, kGC_portals = 0x20;
 
 // Emit native client glass geometry and matching server-side damage state.
-void emitFxMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath);
-void emitGlassMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath);
+void emitFxMapBody(iw8::ZoneWriter &zw, const char *assetName,
+                   const replayrender::Mesh &mesh);
+void emitGlassMapBody(iw8::ZoneWriter &zw, const char *assetName,
+                      const replayrender::Mesh &mesh);
 
 // Emit the converted GfxWorld.
 void emitGfxMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath,
+                    const replayrender::Mesh &mesh,
                     uint32_t primaryLightCount, uint32_t sunPrimaryLightIndex,
                     const replayrender::StaticModels &staticModels,
                     uint32_t dynamicModelCount, uint32_t dynamicBrushCount);

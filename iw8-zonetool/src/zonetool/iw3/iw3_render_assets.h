@@ -58,6 +58,7 @@ struct RenderPlan
     std::vector<nlohmann::json> additionalMaterials;
     std::vector<nlohmann::json> assetMaterials;
     std::vector<ReflectionProbePlan> reflectionProbes;
+    nlohmann::json reflectionProbeArrayImage;
 };
 
 RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot,

@@ -435,7 +435,8 @@ void RunUnlinker(const std::filesystem::path &unlinker, const ImportOptions &opt
         throw std::runtime_error("cannot start OpenAssetTools Unlinker");
     }
 
-    const DWORD wait = WaitForSingleObject(process.hProcess, 10u * 60u * 1000u);
+    const DWORD timeoutMinutes = supplementalAssets ? 30u : 10u;
+    const DWORD wait = WaitForSingleObject(process.hProcess, timeoutMinutes * 60u * 1000u);
     DWORD exitCode = 1;
     if (wait == WAIT_TIMEOUT)
     {
@@ -2033,6 +2034,10 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
         }
         if (!matchedHulls)
             throw std::runtime_error("IW3 glass pane is missing its source collision brush");
+        // FxGlassDef stores fracture extrusion in eighths of an IW world unit.
+        // Keep the full brush depth for collision, but convert its half-depth for
+        // the native shard geometry (an 8-unit IW3 pane becomes 0.5 here).
+        const float fractureHalfThickness = std::max(0.125f, size[thin] / 16.0f);
         panes.push_back({{"material", paneMaterial},
                          {"texVecs", texVecs},
                          {"texCoordOrigin", texOrigin},
@@ -2040,7 +2045,7 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
                          {"quaternion", QuaternionFromBasis(worldU, worldV, worldNormal)},
                          {"halfWidth", halfWidth},
                          {"halfHeight", halfHeight},
-                         {"halfThickness", std::max(0.125f, size[thin] * 0.5f)}});
+                         {"halfThickness", fractureHalfThickness}});
     }
     return panes;
 }
@@ -2055,6 +2060,7 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                    {"materialDefinition", plan.materialDefinition},
                    {"additionalMaterials", plan.additionalMaterials},
                    {"assetMaterials", plan.assetMaterials},
+                   {"reflectionProbeArrayImage", plan.reflectionProbeArrayImage},
                    {"atlasVertexLayout", 3},
                    {"brushModels", Json::array()},
                    {"glassPanes", Json::array()},

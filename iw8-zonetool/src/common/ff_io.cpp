@@ -28,10 +28,7 @@ bool iw8_write(const std::string &outputPath, const std::vector<uint8_t> &zoneBo
     }
 
     constexpr unsigned char storedFrame[] = {0x01, 0x49, 0x57, 0x43};
-    std::vector<uint8_t> resident;
-    resident.reserve(sizeof(storedFrame) + zoneBody.size());
-    resident.insert(resident.end(), std::begin(storedFrame), std::end(storedFrame));
-    resident.insert(resident.end(), zoneBody.begin(), zoneBody.end());
+    const size_t residentSize = sizeof(storedFrame) + zoneBody.size();
 
     IW8_DB_FFHeader header{};
     std::memcpy(header.magic, kMagicUnsec, sizeof(header.magic));
@@ -40,7 +37,7 @@ bool iw8_write(const std::string &outputPath, const std::vector<uint8_t> &zoneBo
     header.dashCompressBuild = 0;
     header.dashEncryptBuild = 0;
     header.transientFileType = params.transientFileType;
-    header.residentPartSize = static_cast<uint32_t>(resident.size());
+    header.residentPartSize = static_cast<uint32_t>(residentSize);
     header.alwaysLoadedPartSize = static_cast<uint32_t>(zoneBody.size());
     header.xfileHeader.size = zoneBody.size();
     for (int index = 0; index < kNumStreams; ++index)
@@ -65,10 +62,10 @@ bool iw8_write(const std::string &outputPath, const std::vector<uint8_t> &zoneBo
         std::filesystem::absolute(directory.empty() ? "." : directory).wstring();
     ULARGE_INTEGER available{};
     if (GetDiskFreeSpaceExW(targetDirectory.c_str(), &available, nullptr, nullptr) &&
-        available.QuadPart < resident.size() + headerSize)
+        available.QuadPart < residentSize + headerSize)
     {
         err("iw8: insufficient free space for %s (need %llu bytes, available %llu bytes)",
-            outputPath.c_str(), static_cast<unsigned long long>(resident.size() + headerSize),
+            outputPath.c_str(), static_cast<unsigned long long>(residentSize + headerSize),
             static_cast<unsigned long long>(available.QuadPart));
         return false;
     }
@@ -79,8 +76,10 @@ bool iw8_write(const std::string &outputPath, const std::vector<uint8_t> &zoneBo
         return false;
     }
 
-    const bool written = std::fwrite(&header, 1, headerSize, file) == headerSize &&
-                         std::fwrite(resident.data(), 1, resident.size(), file) == resident.size();
+    const bool written =
+        std::fwrite(&header, 1, headerSize, file) == headerSize &&
+        std::fwrite(storedFrame, 1, sizeof(storedFrame), file) == sizeof(storedFrame) &&
+        std::fwrite(zoneBody.data(), 1, zoneBody.size(), file) == zoneBody.size();
     const int writeError = written ? 0 : errno;
     const bool closed = std::fclose(file) == 0;
     const int closeError = closed ? 0 : errno;
@@ -105,7 +104,7 @@ bool iw8_write(const std::string &outputPath, const std::vector<uint8_t> &zoneBo
         return false;
     }
 
-    info("iw8: wrote %s (%zu bytes)", outputPath.c_str(), headerSize + resident.size());
+    info("iw8: wrote %s (%zu bytes)", outputPath.c_str(), headerSize + residentSize);
     return true;
 }
 

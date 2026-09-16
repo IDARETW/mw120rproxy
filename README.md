@@ -73,7 +73,8 @@ The map ID must be lower-case, begin with `mp_`, and fit the 15-character Replay
 `<map>_load.ff` and additional `--search-path` directories are used when available. The direct
 route carries over the source world geometry, resolved static-model placements and available LODs,
 native model physics, supported entities, collision, source sun data, vertex colors, and an
-available `compass_map_<map>` image.
+available `compass_map_<map>` image. Source cubemaps are projected into Replay's native
+256-by-256 octahedral reflection array and encoded as BC6H UF16 by the bundled native encoder.
 It uses a Replay stock material for the 3D world; IW3 technique sets are not serialized verbatim
 as IW8 technique sets. Scripts, bot navigation, objectives, and arbitrary scripted movers are not
 converted automatically.

@@ -152,6 +152,12 @@ generates Replay material/technique assets from the source color, normal, and re
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
 
+Each source cubemap is converted into one slice of Replay's native 256-by-256 octahedral
+reflection array. The compiler writes six mip levels in Replay's mip-major, slice-major order,
+encodes them as BC6H UF16 with the bundled DirectXTex CPU encoder, and aligns every resident
+subresource to 16 bytes. This data is embedded in `mp_<map>.ff`; conversion does not produce a
+loose DDS, image cache, or reflection sidecar.
+
 The same command serializes native glass and ladder data where those source features are
 recognized. It also converts surface information into native footstep and collision tags in
 `srv_<map>.ff`. These features do not require an additional export step, package directory,

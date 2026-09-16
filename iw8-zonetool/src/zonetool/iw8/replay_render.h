@@ -130,6 +130,7 @@ struct Mesh : Material
     std::vector<uint16_t> nodes;
     std::vector<Cell> cells;
     std::vector<ReflectionProbe> reflectionProbes;
+    Image reflectionProbeArrayImage;
     std::vector<GlassPane> glassPanes;
     std::vector<unsigned> surfaceMaterials;
     unsigned opaqueCount = 0;
@@ -145,7 +146,8 @@ struct Mesh : Material
     }
 };
 Mesh Load(const std::string &path);
-void RegisterMaterial(iw8::ZoneWriter &writer, const std::string &meshPath);
+void RegisterMaterial(iw8::ZoneWriter &writer, const Mesh &mesh);
+void RegisterReflectionProbeImage(iw8::ZoneWriter &writer, const Mesh &mesh);
 void StampWorld(std::vector<uint8_t> &world, const Mesh &mesh);
 void EmitSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh);
 void StampTransient(uint8_t *transient, const Mesh &mesh);
@@ -154,5 +156,8 @@ void EmitSortedSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh,
                         const StaticModels &staticModels);
 void StampStaticModels(std::vector<uint8_t> &world, const StaticModels &models);
 void EmitStaticModels(iw8::ZoneWriter &writer, const StaticModels &models);
+void StampReflectionProbes(std::vector<uint8_t> &world, const Mesh &mesh,
+                           const iw8::ZoneWriter &writer);
+void EmitReflectionProbes(iw8::ZoneWriter &writer, const Mesh &mesh);
 std::vector<uint8_t> BuildUmbraTome(const Mesh &mesh, const StaticModels &staticModels);
 } // namespace replayrender

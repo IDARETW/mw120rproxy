@@ -65,9 +65,12 @@ PowerShell uses the call operator '&'. Command Prompt uses double quotes and no 
 backticks or single-quoted path literals:
 
 ~~~text
-".\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe" build-iw3 "D:\CoD4\zone\english\mp_example.ff" mp_example -o "D:\Maps\mp_example_iw8" --replay "D:\Games\Replay\game_dx12_ship_replay.exe" --unlinker "D:\Tools\OpenAssetTools\build\bin\Release_x86\Release_x86\Unlinker.exe" --search-path "D:\CoD4\main"
+".\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe" build-iw3 "D:\CoD4\zone\english\mp_example.ff" mp_example -o "D:\Maps\mp_example_iw8" --replay "D:\Games\Replay\game_dx12_ship_replay.exe" --unlinker "D:\Tools\OpenAssetTools\build\bin\Release_x86\Unlinker.exe" --search-path "D:\CoD4\main"
 ~~~
 
-Replace the example paths. In particular, the duplicated 'Release_x86' segment in the previous
-line is not required; the normal OpenAssetTools output path is
-'D:\Tools\OpenAssetTools\build\bin\Release_x86\Unlinker.exe'.
+Replace the example paths with paths that exist on your computer.
+
+The converter embeds geometry, model LODs and material bindings, collision, entities, native
+light-grid data, and a BC6H UF16 octahedral reflection-probe array in the output zones. Successful
+conversion leaves exactly five fastfiles and `map.json` in the output directory. It does not leave
+intermediate JSON, binary payloads, DDS files, or package directories.

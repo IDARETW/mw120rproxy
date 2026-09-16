@@ -3,6 +3,7 @@
 #include "resources.h"
 
 #include "common/fs_util.h"
+#include "directxtex/BC.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -10,18 +11,22 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <regex>
 #include <set>
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 
@@ -688,6 +693,186 @@ std::array<std::array<float, 9>, 4> ProjectReflectionSh(const Cubemap &cubemap)
                 throw std::runtime_error("reflection-probe SH projection is non-finite");
             result[channel][coefficient] = static_cast<float>(value);
         }
+    return result;
+}
+
+std::array<float, 3> SampleCubemapLinear(const Cubemap &cubemap, const unsigned level,
+                                        const std::array<float, 3> &direction)
+{
+    if (cubemap.faces.size() != 6 || level >= cubemap.mipCount)
+        throw std::runtime_error("invalid reflection-probe cubemap level");
+    const Image &first = cubemap.faces.front().at(level);
+    if (!first.width || first.width != first.height)
+        throw std::runtime_error("reflection-probe cubemap level is not square");
+    for (const auto &face : cubemap.faces)
+        if (face.size() <= level || face[level].width != first.width ||
+            face[level].height != first.height)
+            throw std::runtime_error("reflection-probe cubemap level dimensions differ");
+
+    const float ax = std::abs(direction[0]);
+    const float ay = std::abs(direction[1]);
+    const float az = std::abs(direction[2]);
+    unsigned faceIndex = 0;
+    float u = 0.0f, v = 0.0f;
+    if (ax >= ay && ax >= az)
+    {
+        if (direction[0] >= 0.0f)
+            faceIndex = 0, u = -direction[2] / ax, v = -direction[1] / ax;
+        else
+            faceIndex = 1, u = direction[2] / ax, v = -direction[1] / ax;
+    }
+    else if (ay >= ax && ay >= az)
+    {
+        if (direction[1] >= 0.0f)
+            faceIndex = 2, u = direction[0] / ay, v = direction[2] / ay;
+        else
+            faceIndex = 3, u = direction[0] / ay, v = -direction[2] / ay;
+    }
+    else
+    {
+        if (direction[2] >= 0.0f)
+            faceIndex = 4, u = direction[0] / az, v = -direction[1] / az;
+        else
+            faceIndex = 5, u = -direction[0] / az, v = -direction[1] / az;
+    }
+
+    const Image &face = cubemap.faces[faceIndex][level];
+    const float sourceX = (u * 0.5f + 0.5f) * face.width - 0.5f;
+    const float sourceY = (v * 0.5f + 0.5f) * face.height - 0.5f;
+    const int x0 = std::clamp(static_cast<int>(std::floor(sourceX)), 0,
+                              static_cast<int>(face.width) - 1);
+    const int y0 = std::clamp(static_cast<int>(std::floor(sourceY)), 0,
+                              static_cast<int>(face.height) - 1);
+    const int x1 = std::min(x0 + 1, static_cast<int>(face.width) - 1);
+    const int y1 = std::min(y0 + 1, static_cast<int>(face.height) - 1);
+    const float fx = std::clamp(sourceX - std::floor(sourceX), 0.0f, 1.0f);
+    const float fy = std::clamp(sourceY - std::floor(sourceY), 0.0f, 1.0f);
+    std::array<float, 3> result{};
+    for (unsigned iy = 0; iy < 2; ++iy)
+        for (unsigned ix = 0; ix < 2; ++ix)
+        {
+            const float weight = (ix ? fx : 1.0f - fx) * (iy ? fy : 1.0f - fy);
+            const auto offset =
+                (static_cast<std::size_t>(iy ? y1 : y0) * face.width + (ix ? x1 : x0)) * 4;
+            for (unsigned channel = 0; channel < result.size(); ++channel)
+                result[channel] += Linear(face.rgba[offset + channel] / 255.0f) * weight;
+        }
+    return result;
+}
+
+std::vector<std::uint8_t> BuildReflectionProbeArray(const std::vector<Cubemap> &cubemaps,
+                                                    const unsigned width,
+                                                    const unsigned mipCount)
+{
+    if (cubemaps.empty() || width < 4 || (width & (width - 1)) || !mipCount)
+        throw std::runtime_error("reflection-probe array has no images");
+    const std::size_t taskCount = static_cast<std::size_t>(mipCount) * cubemaps.size();
+    std::vector<std::vector<std::uint8_t>> slices(taskCount);
+    std::atomic_size_t nextTask{};
+    std::exception_ptr failure;
+    std::mutex failureMutex;
+    const auto encode = [&]()
+    {
+        try
+        {
+            while (true)
+            {
+                const std::size_t task = nextTask.fetch_add(1);
+                if (task >= taskCount)
+                    return;
+                const unsigned level = static_cast<unsigned>(task / cubemaps.size());
+                const auto &cubemap = cubemaps[task % cubemaps.size()];
+                const unsigned targetWidth = std::max(1u, width >> level);
+                if (targetWidth < 4 || targetWidth % 4)
+                    throw std::runtime_error("reflection-probe array mip is not BC6H block aligned");
+                const unsigned sourceLevel =
+                    std::min(level ? level - 1 : 0, cubemap.mipCount - 1);
+                std::vector<float> image(static_cast<std::size_t>(targetWidth) * targetWidth * 4);
+                for (unsigned y = 0; y < targetWidth; ++y)
+                    for (unsigned x = 0; x < targetWidth; ++x)
+                    {
+                        const float ox =
+                            2.0f * (static_cast<float>(x) + 0.5f) / targetWidth - 1.0f;
+                        const float oy =
+                            2.0f * (static_cast<float>(y) + 0.5f) / targetWidth - 1.0f;
+                        std::array<float, 3> direction{
+                            ox, oy, 1.0f - std::abs(ox) - std::abs(oy)};
+                        if (direction[2] < 0.0f)
+                        {
+                            const auto sign = [](const float value) {
+                                return value < 0.0f ? -1.0f : 1.0f;
+                            };
+                            const float oldX = direction[0];
+                            direction[0] = (1.0f - std::abs(direction[1])) * sign(oldX);
+                            direction[1] = (1.0f - std::abs(oldX)) * sign(direction[1]);
+                        }
+                        const float length =
+                            std::sqrt(direction[0] * direction[0] +
+                                      direction[1] * direction[1] +
+                                      direction[2] * direction[2]);
+                        for (float &component : direction)
+                            component /= length;
+                        const auto sample =
+                            SampleCubemapLinear(cubemap, sourceLevel, direction);
+                        const std::size_t pixel =
+                            (static_cast<std::size_t>(y) * targetWidth + x) * 4;
+                        for (unsigned channel = 0; channel < sample.size(); ++channel)
+                            image[pixel + channel] = sample[channel];
+                        image[pixel + 3] = 1.0f;
+                    }
+                const std::size_t expected =
+                    static_cast<std::size_t>(targetWidth / 4) * (targetWidth / 4) * 16;
+                auto &compressed = slices[task];
+                compressed.resize(expected);
+                DirectX::XMVECTOR block[16];
+                for (unsigned blockY = 0; blockY < targetWidth / 4; ++blockY)
+                    for (unsigned blockX = 0; blockX < targetWidth / 4; ++blockX)
+                    {
+                        for (unsigned y = 0; y < 4; ++y)
+                            for (unsigned x = 0; x < 4; ++x)
+                            {
+                                const std::size_t pixel =
+                                    (static_cast<std::size_t>(blockY * 4 + y) * targetWidth +
+                                     blockX * 4 + x) *
+                                    4;
+                                block[y * 4 + x] =
+                                    DirectX::XMVectorSet(image[pixel], image[pixel + 1],
+                                                         image[pixel + 2], 1.0f);
+                            }
+                        const std::size_t target =
+                            (static_cast<std::size_t>(blockY) * (targetWidth / 4) + blockX) *
+                            16;
+                        DirectX::D3DXEncodeBC6HU(compressed.data() + target, block,
+                                                 DirectX::BC_FLAGS_NONE);
+                    }
+            }
+        }
+        catch (...)
+        {
+            std::lock_guard lock(failureMutex);
+            if (!failure)
+                failure = std::current_exception();
+            nextTask.store(taskCount);
+        }
+    };
+    const unsigned workerCount =
+        std::max(1u, std::min<unsigned>(static_cast<unsigned>(taskCount),
+                                       std::thread::hardware_concurrency()));
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    for (unsigned worker = 0; worker < workerCount; ++worker)
+        workers.emplace_back(encode);
+    for (auto &worker : workers)
+        worker.join();
+    if (failure)
+        std::rethrow_exception(failure);
+
+    std::vector<std::uint8_t> result;
+    for (const auto &slice : slices)
+    {
+        result.insert(result.end(), slice.begin(), slice.end());
+        result.resize((result.size() + 15) & ~std::size_t{15});
+    }
     return result;
 }
 
@@ -1426,6 +1611,8 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     if (!sourceProbes.is_array() || sourceProbes.empty() || sourceProbes.size() > 256)
         throw std::runtime_error("invalid IW3 reflection-probe table");
     plan.reflectionProbes.reserve(sourceProbes.size());
+    std::vector<Cubemap> probeCubemaps;
+    probeCubemaps.reserve(sourceProbes.size());
     for (std::size_t index = 0; index < sourceProbes.size(); ++index)
     {
         const auto &source = sourceProbes.at(index);
@@ -1469,7 +1656,31 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
                        {"category", 1},
                        {"mipCount", cubemap.mipCount}};
         plan.reflectionProbes.push_back(std::move(probe));
+        probeCubemaps.push_back(std::move(cubemap));
     }
+    constexpr unsigned arrayWidth = 256;
+    constexpr unsigned arrayMipCount = 6;
+    const auto arrayPixels =
+        BuildReflectionProbeArray(probeCubemaps, arrayWidth, arrayMipCount);
+    constexpr std::size_t bytesPerSlice = 87360;
+    if (arrayPixels.size() != probeCubemaps.size() * bytesPerSlice)
+        throw std::runtime_error("BC6H reflection-probe array has an invalid resident size");
+    const auto arrayDigest = Sha256(arrayPixels);
+    const std::string arrayFile = map + "_reflection_probe_array_octahedron.bc6h";
+    const std::string arrayName = "mw120r/" + map + "_reflection_probe_array_octahedron_" +
+                                  Hex(std::span(arrayDigest).first(8));
+    WriteBytes(mapDirectory / arrayFile, arrayPixels);
+    plan.reflectionProbeArrayImage = {{"name", arrayName},
+                                      {"width", arrayWidth},
+                                      {"height", arrayWidth},
+                                      {"bc6h", arrayFile},
+                                      {"format", 42},
+                                      {"flags", 0x10020001u},
+                                      {"depth", 1},
+                                      {"numElements", probeCubemaps.size()},
+                                      {"semantic", 1},
+                                      {"category", 1},
+                                      {"mipCount", arrayMipCount}};
     std::vector<std::array<unsigned, 2>> lightmapDimensions;
     for (const auto &pair : world.value("lightmaps", Json::array()))
     {

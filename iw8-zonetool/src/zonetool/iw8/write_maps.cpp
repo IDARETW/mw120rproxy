@@ -36,9 +36,8 @@ static inline void stampf(uint8_t *p, size_t off, float v)
     std::memcpy(p + off, &v, 4);
 }
 
-void emitFxMapBody(ZoneWriter &zw, const char *assetName, const std::string &meshPath)
+void emitFxMapBody(ZoneWriter &zw, const char *assetName, const replayrender::Mesh &mesh)
 {
-    const auto mesh = replayrender::Load(meshPath);
     const uint32_t pieceCount = static_cast<uint32_t>(mesh.glassPanes.size());
     if (!pieceCount)
         return;
@@ -193,9 +192,8 @@ void emitFxMapBody(ZoneWriter &zw, const char *assetName, const std::string &mes
     zw.popStream();
 }
 
-void emitGlassMapBody(ZoneWriter &zw, const char *assetName, const std::string &meshPath)
+void emitGlassMapBody(ZoneWriter &zw, const char *assetName, const replayrender::Mesh &mesh)
 {
-    const auto mesh = replayrender::Load(meshPath);
     const uint32_t pieceCount = static_cast<uint32_t>(mesh.glassPanes.size());
     std::vector<uint8_t> gl(kSizeGlass, 0);
     stamp64(gl.data(), kGL_name, PTR_FOLLOWS);
@@ -245,6 +243,7 @@ void emitGlassMapBody(ZoneWriter &zw, const char *assetName, const std::string &
 
 // Replay render world with converted BSP triangles, authored brush models, and a sun.
 void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &meshPath,
+                    const replayrender::Mesh &mesh,
                     const uint32_t primaryLightCount, const uint32_t sunPrimaryLightIndex,
                     const replayrender::StaticModels &staticModels,
                     const uint32_t dynamicModelCount, const uint32_t dynamicBrushCount)
@@ -252,7 +251,6 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     if (primaryLightCount < 2 || sunPrimaryLightIndex >= primaryLightCount)
         throw std::runtime_error("invalid primary-light table for GfxWorld");
 
-    const auto mesh = replayrender::Load(meshPath);
     const auto lightGrid = replaylightgrid::Load(meshPath);
     const auto umbraTome = replayrender::BuildUmbraTome(mesh, staticModels);
     const auto cellCount = static_cast<uint32_t>(mesh.cells.size());
@@ -348,6 +346,7 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     stamp64(gw.data(), replaymap::UmbraTomeData, PTR_FOLLOWS);
     replayrender::StampWorld(gw, mesh);
     replayrender::StampStaticModels(gw, staticModels);
+    replayrender::StampReflectionProbes(gw, mesh, zw);
     // Replay Load_GfxWorldPtr RVA 0xD96DA0: stream 1, alignment mask 15.
     // The generated tome gives Replay's stock camera query a conservative cell
     // containing every converted world surface. Other unimplemented render data
@@ -410,6 +409,7 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     }
     replayrender::EmitSurfaces(zw, mesh);
     replayrender::EmitStaticModels(zw, staticModels);
+    replayrender::EmitReflectionProbes(zw, mesh);
     // Load_GfxWorldDraw D96710 loads iesLookupTexture before transient zones.
     // With no authored local lights, native white gives a neutral IES lookup.
     // Reference the existing image; no pixels or stock image data are copied.
