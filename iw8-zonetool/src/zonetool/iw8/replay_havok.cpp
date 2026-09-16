@@ -1794,8 +1794,20 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
     havok.Function<void(void *, void *, int)>(0x1E64350)(body, nullptr, 1);
     Write(body, reinterpret_cast<std::uintptr_t>(shape));
     Write(body + 0x14, std::uint16_t{0});
-    Write(body + 0x16, std::uint16_t{0});
+    Write(body + 0x16, std::uint8_t{0});
     Write(body + 0x88, std::uint16_t{0});
+    if (useCategory == 7 && simulationCategory == 9)
+    {
+        // FxGlass creates a dynamic body from this asset at break time.  The
+        // shipped glasschunkdummydefault keeps the body collision filter and
+        // Havok sentinel IDs in the serialized body; zeroing them selects an
+        // explicit default body instead and leaves shards without native
+        // motion assignment.
+        Write(body + 0x10, source.contents);
+        Write(body + 0x14, std::uint16_t{0xFFFF});
+        Write(body + 0x16, std::uint8_t{0xFF});
+        Write(body + 0x88, std::uint16_t{0xFFFF});
+    }
     setArray(system + 56, body, 1);
 
     const std::size_t estimatedCapacity =
@@ -1815,6 +1827,16 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
     if (!loadedSystem || Read<std::uint32_t>(reinterpret_cast<void *>(loadedSystem + 64)) != 1 ||
         !loadedBodies || !Read<std::uintptr_t>(reinterpret_cast<void *>(loadedBodies)))
         throw std::runtime_error("Native model physics round trip lost its body or shape");
+    if (useCategory == 7 && simulationCategory == 9)
+    {
+        const auto *loadedBody = reinterpret_cast<const std::uint8_t *>(loadedBodies);
+        if (Read<std::uint32_t>(loadedBody + 0x10) != source.contents ||
+            Read<std::uint16_t>(loadedBody + 0x14) != 0xFFFF ||
+            Read<std::uint8_t>(loadedBody + 0x16) != 0xFF ||
+            Read<std::uint8_t>(loadedBody + 0x17) != 0 ||
+            Read<std::uint16_t>(loadedBody + 0x88) != 0xFFFF)
+            throw std::runtime_error("Native glass physics round trip lost shipped body policy");
+    }
 
     const auto requireLoadedOne = [&](const std::size_t offset, const std::uint32_t expected,
                                       const char *field) {

@@ -845,8 +845,22 @@ Mesh Load(const std::string &path)
         {
             const auto bounds = LoadBounds(tree.at("bounds"));
             std::vector<unsigned> owned = tree.at("surfaces").get<std::vector<unsigned>>();
+            const auto models = tree.value("models", nlohmann::json::array());
+            if (!models.is_array())
+                throw std::runtime_error("Replay DPVS AABB tree has invalid static models");
+            std::vector<uint16_t> ownedModels;
+            ownedModels.reserve(models.size());
+            for (const auto &model : models)
+            {
+                const auto index = model.get<unsigned>();
+                if (index > UINT16_MAX)
+                    throw std::runtime_error(
+                        "Replay DPVS static-model index exceeds its native width");
+                ownedModels.push_back(static_cast<uint16_t>(index));
+            }
             std::ranges::sort(owned);
             owned.erase(std::unique(owned.begin(), owned.end()), owned.end());
+            bool firstLeaf = true;
             for (std::size_t begin = 0; begin < owned.size();)
             {
                 if (owned[begin] >= m.worldSurfaceCount())
@@ -854,9 +868,16 @@ Mesh Load(const std::string &path)
                 std::size_t end = begin + 1;
                 while (end < owned.size() && owned[end] == owned[end - 1] + 1)
                     ++end;
-                leaves.push_back({bounds, owned[begin], static_cast<unsigned>(end - begin), 0, 0});
+                std::vector<uint16_t> leafModels;
+                if (firstLeaf)
+                    leafModels = std::move(ownedModels);
+                leaves.push_back({bounds, owned[begin], static_cast<unsigned>(end - begin), 0, 0,
+                                  std::move(leafModels)});
+                firstLeaf = false;
                 begin = end;
             }
+            if (firstLeaf && !ownedModels.empty())
+                leaves.push_back({bounds, 0, 0, 0, 0, std::move(ownedModels)});
         }
         if (leaves.size() > 65535)
             throw std::runtime_error("Replay DPVS cell exceeds the native AABB child limit");

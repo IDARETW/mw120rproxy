@@ -147,7 +147,9 @@ iw8-zonetool.exe validate-output 'D:\CoD4\zone\english\mp_example_iw8' mp_exampl
 
 Direct conversion reads the world mesh, placed model LODs, material assignments, collision,
 supported entities, source sun, lightmaps, light grid, reflection probes, vertex colors, and an
-available HUD minimap. Model conversion preserves the original indexed geometry and UVs, and
+available HUD minimap. Source DPVS cells and AABB trees preserve their surface and static-model
+membership, including model-only trees, in Replay's native visibility layout. Model conversion
+preserves the original indexed geometry and UVs, and
 generates Replay material/technique assets from the source color, normal, and response images.
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
@@ -157,6 +159,12 @@ reflection array. The compiler writes six mip levels in Replay's mip-major, slic
 encodes them as BC6H UF16 with the bundled DirectXTex CPU encoder, and aligns every resident
 subresource to 16 bytes. This data is embedded in `mp_<map>.ff`; conversion does not produce a
 loose DDS, image cache, or reflection sidecar.
+
+When the source entity string contains the stock pair of `script_origin` entities whose
+`targetname` is `minimap_corner`, the compiler derives northwest and southeast world bounds using
+the IW3 worldspawn `northyaw` rule. If `compass_map_<map>` is available, the main fastfile then
+contains a native Replay startup `ScriptFile` that binds that material and those coordinates through
+the engine's minimap builtin. No proxy-side image substitution or loose script is required.
 
 The same command serializes native glass and ladder data where those source features are
 recognized. It also converts surface information into native footstep and collision tags in

@@ -457,14 +457,26 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
         zw.align(7);
         for (const auto &source : cell.trees)
         {
+            if (source.staticModelIndexes.size() > UINT16_MAX)
+                throw std::runtime_error("Replay AABB tree has too many static-model indexes");
+            for (const auto index : source.staticModelIndexes)
+                if (index >= staticModels.instances.size())
+                    throw std::runtime_error("Replay AABB tree references an invalid static model");
             uint8_t tree[48]{};
             source.bounds.Write(tree);
             stamp32(tree, 0x18, source.surfaceCount);
             stamp32(tree, 0x1C, source.firstSurface);
             stamp32(tree, 0x20, source.childrenOffset);
             stamp16(tree, 0x24, source.childCount);
+            stamp16(tree, 0x26, static_cast<uint16_t>(source.staticModelIndexes.size()));
+            if (!source.staticModelIndexes.empty())
+                stamp64(tree, 0x28, PTR_FOLLOWS);
             zw.write(tree, sizeof(tree));
         }
+        zw.align(1);
+        for (const auto &source : cell.trees)
+            for (const auto index : source.staticModelIndexes)
+                zw.writeT<uint16_t>(index);
     }
     replaylightgrid::Emit(zw, lightGrid);
     zw.popStream();

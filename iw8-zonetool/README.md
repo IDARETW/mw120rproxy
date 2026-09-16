@@ -94,7 +94,12 @@ output accepts. It may also contain an `id` that matches the map id.
 Direct fastfile conversion preserves world geometry, every resolved static-model placement and
 available source LOD, native model physics, dynamic model definitions, collision, source sun
 settings, authored vertex color and occlusion, and an available
-`compass_map_<map>` image. It also
+`compass_map_<map>` image. Source DPVS cells and AABB trees retain their world-surface and
+static-model membership, including model-only trees, so Replay can use the native visibility
+consumer without dropping distant placements. When the source entities contain exactly two
+`script_origin` records named `minimap_corner`, the compiler orders them with the IW3 worldspawn
+`northyaw` rule and embeds a Replay startup `ScriptFile` that calls the native minimap builtin with
+the image and world bounds. It also
 derives native walkable-surface triangles from upward-facing IW3 world faces and bakes their
 surface types into the Replay Havok shape tags. Unclassified faces use Replay's concrete fallback.
 All IW3 multiplayer spawn classes are retained with their source origin and angles, including DM,

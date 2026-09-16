@@ -3,6 +3,7 @@
 #include "iw8_zonebuffer.h"
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -13,11 +14,8 @@ namespace iw8::replay_script
 {
 namespace
 {
-// Signed Replay 1.20 Backlot map-main stack/export evidence:
-// first export id ref_0254, common helper path ref_0726::ref_b487.
+// Signed Replay 1.20 Backlot map-main stack/export evidence: first export id ref_0254.
 constexpr uint32_t kStartupExport = 0x254;
-constexpr uint32_t kCompassHelperPath = 0x726;
-constexpr uint32_t kCompassHelperFunction = 0xB487;
 
 void appendU32(std::vector<uint8_t> &out, const uint32_t value)
 {
@@ -32,6 +30,13 @@ void appendString(std::vector<uint8_t> &out, const std::string &value)
         throw std::invalid_argument("Replay startup script string contains a NUL");
     out.insert(out.end(), value.begin(), value.end());
     out.push_back(0);
+}
+
+void appendF32(std::vector<uint8_t> &out, const float value)
+{
+    const size_t offset = out.size();
+    out.resize(offset + sizeof(value));
+    std::memcpy(out.data() + offset, &value, sizeof(value));
 }
 
 // The native ScriptFile stores a zlib-wrapped DEFLATE stack.  Stored blocks
@@ -94,33 +99,40 @@ void writeScriptHeader(ZoneWriter &writer, const uint32_t compressedLength,
 } // namespace
 
 void emitCompassStartup(ZoneWriter &writer, const std::string &assetName,
-                        const std::string &mapName)
+                        const std::string &mapName, const float northwestX,
+                        const float northwestY, const float southeastX,
+                        const float southeastY)
 {
     if (assetName.empty() || mapName.empty())
         throw std::invalid_argument("Replay startup script asset and map names are required");
+    if (!std::isfinite(northwestX) || !std::isfinite(northwestY) ||
+        !std::isfinite(southeastX) || !std::isfinite(southeastY))
+        throw std::invalid_argument("Replay compass bounds must be finite");
 
     const std::string compass = "compass_map_" + mapName;
 
-    // IW8 PC opcodes, from the signed map-main disassembly:
-    // End(separator), CheckClearParams, PreScriptCall, GetString x2,
-    // ScriptFarFunctionCall, DecTop, End. The far-call token operands live
-    // in the stack immediately after the two GetString payloads. The three
-    // OP0x60 bytes are native linker relocation placeholders.
-    const std::vector<uint8_t> bytecode{
-        0x3B, 0x4B, 0x15, 0x7A, 0x00, 0x00, 0x00, 0x00, 0x7A, 0x00,
-        0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x58, 0x3B};
+    // Invoke Replay's native seven-argument setminimap builtin (0x1D3)
+    // directly. Values are pushed in reverse argument order by the IW8 VM.
+    std::vector<uint8_t> bytecode{0x3B, 0x4B, 0x15, 0x7A, 0x00, 0x00, 0x00, 0x00,
+                                  0x16, 0x01, 0x70};
+    appendF32(bytecode, southeastY);
+    bytecode.push_back(0x70);
+    appendF32(bytecode, southeastX);
+    bytecode.push_back(0x70);
+    appendF32(bytecode, northwestY);
+    bytecode.push_back(0x70);
+    appendF32(bytecode, northwestX);
+    bytecode.insert(bytecode.end(), {0x7A, 0x00, 0x00, 0x00, 0x00,
+                                     0x23, 0x07, 0xD3, 0x01, 0x58, 0x3B});
     const uint32_t functionSize = static_cast<uint32_t>(bytecode.size() - 1);
 
     std::vector<uint8_t> stack;
-    stack.reserve(18 + compass.size() * 2);
+    stack.reserve(10 + compass.size() * 2);
     appendU32(stack, functionSize);
     appendU32(stack, kStartupExport);
-    // IW3 supplies one compass image. Use it for both native views instead of
-    // referencing an absent codcaster_compass_map asset.
+    // Strings appear in bytecode execution order: alternate image, then primary.
     appendString(stack, compass);
     appendString(stack, compass);
-    appendU32(stack, kCompassHelperPath);
-    appendU32(stack, kCompassHelperFunction);
 
     const auto compressed = zlibStored(stack);
     if (compressed.size() > std::numeric_limits<uint32_t>::max() ||

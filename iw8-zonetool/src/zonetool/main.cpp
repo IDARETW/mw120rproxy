@@ -17,6 +17,7 @@
 #include "iw8/replay_havok.h"
 #include "iw8/replay_impact.h"
 #include "iw8/replay_render.h"
+#include "iw8/replay_script.h"
 #include "iw8/write_xsurface.h"
 
 #include <algorithm>
@@ -571,6 +572,7 @@ struct AssetTally
     int models{};
     int surfaces{};
     int failures{};
+    bool hasCompass{};
 };
 
 AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirectory,
@@ -605,6 +607,7 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
     }
     if (hasCompass)
     {
+        tally.hasCompass = true;
         if (!convdump::mtl::writeCompassMaterial(writer, compassName))
         {
             ++tally.failures;
@@ -870,7 +873,8 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
                     const std::string &entities, const iw8::MapBounds &bounds,
                     const std::string &dumpDirectory, const MapMetadata &metadata,
                     const std::vector<convert::TriggerModelSource> &triggers,
-                    const iw3::PreparedMap *prepared)
+                    const iw3::PreparedMap *prepared,
+                    const convert::CompassBounds *compassBounds)
 {
     if (!prepareOutputDirectory(outputDirectory, map))
     {
@@ -989,7 +993,22 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
                        iw8maps::emitGlassMapBody(output, assetName.c_str(), renderMesh);
                    });
         const dumpsrc::DumpSource source(dumpDirectory, map);
-        addMapAssets(writer, dumpDirectory, source, map);
+        const AssetTally assets = addMapAssets(writer, dumpDirectory, source, map);
+        if (assets.hasCompass && compassBounds)
+        {
+            const std::string scriptName = "scripts/mp/maps/" + map + "/" + map + ".gsc";
+            const convert::CompassBounds compass = *compassBounds;
+            writer.add(ASSET_TYPE_SCRIPTFILE, scriptName,
+                       [scriptName, map, compass](iw8::ZoneWriter &output) {
+                           iw8::replay_script::emitCompassStartup(
+                               output, scriptName, map, compass.northwestX,
+                               compass.northwestY, compass.southeastX, compass.southeastY);
+                       });
+        }
+        else if (assets.hasCompass)
+        {
+            warn("assets: compass image has no valid pair of IW3 minimap_corner entities");
+        }
         writer.build();
 
         if (!iw8_write(path_join(outputDirectory, map + ".ff"), writer.body(), writeParams(writer)))
@@ -1083,6 +1102,14 @@ int buildMap(const Args &args, const iw3::PreparedMap *prepared = nullptr)
     }
 
     const dumpsrc::EntsDump sourceEntities = source.loadEnts();
+    convert::CompassBounds compassBounds;
+    const bool hasCompassBounds = sourceEntities.loaded && !sourceEntities.text.empty() &&
+                                  convert::iw3CompassBounds(sourceEntities.text, compassBounds);
+    if (hasCompassBounds)
+    {
+        info("compass: northwest %.3f %.3f, southeast %.3f %.3f", compassBounds.northwestX,
+             compassBounds.northwestY, compassBounds.southeastX, compassBounds.southeastY);
+    }
     if (!foundEntities && sourceEntities.loaded && !sourceEntities.text.empty())
     {
         const size_t converted =
@@ -1145,7 +1172,7 @@ int buildMap(const Args &args, const iw3::PreparedMap *prepared = nullptr)
     }
 
     return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory, metadata,
-                           triggers, prepared);
+                           triggers, prepared, hasCompassBounds ? &compassBounds : nullptr);
 }
 
 int buildIw3(const Args &args)

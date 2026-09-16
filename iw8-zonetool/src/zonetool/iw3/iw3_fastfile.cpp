@@ -164,6 +164,7 @@ struct VisibilityGroups
     std::vector<std::uint32_t> surfaces;
     std::vector<std::uint32_t> models;
     std::vector<Json> treeBounds;
+    std::vector<std::vector<std::uint32_t>> treeModels;
     std::vector<std::vector<std::uint32_t>> cellTrees;
     std::size_t sourceTreeCount{};
 };
@@ -1039,11 +1040,18 @@ VisibilityGroups ReadVisibilityGroups(const Json &world)
 
             const auto group = static_cast<std::uint32_t>(result.treeBounds.size());
             result.treeBounds.push_back(bounds);
+            std::vector<std::uint32_t> ownedModels;
+            ownedModels.reserve(treeModels.size());
+            for (const auto &model : treeModels)
+            {
+                const auto index = model.get<std::size_t>();
+                assign(result.models, index, group);
+                ownedModels.push_back(static_cast<std::uint32_t>(index));
+            }
+            result.treeModels.push_back(std::move(ownedModels));
             result.cellTrees[cellIndex].push_back(group);
             for (const auto &surface : treeSurfaces)
                 assign(result.surfaces, surface.get<std::size_t>(), group);
-            for (const auto &model : treeModels)
-                assign(result.models, model.get<std::size_t>(), group);
         }
     }
     for (auto &group : result.surfaces)
@@ -2291,9 +2299,12 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
         for (const auto group : visibility.cellTrees.at(cellIndex))
         {
             const auto &owned = treeSurfaces.at(group);
-            if (!owned.empty())
+            const auto &ownedModels = visibility.treeModels.at(group);
+            if (!owned.empty() || !ownedModels.empty())
                 trees.push_back({{"bounds", visibility.treeBounds.at(group)},
-                                 {"surfaces", std::vector<unsigned>(owned.begin(), owned.end())}});
+                                 {"surfaces", std::vector<unsigned>(owned.begin(), owned.end())},
+                                 {"models", std::vector<unsigned>(ownedModels.begin(),
+                                                                    ownedModels.end())}});
         }
         if (!globalSurfaces.empty())
             trees.push_back({{"bounds", source.at("bounds")},

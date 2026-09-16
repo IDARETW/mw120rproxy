@@ -6,8 +6,10 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <map>
 #include <regex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -301,6 +303,108 @@ uint32_t brushModelIndex(const Entity &entity)
     return index;
 }
 } // namespace
+
+bool iw3CompassBounds(const std::string &input, CompassBounds &bounds)
+{
+    std::array<std::array<float, 2>, 2> corners{};
+    size_t cornerCount = 0;
+    float northYaw = 90.0f;
+
+    for (const Entity &entity : parseEntities(input))
+    {
+        const auto valueFor = [&](const char *name) -> const std::string * {
+            const auto found = std::find_if(entity.begin(), entity.end(), [&](const KeyValue &pair) {
+                return lowercase(pair.key) == name;
+            });
+            return found == entity.end() ? nullptr : &found->value;
+        };
+
+        const std::string *classname = valueFor("classname");
+        if (classname && lowercase(*classname) == "worldspawn")
+        {
+            if (const std::string *yaw = valueFor("northyaw"))
+            {
+                size_t consumed = 0;
+                northYaw = std::stof(*yaw, &consumed);
+                if (consumed != yaw->size() || !std::isfinite(northYaw))
+                    throw std::runtime_error("IW3 worldspawn has an invalid northyaw");
+            }
+        }
+
+        const std::string *targetname = valueFor("targetname");
+        if (!classname || lowercase(*classname) != "script_origin" || !targetname ||
+            lowercase(*targetname) != "minimap_corner")
+            continue;
+        if (cornerCount == corners.size())
+            return false;
+
+        const std::string *origin = valueFor("origin");
+        if (!origin)
+            throw std::runtime_error("IW3 minimap_corner has no origin");
+        std::istringstream values(*origin);
+        float z = 0.0f;
+        if (!(values >> corners[cornerCount][0] >> corners[cornerCount][1] >> z))
+            throw std::runtime_error("IW3 minimap_corner has an invalid origin");
+        values >> std::ws;
+        if (!values.eof() || !std::isfinite(corners[cornerCount][0]) ||
+            !std::isfinite(corners[cornerCount][1]) || !std::isfinite(z))
+            throw std::runtime_error("IW3 minimap_corner has an invalid origin");
+        ++cornerCount;
+    }
+
+    if (cornerCount != corners.size())
+        return false;
+
+    constexpr float pi = 3.14159265358979323846f;
+    const float radians = northYaw * (pi / 180.0f);
+    const std::array<float, 2> north{std::cos(radians), std::sin(radians)};
+    const std::array<float, 2> west{-north[1], north[0]};
+    const std::array<float, 2> difference{corners[1][0] - corners[0][0],
+                                          corners[1][1] - corners[0][1]};
+    const float towardWest = difference[0] * west[0] + difference[1] * west[1];
+    const float towardNorth = difference[0] * north[0] + difference[1] * north[1];
+
+    std::array<float, 2> northwest{};
+    std::array<float, 2> southeast{};
+    if (towardWest > 0.0f)
+    {
+        if (towardNorth > 0.0f)
+        {
+            northwest = corners[1];
+            southeast = corners[0];
+        }
+        else
+        {
+            northwest = {corners[1][0] - north[0] * towardNorth,
+                         corners[1][1] - north[1] * towardNorth};
+            southeast = {corners[0][0] + north[0] * towardNorth,
+                         corners[0][1] + north[1] * towardNorth};
+        }
+    }
+    else if (towardNorth > 0.0f)
+    {
+        northwest = {corners[0][0] + north[0] * towardNorth,
+                     corners[0][1] + north[1] * towardNorth};
+        southeast = {corners[1][0] - north[0] * towardNorth,
+                     corners[1][1] - north[1] * towardNorth};
+    }
+    else
+    {
+        northwest = corners[0];
+        southeast = corners[1];
+    }
+
+    const float northExtent = (northwest[0] - southeast[0]) * north[0] +
+                              (northwest[1] - southeast[1]) * north[1];
+    const float westExtent = (northwest[0] - southeast[0]) * west[0] +
+                             (northwest[1] - southeast[1]) * west[1];
+    if (!std::isfinite(northExtent) || !std::isfinite(westExtent) || northExtent <= 0.0f ||
+        westExtent <= 0.0f)
+        throw std::runtime_error("IW3 minimap_corner bounds are degenerate");
+
+    bounds = {northwest[0], northwest[1], southeast[0], southeast[1]};
+    return true;
+}
 
 std::vector<std::string> iw3ReplayEntityModels(const std::string &input)
 {

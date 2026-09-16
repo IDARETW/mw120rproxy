@@ -73,11 +73,15 @@ The map ID must be lower-case, begin with `mp_`, and fit the 15-character Replay
 `<map>_load.ff` and additional `--search-path` directories are used when available. The direct
 route carries over the source world geometry, resolved static-model placements and available LODs,
 native model physics, supported entities, collision, source sun data, vertex colors, and an
-available `compass_map_<map>` image. Source cubemaps are projected into Replay's native
+available `compass_map_<map>` image. Source DPVS cells and AABB trees retain both their surface and
+static-model membership, including trees that contain models without world surfaces. When the IW3
+entities provide the stock pair of `minimap_corner` script origins, the compiler embeds the native
+Replay startup script that binds the compass image to those world coordinates. Source cubemaps are
+projected into Replay's native
 256-by-256 octahedral reflection array and encoded as BC6H UF16 by the bundled native encoder.
 It uses a Replay stock material for the 3D world; IW3 technique sets are not serialized verbatim
-as IW8 technique sets. Scripts, bot navigation, objectives, and arbitrary scripted movers are not
-converted automatically.
+as IW8 technique sets. Arbitrary source scripts, bot navigation, objectives, and scripted movers
+are not converted automatically.
 
 ### Prepared map dump
 

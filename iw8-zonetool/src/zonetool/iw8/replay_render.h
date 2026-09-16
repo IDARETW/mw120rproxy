@@ -66,6 +66,7 @@ struct CellTree
     unsigned surfaceCount{};
     unsigned childrenOffset{};
     uint16_t childCount{};
+    std::vector<uint16_t> staticModelIndexes;
 };
 struct Cell
 {

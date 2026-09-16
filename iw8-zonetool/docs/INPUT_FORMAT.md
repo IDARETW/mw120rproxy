@@ -35,8 +35,12 @@ dump/images/compass_map_<map-id>.iwi
 
 The image must be an IW3 IWI version 6 file containing one resident DXT1, DXT3, or DXT5 surface.
 The compiler writes both the Replay image and its `compass_map_<map-id>` 2D material into the main
-fastfile. `mw120rproxy` supplies that material name through the map-info table, following the same
-convention as shipped maps. When the image is absent, the build completes with a warning.
+fastfile. To activate it, the source entity dump must contain exactly two `script_origin` records
+whose `targetname` is `minimap_corner`. The compiler orders those corners with IW3's worldspawn
+`northyaw` rule and embeds the small Replay startup `ScriptFile` that invokes the native minimap
+builtin with the material and world bounds. When the image is absent, the build completes with a
+warning. When the image exists without valid corners, the assets are retained and the missing
+startup binding is reported as a warning.
 
 ## Required data
 
