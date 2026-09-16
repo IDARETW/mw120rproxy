@@ -2,6 +2,7 @@
 
 #include "replay_impact_data.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -49,8 +50,35 @@ void WriteParticleReference(ZoneWriter &writer, std::string_view name)
     writer.popStream();
 }
 
+std::string_view EffectName(const size_t impactType, const size_t direction,
+                            const size_t pack, const size_t effect,
+                            const std::string_view smallGlassEffect,
+                            const EffectOverrides &overrides)
+{
+    const bool flesh = effect >= 64;
+    const size_t index = flesh ? effect - 64 : effect;
+    const auto overridden = std::find_if(
+        overrides.begin(), overrides.end(), [&](const EffectOverride &candidate) {
+            return candidate.impactType == impactType && candidate.direction == direction &&
+                   pack == 0 && candidate.flesh == flesh && candidate.index == index;
+        });
+    if (overridden != overrides.end())
+        return overridden->effect;
+
+    const uint16_t nameIndex =
+        impact_data::kEffectIndices[EffectOffset(impactType, direction, pack, effect)];
+    if (nameIndex == 0)
+        return {};
+    if (nameIndex > impact_data::kEffectNames.size())
+        throw std::runtime_error("impact effect template contains an invalid name index");
+    const std::string_view stockName = impact_data::kEffectNames[nameIndex - 1];
+    return !smallGlassEffect.empty() && stockName == kStockSmallGlass ? smallGlassEffect
+                                                                      : stockName;
+}
+
 size_t WritePacks(ZoneWriter &writer, size_t impactType, size_t direction,
-                  const std::string_view smallGlassEffect)
+                  const std::string_view smallGlassEffect,
+                  const EffectOverrides &overrides)
 {
     writer.align(7);
 
@@ -60,9 +88,9 @@ size_t WritePacks(ZoneWriter &writer, size_t impactType, size_t direction,
     {
         for (size_t effect = 0; effect < impact_data::kEffectsPerPack; ++effect)
         {
-            const uint16_t index =
-                impact_data::kEffectIndices[EffectOffset(impactType, direction, pack, effect)];
-            if (index != 0)
+            if (!EffectName(impactType, direction, pack, effect, smallGlassEffect,
+                            overrides)
+                     .empty())
             {
                 packs[pack * impact_data::kEffectsPerPack + effect] = PTR_FOLLOWS;
                 ++referenceCount;
@@ -75,28 +103,19 @@ size_t WritePacks(ZoneWriter &writer, size_t impactType, size_t direction,
     {
         for (size_t effect = 0; effect < impact_data::kEffectsPerPack; ++effect)
         {
-            const uint16_t index =
-                impact_data::kEffectIndices[EffectOffset(impactType, direction, pack, effect)];
-            if (index == 0)
-            {
+            const std::string_view name =
+                EffectName(impactType, direction, pack, effect, smallGlassEffect, overrides);
+            if (name.empty())
                 continue;
-            }
-            if (index > impact_data::kEffectNames.size())
-            {
-                throw std::runtime_error("impact effect template contains an invalid name index");
-            }
-            const std::string_view stockName = impact_data::kEffectNames[index - 1];
-            if (!smallGlassEffect.empty() && stockName == kStockSmallGlass)
-                WriteParticleReference(writer, smallGlassEffect);
-            else
-                WriteParticleReference(writer, stockName);
+            WriteParticleReference(writer, name);
         }
     }
     return referenceCount;
 }
 
 void WriteBody(ZoneWriter &writer, const std::string &mapName,
-               const std::string_view smallGlassEffect)
+               const std::string_view smallGlassEffect,
+               const EffectOverrides &overrides)
 {
     writer.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
     writer.align(7);
@@ -128,10 +147,12 @@ void WriteBody(ZoneWriter &writer, const std::string &mapName,
     size_t particleReferenceCount = 0;
     for (size_t impactType = 0; impactType < impact_data::kImpactTypeCount; ++impactType)
     {
-        particleReferenceCount += WritePacks(writer, impactType, 0, smallGlassEffect);
+        particleReferenceCount +=
+            WritePacks(writer, impactType, 0, smallGlassEffect, overrides);
         if ((impact_data::kExitMask & (uint64_t{1} << impactType)) != 0)
         {
-            particleReferenceCount += WritePacks(writer, impactType, 1, smallGlassEffect);
+            particleReferenceCount +=
+                WritePacks(writer, impactType, 1, smallGlassEffect, overrides);
         }
     }
 
@@ -167,15 +188,16 @@ void WriteBody(ZoneWriter &writer, const std::string &mapName,
 } // namespace
 
 void Register(ZoneWriter &writer, const std::string &mapName,
-              const std::string &smallGlassEffect)
+              const std::string &smallGlassEffect,
+              const EffectOverrides &overrides)
 {
     const std::string referenceName =
         smallGlassEffect.empty() || smallGlassEffect.front() == ','
             ? smallGlassEffect
             : "," + smallGlassEffect;
     writer.add(ASSET_TYPE_IMPACT_FX, mapName,
-               [mapName, referenceName](ZoneWriter &output) {
-                   WriteBody(output, mapName, referenceName);
+               [mapName, referenceName, overrides](ZoneWriter &output) {
+                   WriteBody(output, mapName, referenceName, overrides);
                });
 }
 

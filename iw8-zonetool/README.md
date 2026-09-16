@@ -109,14 +109,23 @@ reference the same native Havok entity shapes as their source brush models.
 
 The material adapter converts IW3 color, normal, specular, glass, foliage, and sky inputs into the
 matching Replay material and technique-set layouts. It does not copy IW3 technique-set bytes into an
-incompatible IW8 structure. Reachable single-image `effect_zfeather` and `effect_zfeather_add` FX
-materials are also converted into native Replay effect-quad materials and resident images; the
-converter validates their IW3 atlas and render-state data before serialization. The stock
-`impacts/small_glass` source graph is converted into a native Replay particle system, including its
-material, decal, model-shard, velocity, gravity, size, color, and atlas data, and is installed in all
-small-glass entries of the native impact table. The generated footstep, collision, and light-grid
-files exist only in the private conversion directory and are embedded in the fastfiles before that
-directory is removed. No loose gameplay sidecar is emitted.
+incompatible IW8 structure. Reachable single-image `effect_zfeather`, `effect_zfeather_add`,
+`particle_cloud`, and supported decal FX materials are converted into native Replay effect-quad
+materials and resident images; the converter validates their IW3 atlas and render-state data before
+serialization. Complete eligible IW3 FX graph closures are emitted as native Replay particle
+systems. The current element mapping covers billboard, oriented-sprite, tail, cloud, model, decal,
+and runner elements together with their supported spawn, lifetime, velocity, gravity, rotation,
+size, color, atlas, material, model, and child-effect data. A graph is omitted when any element,
+material, event child, or runner child lacks a complete mapping, so the fastfile never contains a
+knowingly partial graph.
+
+The twelve IW3 impact rows are mapped into Replay's native impact table for small/large bullets,
+shotgun, armor-piercing, grenade, rocket, and dud events. A converted source effect replaces the
+matching native slot, an explicitly empty source slot clears it, and an unsupported nonempty source
+effect retains Replay's stock fallback. `impacts/small_glass` is also used by the native glass
+consumer. The generated footstep, collision, and light-grid files exist only in the private
+conversion directory and are embedded in the fastfiles before that directory is removed. No loose
+gameplay sidecar is emitted.
 
 The patched Unlinker setup and complete command are documented in
 [`docs/IW3_FASTFILE.md`](docs/IW3_FASTFILE.md).

@@ -972,7 +972,9 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
             iw8::RegisterDynamicEntityList(writer, prepared->dynamicEntities);
         }
         iw8::impact::Register(writer, map,
-                              prepared ? prepared->smallGlassEffect : std::string{});
+                              prepared ? prepared->smallGlassEffect : std::string{},
+                              prepared ? prepared->impactOverrides
+                                       : iw8::impact::EffectOverrides{});
         if (!renderMesh.glassPanes.empty())
         {
             writer.add(ASSET_TYPE_FX_MAP, assetName,

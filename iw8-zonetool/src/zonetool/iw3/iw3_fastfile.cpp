@@ -1096,9 +1096,9 @@ bool IsConsumedIw3SourceAssetType(const std::string_view type)
     // converts the reachable model/material/image dependency graph. This is a
     // source-consumption classification, not a claim that every declaration of
     // a dependency type becomes a top-level Replay asset.
-    constexpr std::array<std::string_view, 8> consumedTypes{
+    constexpr std::array<std::string_view, 9> consumedTypes{
         "clipmap", "comworld", "gameworldmp", "mapents",
-        "gfxworld", "image", "material", "xmodel"};
+        "gfxworld", "image", "impactfx", "material", "xmodel"};
     return std::find(consumedTypes.begin(), consumedTypes.end(), type) != consumedTypes.end();
 }
 
@@ -1108,10 +1108,8 @@ std::string_view SourceAssetAuditReason(const std::string_view type)
         return "source techniquesets are not portable; reachable materials use generated Replay "
                "techniquesets";
     if (type == "fx")
-        return "these source FX graphs do not yet have native Replay emitters";
-    if (type == "impactfx")
-        return "the source impact graph is not converted; the package contains the fixed native "
-               "Replay impact table";
+        return "these source FX graphs use element or material families that are not yet mapped "
+               "to native Replay emitters";
     if (type == "sound" || type == "soundcurve" || type == "loadedsound")
         return "audio declarations are outside the native map package";
     if (type == "physpreset")
@@ -3718,8 +3716,9 @@ void AddVfxAtlas(const PreparedFxElement &source, iw8::vfx::State &state)
     state.groups[0].push_back(std::move(module));
 }
 
-iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
-                                           const PreparedFxElement &source)
+iw8::vfx::Emitter ConvertFxElement(
+    const PreparedMap &map, const PreparedFxElement &source,
+    const std::unordered_map<std::string, std::string> &effectAliases)
 {
     iw8::vfx::Emitter emitter;
     const auto burst = VfxRange(source.spawn.oneShotCount);
@@ -3751,6 +3750,12 @@ iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
         emitter.native.flags = 4194306;
         emitter.native.dataFlags = 30603519;
         break;
+    case 1:
+        state.native.elementType = 8;
+        state.native.flags = 550830635076ull;
+        emitter.native.flags = 2;
+        emitter.native.dataFlags = 26409215;
+        break;
     case 2:
         state.native.elementType = 10;
         state.native.flags = 1074790400ull;
@@ -3778,12 +3783,47 @@ iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
         emitter.native.flags = 2;
         emitter.native.dataFlags = 26409215;
         break;
+    case 10:
+        state.native.elementType = 9;
+        state.native.flags = 4296015872ull;
+        emitter.native.flags = 1048578;
+        emitter.native.dataFlags = 26410239;
+        break;
     default:
-        throw std::runtime_error("small_glass contains an unsupported IW3 element type");
+        throw std::runtime_error("IW3 FX graph contains an unsupported element type");
     }
 
     state.groups[0].push_back(VfxSpawnModule());
     state.groups[0].push_back(VfxAttributesModule());
+    if (source.type == 10)
+    {
+        iw8_focus::ParticleModuleInitRunner payload{};
+        payload.base.type =
+            static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initRunner);
+        VfxSetVec(payload.scaleMin, 1.0f, 1.0f, 1.0f);
+        VfxSetVec(payload.scaleMax, 1.0f, 1.0f, 1.0f);
+        VfxSetVec(payload.velocityMin, 1.0f, 1.0f, 1.0f);
+        VfxSetVec(payload.velocityMax, 1.0f, 1.0f, 1.0f);
+        payload.orientationOptions = 2;
+        payload.attachToParent = 1;
+        payload.stopChildOnDeath = 1;
+        payload.killChildOnDeath = 1;
+        payload.legacyOrientationRotation = 1;
+        auto module = VfxValueModule(iw8_focus::ParticleModuleType::initRunner, payload);
+        for (const auto &visual : source.visuals)
+        {
+            if (visual.kind != PreparedFxVisualKind::effect || visual.names.size() != 1)
+                throw std::runtime_error("IW3 runner has an invalid child effect");
+            const auto alias = effectAliases.find(visual.names.front());
+            if (alias == effectAliases.end())
+                throw std::runtime_error("IW3 runner child effect was not converted: " +
+                                         visual.names.front());
+            module.childEffects.push_back(alias->second);
+        }
+        state.groups[0].push_back(std::move(module));
+        emitter.states.push_back(std::move(state));
+        return emitter;
+    }
     if (source.type == 9)
     {
         iw8_focus::ParticleModuleInitDecal payload{};
@@ -3793,7 +3833,7 @@ iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
         for (const auto &visual : source.visuals)
         {
             if (visual.kind != PreparedFxVisualKind::decal || visual.names.size() != 2)
-                throw std::runtime_error("small_glass decal has an invalid material pair");
+                throw std::runtime_error("IW3 decal has an invalid material pair");
             // Replay consumes one selected platform/profile material in all three
             // ParticleMarkVisuals slots. The second IW3 decal entry is the WC
             // world-context material used by this Windows Replay target.
@@ -3814,12 +3854,21 @@ iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
             for (const auto &visual : source.visuals)
             {
                 if (visual.kind != PreparedFxVisualKind::xmodel || visual.names.size() != 1)
-                    throw std::runtime_error("small_glass model has an invalid XModel visual");
+                    throw std::runtime_error("IW3 model particle has an invalid XModel visual");
                 module.models.push_back(visual.names.front());
             }
         }
         else
         {
+            if (source.type == 1)
+            {
+                iw8_focus::ParticleModuleInitOrientedSprite oriented{};
+                oriented.base.type = static_cast<std::uint16_t>(
+                    iw8_focus::ParticleModuleType::initOrientedSprite);
+                VfxSetVec(oriented.orientationQuat, 0.0f, 0.0f, 0.0f, 1.0f);
+                state.groups[0].push_back(VfxValueModule(
+                    iw8_focus::ParticleModuleType::initOrientedSprite, oriented));
+            }
             if (source.type == 2)
             {
                 iw8_focus::ParticleModuleInitTail tail{};
@@ -3835,7 +3884,7 @@ iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
             for (const auto &visual : source.visuals)
             {
                 if (visual.kind != PreparedFxVisualKind::material || visual.names.size() != 1)
-                    throw std::runtime_error("small_glass particle has an invalid material visual");
+                    throw std::runtime_error("IW3 particle has an invalid material visual");
                 module.materials.push_back(VfxMaterial(map, visual.names.front()));
             }
         }
@@ -3852,13 +3901,14 @@ iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
     return emitter;
 }
 
-iw8::vfx::Effect ConvertSmallGlass(const PreparedMap &map, const PreparedFx &source,
-                                   const std::string &targetMap)
+iw8::vfx::Effect ConvertFx(
+    const PreparedMap &map, const PreparedFx &source,
+    const std::unordered_map<std::string, std::string> &effectAliases)
 {
-    if (source.elements.size() != 6)
-        throw std::runtime_error("impacts/small_glass does not have the expected six elements");
+    if (source.elements.empty())
+        throw std::runtime_error("IW3 FX graph has no elements: " + source.name);
     iw8::vfx::Effect effect;
-    effect.name = "mw120r/" + targetMap + "/impacts/small_glass";
+    effect.name = effectAliases.at(source.name);
     effect.native.flags = 262145;
     effect.native.occlusionOverrideEmitterIndex = -1;
     effect.native.drawFrustumCullRadius = 350.0f;
@@ -3866,8 +3916,149 @@ iw8::vfx::Effect ConvertSmallGlass(const PreparedMap &map, const PreparedFx &sou
     effect.native.sunDistance = 100000.0f;
     effect.emitters.reserve(source.elements.size());
     for (const auto &element : source.elements)
-        effect.emitters.push_back(ConvertSmallGlassElement(map, element));
+        effect.emitters.push_back(ConvertFxElement(map, element, effectAliases));
     return effect;
+}
+
+bool HasDirectReplayFxMapping(const PreparedMap &map, const PreparedFx &effect)
+{
+    return !effect.elements.empty() &&
+           std::ranges::all_of(effect.elements, [&](const PreparedFxElement &element) {
+               const bool supportedType = element.type == 0 || element.type == 1 ||
+                                          element.type == 2 ||
+                                          element.type == 4 || element.type == 5 ||
+                                          element.type == 9 || element.type == 10;
+               if (!supportedType || !element.effectOnImpact.empty() ||
+                   !element.effectOnDeath.empty() || !element.effectEmitted.empty())
+                   return false;
+               if (element.type == 0 || element.type == 1 || element.type == 2 ||
+                   element.type == 4)
+                   return std::ranges::all_of(element.visuals, [&](const PreparedFxVisual &visual) {
+                       return visual.kind == PreparedFxVisualKind::material &&
+                              visual.names.size() == 1 &&
+                              map.fxMaterialAliases.contains(visual.names.front());
+                   });
+               if (element.type == 9)
+                   return std::ranges::all_of(element.visuals, [&](const PreparedFxVisual &visual) {
+                       return visual.kind == PreparedFxVisualKind::decal &&
+                              visual.names.size() == 2 && !visual.names[1].empty() &&
+                              map.fxMaterialAliases.contains(visual.names[1]);
+                   });
+               return true;
+           });
+}
+
+std::unordered_map<std::string, std::string>
+BuildFxAliases(const PreparedMap &map, const std::string &targetMap)
+{
+    const auto &effects = map.fxEffects;
+    std::set<std::string> convertible;
+    for (const auto &effect : effects)
+        if (HasDirectReplayFxMapping(map, effect))
+            convertible.insert(effect.name);
+
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (auto iterator = convertible.begin(); iterator != convertible.end();)
+        {
+            const auto effect = std::ranges::find(effects, *iterator, &PreparedFx::name);
+            const bool missingChild = std::ranges::any_of(
+                effect->elements, [&](const PreparedFxElement &element) {
+                    return element.type == 10 &&
+                           std::ranges::any_of(element.visuals, [&](const PreparedFxVisual &visual) {
+                               return visual.kind != PreparedFxVisualKind::effect ||
+                                      visual.names.size() != 1 ||
+                                      !convertible.contains(visual.names.front());
+                           });
+                });
+            if (missingChild)
+            {
+                iterator = convertible.erase(iterator);
+                changed = true;
+            }
+            else
+            {
+                ++iterator;
+            }
+        }
+    }
+
+    std::unordered_map<std::string, std::string> aliases;
+    aliases.reserve(convertible.size());
+    for (const auto &name : convertible)
+        aliases.emplace(name, "mw120r/" + targetMap + "/fx/" + name);
+    return aliases;
+}
+
+iw8::impact::EffectOverrides ReadImpactOverrides(
+    const std::filesystem::path &root,
+    const std::unordered_map<std::string, std::string> &effectAliases)
+{
+    constexpr std::array<std::pair<std::size_t, std::size_t>, 12> targetRows{{
+        {1, 0},  // bullet small
+        {1, 1},  // bullet small exit
+        {2, 0},  // bullet large
+        {2, 1},  // bullet large exit
+        {6, 0},  // shotgun
+        {6, 1},  // shotgun exit
+        {3, 0},  // armor piercing
+        {3, 1},  // armor piercing exit
+        {9, 0},  // grenade bounce
+        {10, 0}, // grenade explosion
+        {12, 0}, // rocket explosion
+        {14, 0}, // projectile dud
+    }};
+    constexpr std::size_t nonFleshCount = 29;
+    constexpr std::size_t fleshCount = 4;
+
+    const auto path = root / "impactfx" / "_default.iw3.json";
+    const Json source = ReadJson(path);
+    const auto &layout = source.at("layout");
+    const auto &entries = source.at("entries");
+    if (source.value("schema", 0) != 1 ||
+        source.value("asset_type", std::string{}) != "iw3_impact_fx" ||
+        !layout.is_object() || layout.value("impact_count", 0) != targetRows.size() ||
+        layout.value("nonflesh_count", 0) != nonFleshCount ||
+        layout.value("flesh_count", 0) != fleshCount || !entries.is_array() ||
+        entries.size() != targetRows.size())
+        throw std::runtime_error("IW3 impact FX export has an unsupported schema or layout");
+
+    iw8::impact::EffectOverrides overrides;
+    overrides.reserve(targetRows.size() * (nonFleshCount + fleshCount));
+    for (std::size_t sourceRow = 0; sourceRow < targetRows.size(); ++sourceRow)
+    {
+        const auto &entry = entries.at(sourceRow);
+        if (entry.at("index").get<std::size_t>() != sourceRow)
+            throw std::runtime_error("IW3 impact FX row index is inconsistent");
+        const auto &nonFlesh = entry.at("nonflesh");
+        const auto &flesh = entry.at("flesh");
+        if (!nonFlesh.is_array() || nonFlesh.size() != nonFleshCount ||
+            !flesh.is_array() || flesh.size() != fleshCount)
+            throw std::runtime_error("IW3 impact FX row has invalid surface arrays");
+
+        const auto append = [&](const Json &value, const bool isFlesh,
+                                const std::size_t index) {
+            std::string effect;
+            if (!value.is_null())
+            {
+                if (!value.is_string() || !IsValidFxAssetName(value.get<std::string>()))
+                    throw std::runtime_error("IW3 impact FX slot has an invalid effect name");
+                const auto alias = effectAliases.find(value.get<std::string>());
+                if (alias == effectAliases.end())
+                    return;
+                effect = "," + alias->second;
+            }
+            overrides.push_back({targetRows[sourceRow].first, targetRows[sourceRow].second,
+                                 isFlesh, index, std::move(effect)});
+        };
+        for (std::size_t index = 0; index < nonFleshCount; ++index)
+            append(nonFlesh.at(index), false, index);
+        for (std::size_t index = 0; index < fleshCount; ++index)
+            append(flesh.at(index), true, index);
+    }
+    return overrides;
 }
 } // namespace
 
@@ -3881,6 +4072,7 @@ PreparedMap::PreparedMap(PreparedMap &&other) noexcept
     , fxMaterialAliases(std::move(other.fxMaterialAliases))
     , vfxEffects(std::move(other.vfxEffects))
     , smallGlassEffect(std::move(other.smallGlassEffect))
+    , impactOverrides(std::move(other.impactOverrides))
     , staticModels(std::move(other.staticModels))
     , dynamicEntities(std::move(other.dynamicEntities))
 {
@@ -3905,6 +4097,7 @@ PreparedMap &PreparedMap::operator=(PreparedMap &&other) noexcept
         fxMaterialAliases = std::move(other.fxMaterialAliases);
         vfxEffects = std::move(other.vfxEffects);
         smallGlassEffect = std::move(other.smallGlassEffect);
+        impactOverrides = std::move(other.impactOverrides);
         staticModels = std::move(other.staticModels);
         dynamicEntities = std::move(other.dynamicEntities);
         other.scratch.clear();
@@ -4188,16 +4381,57 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
                               result.xmodels, unusedFxTables, true, true);
     zt::info("iw3: converted %zu FX-referenced XModels through native model/material closure",
              sourceFxModels.models.size());
-    if (glassFx != result.fxEffects.end())
+    const auto effectAliases = BuildFxAliases(result, options.map);
+    result.vfxEffects.reserve(effectAliases.size());
+    std::unordered_map<std::string, const PreparedFx *> convertibleEffects;
+    convertibleEffects.reserve(effectAliases.size());
+    for (const auto &effect : result.fxEffects)
     {
-        result.vfxEffects.push_back(ConvertSmallGlass(result, *glassFx, options.map));
-        result.smallGlassEffect = result.vfxEffects.back().name;
+        if (effectAliases.contains(effect.name))
+            convertibleEffects.emplace(effect.name, &effect);
+    }
+    std::unordered_map<std::string, std::uint8_t> effectStates;
+    effectStates.reserve(effectAliases.size());
+    const auto appendEffect = [&](auto &&self, const PreparedFx &effect) -> void {
+        auto &state = effectStates[effect.name];
+        if (state == 2)
+            return;
+        if (state == 1)
+            throw std::runtime_error("IW3 FX graph contains a runner dependency cycle: " +
+                                     effect.name);
+        state = 1;
+        for (const auto &element : effect.elements)
+        {
+            if (element.type != 10)
+                continue;
+            for (const auto &visual : element.visuals)
+            {
+                const auto child = convertibleEffects.find(visual.names.front());
+                if (child == convertibleEffects.end())
+                    throw std::runtime_error("IW3 runner child effect was not converted: " +
+                                             visual.names.front());
+                self(self, *child->second);
+            }
+        }
+        result.vfxEffects.push_back(ConvertFx(result, effect, effectAliases));
+        if (effect.name == "impacts/small_glass")
+            result.smallGlassEffect = effectAliases.at(effect.name);
+        state = 2;
+    };
+    for (const auto &effect : result.fxEffects)
+        if (effectAliases.contains(effect.name))
+            appendEffect(appendEffect, effect);
+    zt::info("iw3: converted %zu of %zu map-reachable source FX graph(s) to native Replay VFX",
+             result.vfxEffects.size(), result.fxEffects.size());
+    if (!result.smallGlassEffect.empty())
         zt::info("iw3: converted impacts/small_glass to native Replay VFX '%s'",
                  result.smallGlassEffect.c_str());
-    }
+    result.impactOverrides = ReadImpactOverrides(exportRoot, effectAliases);
+    zt::info("iw3: mapped %zu native IW3 impact slots into Replay's impact table",
+             result.impactOverrides.size());
     std::set<std::string> emittedFx;
-    if (glassFx != result.fxEffects.end())
-        emittedFx.insert(glassFx->name);
+    for (const auto &entry : effectAliases)
+        emittedFx.insert(entry.first);
     AuditSourceAssetDeclarations(exportRoot, emittedFx);
     result.dynamicEntities.reserve(sourceDynamicEntities.definitionModels.size() +
                                    sourceDynamicEntities.brushes.size());

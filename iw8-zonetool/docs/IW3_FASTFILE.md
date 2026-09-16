@@ -172,14 +172,24 @@ recognized. It also converts surface information into native footstep and collis
 `build-map` invocation, or loose sidecar. Multiplayer spawn markers retain their source origins
 and angles, including DM, Domination, Sabotage, Search and Destroy, CTF, and TDM markers.
 
-Arbitrary IW3 gameplay scripts, scripted doors/movers, destructible systems, and arbitrary FX
-graphs are not translated by this path yet. The Unlinker collects map-local and shared FX source
-graphs and their typed dependencies. `build-iw3` validates that typed graph data against the IW3
-multiplayer ABI and embeds supported single-image `effect_zfeather` and `effect_zfeather_add`
-materials as native Replay effect-quad materials and images. It also translates the stock
-`impacts/small_glass` graph into a native Replay `ParticleSystemDef`: sprite, tail, cloud, model, and
-decal elements retain their source materials or shard models plus spawn, lifetime, velocity,
-gravity, rotation, size, color, and atlas data. All small-glass entries in the map's native impact
-table reference that converted effect. Other unsupported material families and partially translated
-graphs are not emitted. Successful structural validation checks the generated package; it is not a
-gameplay or visual acceptance test for every converted feature.
+Arbitrary IW3 gameplay scripts, scripted doors/movers, and destructible systems are not translated
+by this path yet. The Unlinker collects map-local and shared FX source graphs and their typed
+dependencies. `build-iw3` validates that data against the IW3 multiplayer ABI and embeds supported
+single-image `effect_zfeather`, `effect_zfeather_add`, and `particle_cloud` materials plus supported
+decal materials as native Replay materials and images.
+
+The native graph translator currently supports complete graph closures made from billboard,
+oriented-sprite, tail, cloud, model, decal, and runner elements. It preserves supported material,
+model, and child-effect references together with spawn, lifetime, velocity, gravity, rotation,
+size, color, and atlas data. A source graph is emitted only when every element and runner child in
+its closure is eligible; effect-on-impact, effect-on-death, emitted-effect fields, unsupported
+material families, and unsupported element types keep the graph out of the output rather than
+creating a partial particle system.
+
+The converter reads the IW3 impact table and maps its twelve semantic rows into Replay's native
+impact table: small and large bullet hit/exit, shotgun hit/exit, armor-piercing hit/exit, grenade
+bounce and explosion, rocket explosion, and projectile dud. Converted source effects replace their
+matching slots, null source slots clear them, and unsupported nonempty source effects keep Replay's
+stock fallback. The converted `impacts/small_glass` effect is also wired into the native glass
+consumer. Successful structural validation checks the generated package; it is not a gameplay or
+visual acceptance test for every converted feature.

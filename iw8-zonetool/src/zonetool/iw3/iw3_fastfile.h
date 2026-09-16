@@ -4,6 +4,7 @@
 #include "../dumpsrc/xmodel_dump.h"
 #include "../iw8/replay_dynentity.h"
 #include "../iw8/replay_havok.h"
+#include "../iw8/replay_impact.h"
 #include "../iw8/replay_render.h"
 #include "../iw8/replay_vfx.h"
 
@@ -200,6 +201,7 @@ struct PreparedMap
     std::unordered_map<std::string, std::string> fxMaterialAliases;
     std::vector<iw8::vfx::Effect> vfxEffects;
     std::string smallGlassEffect;
+    iw8::impact::EffectOverrides impactOverrides;
     replayrender::StaticModels staticModels;
     std::vector<iw8::DynamicEntity> dynamicEntities;
 
