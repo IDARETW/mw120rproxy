@@ -27,7 +27,11 @@ Grid Load(const std::string &meshPath)
     constexpr std::string_view suffix = ".render.json";
     if (!meshPath.ends_with(suffix))
         return grid;
-    const auto path = meshPath.substr(0, meshPath.size() - suffix.size()) + ".gpulightgrid.bin";
+    // This file is a private staging artifact.  It is consumed immediately by
+    // emitGfxMapBody and embedded into gfx_map; it is never part of a package.
+    // Keep the name deliberately distinct from the public fastfile outputs so
+    // failed conversions cannot be mistaken for a deployable sidecar.
+    const auto path = meshPath.substr(0, meshPath.size() - suffix.size()) + ".gpulightgrid.native";
     if (!std::filesystem::exists(path))
         return grid;
     const auto size = std::filesystem::file_size(path);
@@ -51,8 +55,11 @@ Grid Load(const std::string &meshPath)
             throw std::runtime_error("Nonfinite light-grid bounds");
     const uint64_t nx = Read<uint32_t>(p, 200), ny = Read<uint32_t>(p, 204);
     const uint64_t nz = Read<uint32_t>(p, 208);
+    const uint32_t rootShift = Read<uint32_t>(p, 216);
     if (!nx || !ny || !nz || nx > 1000000 || ny > 1000000 || nz > 8000000 || nx * ny != roots ||
-        nx * ny * nz != voxels || Read<uint32_t>(p, 216) != 5)
+        nx * ny * nz != voxels || rootShift < 5 || rootShift > 20 ||
+        Read<uint32_t>(p, 220) != rootShift - 2 || Read<uint32_t>(p, 224) != rootShift - 4 ||
+        Read<uint32_t>(p, 228) != 0)
         throw std::runtime_error("Invalid native light-grid voxel dimensions");
     size_t position = 264 + size_t(probes) * 32;
     for (size_t i = 0; i < size_t(probes) * 3; ++i)

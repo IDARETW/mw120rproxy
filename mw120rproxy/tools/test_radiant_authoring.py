@@ -85,7 +85,7 @@ class AuthoringTests(unittest.TestCase):
             load_model(COD4 / "raw", "mw120r_nonexistent_test_model")
 
     def test_original_prefab_expansion(self):
-        # The editable mp_test changes between builds; use an isolated
+        # The owner's editable mp_test changes between builds; use an isolated
         # prefab fixture so authoring a new map cannot invalidate this test.
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

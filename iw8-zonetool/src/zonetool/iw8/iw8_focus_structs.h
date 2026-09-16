@@ -206,13 +206,9 @@ static_assert(sizeof(XModelLodInfo) == 0x40, "XModelLodInfo");
 
 // =============================================================================================
 //  XModel  (asset type 9)
-//  [PDB] dev sizeof = 0x2A8.   [TBL] retail g_assetSizes[9] = 0x2B0.  >>> 8-BYTE DELTA <<<
-//  The dev (IW8_DEV 8.24 Xbox) build is 8 bytes SHORTER than retail PC 1.24. The dev field
-//  map below is exact for 0x00..0x2A8 (last field decalVolumesInfo ends at 0x2A8). Retail
-//  appends 8 more bytes at 0x2A8 (one extra trailing pointer/qword — NOT pinned this pass,
-//  marked [INFER]). To satisfy the g_assetSizes invariant the writer struct adds an explicit
-//  8-byte tail. When the writer emits a *valid-empty / minimal* XModel it zeroes the tail,
-//  which is load-safe (no extra count/pointer to walk). RESOLVE before shipping real models.
+//  Replay 1.20 reads a 0x2B0-byte body. Its final four qwords are blendShapeInfo at 0x290,
+//  an opaque runtime-only qword at 0x298, mdaoVolumes at 0x2A0, and decalVolumesInfo at 0x2A8.
+//  The runtime qword is copied with the body but is not traversed by the native asset loader.
 // =============================================================================================
 struct XModel
 {
@@ -262,10 +258,14 @@ struct XModel
     void *detailCollision;           // 0x280 //PTR  XModelDetailCollision*
     void **clothAssets;              // 0x288 //PTR  [numClothAssets] -> ClothAsset*
     void *blendShapeInfo;            // 0x290 //PTR  XModelBlendShapeInfo*
-    void *mdaoVolumes;               // 0x298 //PTR  MdaoVolume* [mdaoVolumeCount]
-    void *decalVolumesInfo;          // 0x2A0 //PTR  XModelDecalVolumesInfo*  (dev ends @0x2A8)
-    uint8_t _retailTail[8]; // 0x2A8 //[INFER] retail-only 8B (g_assetSizes=0x2B0). zero=safe.
+    uint64_t runtime_0x298;          // 0x298 runtime-only; not traversed by Load_XModel
+    void *mdaoVolumes;               // 0x2A0 //PTR  MdaoVolume* [mdaoVolumeCount]
+    void *decalVolumesInfo;          // 0x2A8 //PTR  XModelDecalVolumesInfo*
 };
+static_assert(offsetof(XModel, blendShapeInfo) == 0x290, "XModel.blendShapeInfo");
+static_assert(offsetof(XModel, runtime_0x298) == 0x298, "XModel.runtime_0x298");
+static_assert(offsetof(XModel, mdaoVolumes) == 0x2A0, "XModel.mdaoVolumes");
+static_assert(offsetof(XModel, decalVolumesInfo) == 0x2A8, "XModel.decalVolumesInfo");
 static_assert(sizeof(XModel) == 0x2B0, "XModel size (pinned retail 0x2B0)");
 static_assert(sizeof(XModel) == iw8sz::XMODEL,
               "XModel size must equal retail g_assetSizes[9]=0x2B0");
@@ -381,5 +381,372 @@ struct GfxPackedVertex
 };
 static_assert(sizeof(GfxPackedVertex) == 0x14, "GfxPackedVertex disk stride must be 20 (0x14)");
 #pragma pack(pop)
+
+// Replay 1.20 ParticleSystemDef (asset 44). Offsets are pinned against the MW19
+// loader schema and the shipped common.ff glass VFX capture. These describe the
+// in-memory ABI. The direct Replay loader trace for that fixture loads this root
+// in block 1, then the name and emitter/state/group/module records in block 5;
+// selector-specific module union writes still require a complete writer contract.
+struct ParticleFloatRange
+{
+    float min;
+    float max;
+};
+struct ParticleIntRange
+{
+    int32_t min;
+    int32_t max;
+};
+struct ParticleCurveControlPointDef
+{
+    float time;
+    float value;
+    float invTimeDelta;
+    uint32_t pad;
+};
+struct ParticleCurveDef
+{
+    ParticleCurveControlPointDef *controlPoints;
+    int32_t numControlPoints;
+    float scale;
+};
+static_assert(sizeof(ParticleFloatRange) == 0x8);
+static_assert(sizeof(ParticleIntRange) == 0x8);
+static_assert(sizeof(ParticleCurveControlPointDef) == 0x10);
+static_assert(sizeof(ParticleCurveDef) == 0x10);
+
+// Replay 1.20 selectors needed by the IW3 impacts/small_glass graph. Do not
+// substitute the older game-test/x64-zt enum: its INIT_MODEL is 12, while the
+// shipped Replay schema and captured assets use 13 after INIT_KILL_WRAP_BOX.
+enum class ParticleModuleType : uint16_t
+{
+    initAtlas = 0,
+    initAttributes = 1,
+    initCloud = 4,
+    initDecal = 5,
+    initMaterial = 11,
+    initMirrorTexture = 12,
+    initModel = 13,
+    initOrientedSprite = 15,
+    initRelativeVelocity = 18,
+    initRotation = 19,
+    initRotation3D = 20,
+    initRunner = 21,
+    initSpawn = 23,
+    initSpawnShapeCylinder = 25,
+    initSpawnShapeSphere = 28,
+    initTail = 29,
+    colorGraph = 34,
+    forceDragGraph = 40,
+    gravity = 41,
+    sizeGraph = 51,
+};
+
+// INIT_MODEL (selector 13) has a 0x10 linked-asset list at +0x10 of its
+// 0x20 module variant. Shipped snowball VFX loads three 0x20 linked records,
+// each pointing to a 0x2B0 native XModel reference root in block 1.
+struct ParticleLinkedAssetDef
+{
+    void *asset; // XModel* for INIT_MODEL; other selectors reuse this union
+    uint8_t selectorData[0x18];
+};
+struct ParticleLinkedAssetListDef
+{
+    ParticleLinkedAssetDef *assets;
+    int32_t numAssets;
+    uint32_t pad;
+};
+struct ParticleModuleInitModel
+{
+    uint64_t base;
+    uint8_t usePhysics;
+    uint8_t motionBlurHQ;
+    uint8_t pad[6];
+    ParticleLinkedAssetListDef linkedAssets;
+};
+static_assert(sizeof(ParticleLinkedAssetDef) == 0x20);
+static_assert(sizeof(ParticleLinkedAssetListDef) == 0x10);
+static_assert(sizeof(ParticleModuleInitModel) == 0x20);
+static_assert(offsetof(ParticleModuleInitModel, linkedAssets) == 0x10);
+
+// Replay schema: these selector payloads are embedded at +0x10 of a
+// ParticleModuleDef. INIT_SPAWN owns a curve pointer; INIT_ATTRIBUTES carries
+// the authored size/color/velocity ranges needed by source IW3 effects.
+struct ParticleModuleBase
+{
+    uint16_t type;
+    uint16_t pad;
+    uint32_t flags;
+};
+struct ParticleModuleInitSpawn
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+    ParticleCurveDef curve;
+};
+struct ParticleModuleInitAttributes
+{
+    ParticleModuleBase base;
+    uint8_t interpolateColor;
+    uint8_t interpolateSize;
+    uint8_t pad[6];
+    vec4_t sizeMin;
+    vec4_t sizeMax;
+    vec4_t colorMin;
+    vec4_t colorMax;
+    vec4_t velocityMin;
+    vec4_t velocityMax;
+};
+static_assert(sizeof(ParticleModuleBase) == 0x8);
+static_assert(sizeof(ParticleModuleInitSpawn) == 0x20);
+static_assert(offsetof(ParticleModuleInitSpawn, curve) == 0x10);
+static_assert(sizeof(ParticleModuleInitAttributes) == 0x70);
+static_assert(offsetof(ParticleModuleInitAttributes, sizeMin) == 0x10);
+static_assert(offsetof(ParticleModuleInitAttributes, velocityMax) == 0x60);
+
+struct ParticleModuleInitMaterial
+{
+    ParticleModuleBase base;
+    uint32_t renderOptions;
+    uint32_t shaderGraphOptions;
+    ParticleLinkedAssetListDef linkedAssets;
+    uint8_t materialData[0xC0];
+};
+struct ParticleModuleInitDecal
+{
+    ParticleModuleBase base;
+    uint16_t fadeInTime;
+    uint16_t fadeOutTime;
+    uint16_t stoppableFadeOutTime;
+    uint16_t lerpWaitTime;
+    ParticleLinkedAssetListDef linkedAssets;
+    vec4_t lerpColor;
+    uint16_t lerpTime;
+    uint8_t dynamicDecal;
+    uint8_t projectionAxis;
+    uint8_t bypassStackingLimiter;
+    uint8_t pad[11];
+};
+// Replay schema selector 21: two value-only ParticleModifier records precede
+// the linked child ParticleSystemDef list at +0x50.
+struct ParticleModuleInitRunner
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+    vec4_t scaleMin;
+    vec4_t scaleMax;
+    vec4_t velocityMin;
+    vec4_t velocityMax;
+    ParticleLinkedAssetListDef linkedAssets;
+    uint8_t orientationOptions;
+    uint8_t scaleOptions;
+    uint8_t velocityOptions;
+    uint8_t attachToParent;
+    uint8_t stopChildOnDeath;
+    uint8_t killChildOnDeath;
+    uint8_t legacyOrientationVelocity;
+    uint8_t legacyOrientationRotation;
+    uint8_t padOptions[8];
+};
+struct ParticleModuleInitAtlas
+{
+    ParticleModuleBase base;
+    int32_t startFrame;
+    int32_t loopCount;
+    uint8_t randomIndex;
+    uint8_t playOverLife;
+    uint8_t pad0[2];
+    uint32_t pad1[3];
+    ParticleCurveDef curves[2];
+};
+struct ParticleModuleColorGraph
+{
+    ParticleModuleBase base;
+    uint8_t firstCurve;
+    uint8_t pad0[3];
+    uint8_t modulateColorByAlpha;
+    uint8_t pad1[3];
+    ParticleCurveDef curves[8];
+};
+struct ParticleModuleSizeGraph
+{
+    ParticleModuleBase base;
+    uint8_t firstCurve;
+    uint8_t pad[7];
+    ParticleCurveDef curves[6];
+    vec4_t sizeBegin;
+    vec4_t sizeEnd;
+};
+struct ParticleModuleInitCloud
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+};
+struct ParticleModuleInitTail
+{
+    ParticleModuleBase base;
+    uint16_t averagePastVelocities;
+    uint16_t maxParentSpeed;
+    uint8_t tailLeading;
+    uint8_t scaleWithVelocity;
+    uint8_t rotateAroundPivot;
+    uint8_t pad;
+};
+struct ParticleModuleInitOrientedSprite
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+    vec4_t orientationQuat;
+};
+struct ParticleModuleGravity
+{
+    ParticleModuleBase base;
+    ParticleFloatRange percentage;
+};
+static_assert(sizeof(ParticleModuleInitMaterial) == 0xE0);
+static_assert(offsetof(ParticleModuleInitMaterial, linkedAssets) == 0x10);
+static_assert(sizeof(ParticleModuleInitDecal) == 0x40);
+static_assert(offsetof(ParticleModuleInitDecal, linkedAssets) == 0x10);
+static_assert(sizeof(ParticleModuleInitRunner) == 0x70);
+static_assert(offsetof(ParticleModuleInitRunner, linkedAssets) == 0x50);
+static_assert(offsetof(ParticleModuleInitRunner, orientationOptions) == 0x60);
+static_assert(offsetof(ParticleModuleInitRunner, killChildOnDeath) == 0x65);
+static_assert(sizeof(ParticleModuleInitAtlas) == 0x40);
+static_assert(offsetof(ParticleModuleInitAtlas, curves) == 0x20);
+static_assert(sizeof(ParticleModuleColorGraph) == 0x90);
+static_assert(offsetof(ParticleModuleColorGraph, curves) == 0x10);
+static_assert(sizeof(ParticleModuleSizeGraph) == 0x90);
+static_assert(offsetof(ParticleModuleSizeGraph, sizeBegin) == 0x70);
+static_assert(sizeof(ParticleModuleInitCloud) == 0x10);
+static_assert(sizeof(ParticleModuleInitTail) == 0x10);
+static_assert(sizeof(ParticleModuleInitOrientedSprite) == 0x20);
+static_assert(sizeof(ParticleModuleGravity) == 0x10);
+
+struct ParticleModuleInitSpawnShape
+{
+    ParticleModuleBase base;
+    uint8_t axisFlags;
+    uint8_t spawnFlags;
+    uint8_t normalAxis;
+    uint8_t spawnType;
+    float volumeCubeRoot;
+    vec4_t calculationOffset;
+    vec4_t offset;
+};
+struct ParticleModuleInitSpawnShapeCylinder
+{
+    ParticleModuleInitSpawnShape base;
+    uint8_t hasRotation;
+    uint8_t rotateCalculatedOffset;
+    uint8_t pad[2];
+    float halfHeight;
+    ParticleFloatRange radius;
+    vec4_t directionQuat;
+    ParticleCurveDef curves[5];
+};
+struct ParticleModuleInitSpawnShapeSphere
+{
+    ParticleModuleInitSpawnShape base;
+    uint32_t pad[2];
+    ParticleFloatRange radius;
+    ParticleCurveDef curves[4];
+};
+struct ParticleModuleForceDragGraph
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+    ParticleCurveDef curves[2];
+};
+static_assert(sizeof(ParticleModuleInitSpawnShape) == 0x30);
+static_assert(sizeof(ParticleModuleInitSpawnShapeCylinder) == 0xA0);
+static_assert(offsetof(ParticleModuleInitSpawnShapeCylinder, curves) == 0x50);
+static_assert(sizeof(ParticleModuleInitSpawnShapeSphere) == 0x80);
+static_assert(offsetof(ParticleModuleInitSpawnShapeSphere, curves) == 0x40);
+static_assert(sizeof(ParticleModuleForceDragGraph) == 0x30);
+static_assert(offsetof(ParticleModuleForceDragGraph, curves) == 0x10);
+
+struct ParticleModuleDef
+{
+    uint16_t moduleType;      // 0x00
+    uint16_t gap;             // 0x02
+    uint32_t pad[2];          // 0x04
+    uint32_t padToModuleData; // 0x0C
+    uint8_t moduleData[0xE0]; // 0x10, selector-specific union
+};
+struct ParticleModuleGroupDef
+{
+    ParticleModuleDef *moduleDefs; // 0x00
+    int32_t numModules;            // 0x08
+    uint8_t disabled;              // 0x0C
+    uint8_t pad[3];                // 0x0D
+};
+struct ParticleStateDef
+{
+    ParticleModuleGroupDef *moduleGroupDefs; // 0x00, exactly three groups
+    uint32_t elementType;                    // 0x08
+    uint32_t pad0;                           // 0x0C
+    uint64_t flags;                          // 0x10
+    uint32_t pad1[2];                        // 0x18
+};
+static_assert(sizeof(ParticleModuleDef) == 0xF0);
+static_assert(offsetof(ParticleModuleDef, moduleData) == 0x10);
+static_assert(sizeof(ParticleModuleGroupDef) == 0x10);
+static_assert(sizeof(ParticleStateDef) == 0x20);
+
+struct ParticleEmitterDef
+{
+    ParticleStateDef *stateDefs;                  // 0x00
+    int32_t numStates;                            // 0x08
+    ParticleFloatRange particleSpawnRate;         // 0x0C
+    ParticleFloatRange particleLife;              // 0x14
+    ParticleFloatRange particleDelay;             // 0x1C
+    uint32_t particleCountMax;                    // 0x24
+    ParticleIntRange particleBurstCount;          // 0x28
+    ParticleFloatRange emitterLife;               // 0x30
+    ParticleFloatRange emitterDelay;              // 0x38
+    int32_t randomSeed;                           // 0x40
+    ParticleFloatRange spawnRangeSq;              // 0x44
+    float fadeOutMaxDistance;                     // 0x4C
+    ParticleCurveDef fadeCurveDef;                // 0x50
+    float spawnFrustumCullRadius;                 // 0x60
+    uint32_t flags;                               // 0x64
+    uint32_t gravityOptions;                      // 0x68
+    uint32_t groupIDs[4];                         // 0x6C
+    ParticleFloatRange emitByDistanceDensity;     // 0x7C
+    uint32_t instancePool;                        // 0x84
+    uint32_t soloInstanceMax;                     // 0x88
+    uint32_t instanceAction;                      // 0x8C
+    uint32_t dataFlags;                           // 0x90
+    ParticleFloatRange particleSpawnShapeRange;   // 0x94
+    uint32_t pad;                                 // 0x9C
+};
+static_assert(sizeof(ParticleEmitterDef) == 0xA0);
+static_assert(offsetof(ParticleEmitterDef, fadeCurveDef) == 0x50);
+static_assert(offsetof(ParticleEmitterDef, particleSpawnShapeRange) == 0x94);
+
+struct ParticleSystemDef
+{
+    const char *name;                         // 0x00
+    ParticleEmitterDef *emitterDefs;           // 0x08
+    void *scriptedInputNodeDefs;              // 0x10
+    int32_t version;                          // 0x18
+    int32_t numEmitters;                      // 0x1C
+    int32_t numScriptedInputNodes;            // 0x20
+    uint32_t flags;                           // 0x24
+    int32_t occlusionOverrideEmitterIndex;    // 0x28
+    uint32_t phaseOptions;                    // 0x2C
+    float drawFrustumCullRadius;              // 0x30
+    float updateFrustumCullRadius;            // 0x34
+    float sunDistance;                        // 0x38
+    int32_t preRollMSec;                      // 0x3C
+    vec4_t editorPosition;                    // 0x40
+    vec4_t editorRotation;                    // 0x50
+    vec4_t gameTweakPosition;                 // 0x60
+    vec4_t gameTweakRotation;                 // 0x70
+};
+static_assert(sizeof(ParticleSystemDef) == iw8sz::VFX);
+static_assert(offsetof(ParticleSystemDef, emitterDefs) == 0x08);
+static_assert(offsetof(ParticleSystemDef, editorPosition) == 0x40);
+static_assert(offsetof(ParticleSystemDef, gameTweakRotation) == 0x70);
 
 } // namespace iw8_focus

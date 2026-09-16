@@ -39,29 +39,6 @@ static inline void stamp(void *base, size_t at, uint64_t sentinel)
     std::memcpy(static_cast<uint8_t *>(base) + at, &sentinel, 8);
 }
 
-// Emit a minimal, load-safe name-only XModelSurfs BODY (missing/corrupt .xse, or 0 surfaces). This
-// is the body callback content only; the XAsset entry framing is done by ZoneWriter::build() once
-// the caller registers it via zw.add (see writeXModelSurfsFromDump).
-static void emitMinimalBody(ZoneWriter &zw, const std::string &name)
-{
-    fx::XModelSurfs xs{};
-    std::memset(&xs, 0, sizeof(xs));
-    stamp(&xs, off::XMS_name, PTR_FOLLOWS); // name follows
-    stamp(&xs, off::XMS_surfs, PTR_NULL);   // no surfs
-    stamp(&xs, off::XMS_shared, PTR_NULL);  // no shared blob
-    xs.numsurfs = 0;
-
-    zw.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
-    zw.align(7);
-    zw.write(&xs, sizeof(xs));
-    zw.pushStream(XFILE_BLOCK_VIRTUAL);
-    zw.writeStr(name);
-    zw.popStream();
-    zw.popStream();
-    zt::warn("iw8 xsurface(dump) '%s': emitted minimal name-only XModelSurfs (no geometry)",
-             name.c_str());
-}
-
 // Emit the FULL XModelSurfs BODY (struct + surfs[] + shared blob) for an already-converted
 // Iw8Surfs. Body-callback content only (run deferred inside zw.build()); see
 // writeXModelSurfsFromDump.
@@ -69,6 +46,12 @@ static void emitFullBody(ZoneWriter &zw, const std::string &name, const conv_xsu
 {
     const uint16_t numsurfs = (uint16_t)cv.surfaces.size();
     const uint32_t sharedDataSize = (uint32_t)cv.sharedBlob.size();
+    const uint64_t surfaceOffset =
+        (zw.buffer().streamSize(XFILE_BLOCK_VIRTUAL) + name.size() + 1 + 15) & ~15ull;
+    const uint64_t sharedOffset = surfaceOffset + numsurfs * sizeof(fx::XSurface);
+    if (sharedOffset >= UINT32_MAX)
+        throw std::runtime_error("Model shared pointer exceeds Replay's packed range");
+    const uint64_t sharedPointer = (uint64_t(XFILE_BLOCK_VIRTUAL) << 32) | (sharedOffset + 1);
 
     // ---- 3) XModelSurfs struct -> TEMP_PRELOAD(1)
     // ------------------------------------------------
@@ -77,7 +60,7 @@ static void emitFullBody(ZoneWriter &zw, const std::string &name, const conv_xsu
     stamp(&xs, off::XMS_name, PTR_FOLLOWS);  // name follows
     stamp(&xs, off::XMS_surfs, PTR_FOLLOWS); // surfs follow
     // xpakEntry (0x10..0x2F) stays zero — geometry is inline, not streamed via UGB.
-    stamp(&xs, off::XMS_shared, sharedDataSize ? PTR_FOLLOWS : PTR_NULL); // shared follows | null
+    stamp(&xs, off::XMS_shared, sharedPointer);
     xs.numsurfs = numsurfs;
     xs.ugbState = 0;
     std::memcpy(reinterpret_cast<uint8_t *>(&xs) + 0x3C, cv.partBits, 32); // partBits[32] @0x3C
@@ -100,30 +83,30 @@ static void emitFullBody(ZoneWriter &zw, const std::string &name, const conv_xsu
         const conv_xsurf::Iw8SurfaceCvt &sc = cv.surfaces[i];
         fx::XSurface su{};
         std::memset(&su, 0, sizeof(su));
-        su.flags = 0;
+        su.flags = sc.flags;
         su.vertCount = sc.vertCount;
         su.triCount = sc.triCount;
         su.blendShapeTargetCount = 0;
-        su.rigidVertListCount = 0; // rigid runs dropped (load-safe; not render-required)
+        su.rigidVertListCount = static_cast<uint8_t>(sc.rigidVertLists.size());
         su.subdivLevelCount = 0;
         su.ugbID = 0;
-        su.hash = 0;
-        su.blendVertSize = 0;
+        su.hash = conv_xsurf::surfaceHash(cv, sc);
+        std::memcpy(su.blendVertCounts, sc.blendVertCounts, sizeof(su.blendVertCounts));
+        su.blendVertSize = static_cast<uint32_t>(sc.blendVerts.size() * sizeof(uint16_t));
         su.sharedVertDataOffset = sc.sharedVertDataOffset;
         su.sharedIndexDataOffset = sc.sharedIndexDataOffset;
-        su.sharedTriClusterDataOffset = 0;
-        su.sharedColorDataOffset = 0;
-        su.sharedSecondUVDataOffset = 0;
-        su.sharedNormalTransformDataOffset = 0;
-        su.sharedTensionAccumTableOffset = 0;
-        su.sharedTensionDataOffset = 0;
-        // ALL per-surface pointer fields null (the geometry is reached via XModelSurfs.shared, and
-        // no per-surface trailing arrays are emitted, so these MUST be 0 for load-safety). su is
-        // zero-initialized; we stamp the 8 pointer slots explicitly to be unambiguous.
-        stamp(&su, off::XS_shared, PTR_NULL);
+        su.sharedTriClusterDataOffset = sc.sharedTriClusterDataOffset;
+        su.sharedColorDataOffset = sc.sharedColorDataOffset;
+        su.sharedSecondUVDataOffset = UINT32_MAX;
+        su.sharedNormalTransformDataOffset = UINT32_MAX;
+        su.sharedTensionAccumTableOffset = UINT32_MAX;
+        su.sharedTensionDataOffset = UINT32_MAX;
+        // Load_XSurface reads the first shared descriptor after the surface headers.
+        // The remaining surfaces and XModelSurfs share that same resident descriptor.
+        stamp(&su, off::XS_shared, i == 0 ? PTR_FOLLOWS : sharedPointer);
         stamp(&su, off::XS_lmap, PTR_NULL);
-        stamp(&su, off::XS_rigid, PTR_NULL);
-        stamp(&su, off::XS_blend, PTR_NULL);
+        stamp(&su, off::XS_rigid, sc.rigidVertLists.empty() ? PTR_NULL : PTR_FOLLOWS);
+        stamp(&su, off::XS_blend, sc.blendVerts.empty() ? PTR_NULL : PTR_FOLLOWS);
         stamp(&su, off::XS_subdiv, PTR_NULL);
         stamp(&su, off::XS_childB, PTR_NULL);
         stamp(&su, off::XS_bsPerVert, PTR_NULL);
@@ -136,7 +119,7 @@ static void emitFullBody(ZoneWriter &zw, const std::string &name, const conv_xsu
         zw.write(&su, sizeof(su)); // 0xC0 bytes
     }
 
-    // 4c) XSurfaceShared(0x10) (XModelSurfs.shared = -2) + the packed geometry blob
+    // The first surface owns the inline shared descriptor; other references point back to it.
     if (sharedDataSize)
     {
         fx::XSurfaceShared sh{};
@@ -145,45 +128,78 @@ static void emitFullBody(ZoneWriter &zw, const std::string &name, const conv_xsu
         sh.dataSize = sharedDataSize;
         sh.flags = 0; // 0 = loaded (not streamed/xpak)
         zw.align(7);
+        if (zw.buffer().streamSize(XFILE_BLOCK_VIRTUAL) != sharedOffset)
+            throw std::runtime_error("Model shared descriptor offset drifted");
         zw.write(&sh, sizeof(sh)); // 0x10 bytes
         zw.align(15);
         zw.write(cv.sharedBlob.data(), cv.sharedBlob.size()); // the packed geometry blob
     }
 
+    // Load_XSurface visits each surface's arrays after its shared-data reference.
+    // Only the first shared reference consumes bytes; later references point backward.
+    for (const auto &surface : cv.surfaces)
+    {
+        if (bool(surface.flags & 1) != (surface.sharedColorDataOffset != UINT32_MAX))
+            throw std::runtime_error("Invalid model surface identity or color registration: " +
+                                     name);
+        if (!surface.rigidVertLists.empty())
+        {
+            zw.align(1);
+            zw.write(surface.rigidVertLists.data(),
+                     surface.rigidVertLists.size() * sizeof(conv_xsurf::Iw8RigidVertList));
+        }
+        if (!surface.blendVerts.empty())
+        {
+            zw.align(3);
+            zw.write(surface.blendVerts.data(), surface.blendVerts.size() * sizeof(uint16_t));
+        }
+    }
+
     zw.popStream(); // VIRTUAL -> TEMP_PRELOAD
     zw.popStream(); // TEMP_PRELOAD -> outer
 
-    zt::info(
-        "iw8 xsurface(dump) '%s': wrote XModelSurfs (%u surf(s), %u verts, %u tris, shared blob "
-        "%u bytes; dropped %u rigid-run(s), %u blend-word(s))",
-        name.c_str(), numsurfs, cv.totalVerts, cv.totalTris, sharedDataSize, cv.droppedRigidRuns,
-        cv.droppedBlendVerts);
+    zt::info("iw8 xsurface(dump) '%s': wrote XModelSurfs (%u surf(s), %u verts, %u tris, %u "
+             "tri-clusters, shared blob %u bytes; %u rigid-run(s), %u blend-word(s))",
+             name.c_str(), numsurfs, cv.totalVerts, cv.totalTris, cv.totalTriClusters,
+             sharedDataSize, cv.totalRigidRuns, cv.totalBlendWords);
 }
 
 bool writeXModelSurfsFromDump(ZoneWriter &zw, const std::string &dumpDir, const std::string &name)
 {
-    // Parse + convert EAGERLY so we can decide full-vs-minimal and report success, but REGISTER the
-    // emit deferred via zw.add(): the body must run during ZoneWriter::build() (after the
-    // XAssetList root + the XAsset[] array are framed), exactly like
-    // writeXModel/writeMaterial/addImageAsset. Emitting bytes eagerly here would corrupt the zone
-    // (body bytes ahead of the XAssetList root, and no XAsset entry framed). Capture the converted
-    // result by value so the body owns its data.
+    // Parse now; write the owned result later in the zone's asset load order.
     dumpsrc::XseFile xse = dumpsrc::loadXseFile(dumpDir, name);
     if (!xse.loaded)
-    {
-        zw.add(ASSET_TYPE_XMODELSURFS, name, [name](ZoneWriter &w) { emitMinimalBody(w, name); });
-        return false;
-    }
+        throw std::runtime_error("Could not read model surfaces '" + name + "': " + xse.parseError);
 
     conv_xsurf::Iw8Surfs cv = conv_xsurf::convert(xse);
-    if (!cv.ok || cv.surfaces.empty())
-    {
-        zw.add(ASSET_TYPE_XMODELSURFS, name, [name](ZoneWriter &w) { emitMinimalBody(w, name); });
-        return false;
-    }
-
-    zw.add(ASSET_TYPE_XMODELSURFS, name, [name, cv](ZoneWriter &w) { emitFullBody(w, name, cv); });
+    writeXModelSurfs(zw, name, cv);
     return true;
+}
+
+void writeXModelSurfs(ZoneWriter &zw, const std::string &name, const conv_xsurf::Iw8Surfs &cv)
+{
+    if (name.empty() || !cv.ok || cv.surfaces.empty() || cv.surfaces.size() > UINT16_MAX ||
+        cv.sharedBlob.empty() || cv.sharedBlob.size() > UINT32_MAX)
+        throw std::runtime_error("Invalid converted model surfaces: " + name);
+    for (const auto &surface : cv.surfaces)
+    {
+        const size_t indexBytes = static_cast<size_t>(surface.triCount) * 6;
+        const size_t vertexBytes = static_cast<size_t>(surface.vertCount) * 20;
+        const size_t clusterBytes = static_cast<size_t>((surface.triCount + 63u) / 64u) * 24;
+        auto inRange = [&](uint32_t offset, size_t bytes) {
+            return offset <= cv.sharedBlob.size() && bytes <= cv.sharedBlob.size() - offset;
+        };
+        if (!inRange(surface.sharedIndexDataOffset, indexBytes * 2) ||
+            surface.sharedVertDataOffset != surface.sharedIndexDataOffset + indexBytes * 2 ||
+            !inRange(surface.sharedVertDataOffset, vertexBytes) ||
+            surface.sharedTriClusterDataOffset != surface.sharedVertDataOffset + vertexBytes ||
+            !inRange(surface.sharedTriClusterDataOffset, clusterBytes) ||
+            (surface.sharedColorDataOffset != UINT32_MAX &&
+             !inRange(surface.sharedColorDataOffset,
+                      static_cast<size_t>(surface.vertCount) * sizeof(uint32_t))))
+            throw std::runtime_error("Invalid converted model surface stream layout: " + name);
+    }
+    zw.add(ASSET_TYPE_XMODELSURFS, name, [name, cv](ZoneWriter &w) { emitFullBody(w, name, cv); });
 }
 
 } // namespace iw8xs_dump

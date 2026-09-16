@@ -51,6 +51,38 @@ struct MapTriggers
 };
 static_assert(sizeof(MapTriggers) == 0x50, "MapTriggers");
 
+struct TriggerModel
+{
+    uint32_t contents;
+    uint16_t hullCount;
+    uint16_t firstHull;
+    uint16_t windingCount;
+    uint16_t firstWinding;
+    uint32_t flags;
+    void *physicsAsset;
+    uint16_t physicsShapeOverrideIdx;
+    uint8_t _pad1A[6];
+};
+static_assert(offsetof(TriggerModel, physicsAsset) == 0x10, "TriggerModel.physicsAsset");
+static_assert(sizeof(TriggerModel) == 0x20, "TriggerModel");
+
+struct TriggerHull
+{
+    Bounds bounds;
+    uint32_t contents;
+    uint16_t slabCount;
+    uint16_t firstSlab;
+};
+static_assert(sizeof(TriggerHull) == 0x20, "TriggerHull");
+
+struct TriggerSlab
+{
+    vec3_t direction;
+    float midpoint;
+    float halfSize;
+};
+static_assert(sizeof(TriggerSlab) == 0x14, "TriggerSlab");
+
 struct cmodel_t
 {                  // 0x38
     Bounds bounds; // 0x00
@@ -100,8 +132,9 @@ static_assert(offsetof(clipMap_t, checksum) == 0xF0, "clipMap_t.checksum");
 static_assert(sizeof(clipMap_t) == 0xF8, "clipMap_t == g_assetSizes[23]");
 
 // ===========================================================================================
-// MapEnts  — map_ents (29) — g_assetSizes 0x428 (1064). CONFIRMED(PDB), dev==retail.
-// The dynentitylist lives inside this struct (the dynEnt* region @0x190..0x1EB).
+// MapEnts — map_ents (29) — Replay 1.20 loader size 0x408.
+// Later IW8 PDBs extend this type to 0x428 with audio-edge and collmap fields; those fields are not
+// part of the 1.20 wire body. The dynentitylist is inline at 0x190..0x1EB.
 // ===========================================================================================
 struct SpawnPointRecordList
 {
@@ -111,7 +144,7 @@ struct SpawnPointRecordList
 }; // 0x10
 
 struct MapEnts
-{                           // 0x428
+{                           // 0x408
     const char *name;       // 0x00  PTR
     char *entityString;     // 0x08  PTR[0x10] ⭐
     int32_t numEntityChars; // 0x10  CNT
@@ -169,13 +202,7 @@ struct MapEnts
     void *audioPASpeakers;      // 0x3F0 PTR[0x3E8]
     uint32_t numAudioPropNodes; // 0x3F8 CNT
     uint32_t _pad3FC;
-    void *audioPropNodes;       // 0x400 PTR[0x3F8]
-    uint32_t numAudioPropEdges; // 0x408 CNT
-    uint32_t _pad40C;
-    void *audioPropEdges; // 0x410 PTR[0x408]
-    uint32_t numCollmaps; // 0x418 CNT
-    uint32_t _pad41C;
-    void *collmapLookups; // 0x420 PTR[0x418]
+    void *audioPropNodes; // 0x400 PTR[0x3F8]
 };
 static_assert(offsetof(MapEnts, entityString) == 0x08, "MapEnts.entityString");
 static_assert(offsetof(MapEnts, numEntityChars) == 0x10, "MapEnts.numEntityChars");
@@ -184,8 +211,8 @@ static_assert(offsetof(MapEnts, clientTrigger) == 0x68, "MapEnts.clientTrigger")
 static_assert(offsetof(MapEnts, spawnList) == 0x128, "MapEnts.spawnList");
 static_assert(offsetof(MapEnts, numSubModels) == 0x158, "MapEnts.numSubModels");
 static_assert(offsetof(MapEnts, cmodels) == 0x160, "MapEnts.cmodels");
-static_assert(offsetof(MapEnts, collmapLookups) == 0x420, "MapEnts.collmapLookups");
-static_assert(sizeof(MapEnts) == 0x428, "MapEnts == g_assetSizes[29]");
+static_assert(offsetof(MapEnts, audioPropNodes) == 0x400, "MapEnts.audioPropNodes");
+static_assert(sizeof(MapEnts) == 0x408, "MapEnts == Replay 1.20 loader size");
 
 // ===========================================================================================
 // ComWorld  — com_map (24) — g_assetSizes 0xA8 (168). CONFIRMED(PDB), dev==retail.
@@ -218,12 +245,9 @@ static_assert(offsetof(ComWorld, primaryLights) == 0x38, "ComWorld.primaryLights
 static_assert(sizeof(ComWorld) == 0xA8, "ComWorld == g_assetSizes[24]");
 
 // ===========================================================================================
-// GfxWorld  — gfx_map (31) — g_assetSizes 0x45D0 (17872) RETAIL.
-// dev PDB sizeof = 0x41E0 → retail is +0x3F0 LARGER (inserted in the post-`draw` light/dpvs
-// region). HEAD (name..draw) is byte-identical dev<->retail (CONFIRMED against the real
-// mp_m_overunder instance). The tail is opaque-padded so sizeof == 0x45D0 and checksum lands at the
-// proven retail offset 0x3E60 (= dev 0x3A70 + 0x3F0; gfx[0x3E60]==col_map[0xF0] over 3 real
-// samples).
+// GfxWorld — gfx_map (31) — Replay 1.20 Load_GfxWorld reads a 0x4590-byte body.
+// The prefixes through draw are pinned below. The remaining Replay body stays opaque until each
+// field is confirmed from the 1.20 loader.
 //
 // ⚠ RENDER-SAFETY: an ALL-ZEROS GfxWorld is NOT render-safe — R_SetupDpvsForPoint does
 // `for(i=*dpvsPlanes.nodes; ...)` with NO null/count guard, so nodes==NULL => crash. map: either
@@ -253,7 +277,7 @@ struct GfxCell
 static_assert(sizeof(GfxCell) == 0x28, "GfxCell");
 
 struct GfxWorld
-{                                  // 0x45D0
+{                                  // 0x4590
     const char *name;              // 0x00 PTR
     const char *baseName;          // 0x08 PTR
     int32_t bspVersion;            // 0x10 (=243 in real instances)
@@ -262,20 +286,19 @@ struct GfxWorld
     GfxWorldDpvsPlanes dpvsPlanes; // 0x90 (0x28) — cells/nodes here
     void *cells;                   // 0xB8 PTR[dpvsPlanes.cellCount]
     void *cellTransientInfos;      // 0xC0 PTR[cellCount]
-    uint8_t surfaces[168];         // 0xC8 GfxWorldSurfaces (surfaceCount = first u32)
-    uint8_t smodels[792];          // 0x170 GfxWorldStaticModels
-    uint8_t draw[12800];           // 0x488 GfxWorldDraw (0x3200; ends 0x3688)
-    // ---- post-draw region: dev offsets here; RETAIL inserts +0x3F0 somewhere below. Treat opaque.
-    // ----
-    uint8_t _retailTail[0x45D0 - 0x3688]; // 0x3688..0x45D0 (= 0xF48). checksum is inside @0x3E60.
+    uint8_t surfaces[0x88];        // 0xC8 GfxWorldSurfaces (surfaceCount = first u32)
+    uint8_t smodels[0x4F8];        // 0x150 GfxWorldStaticModels
+    uint8_t draw[0x3248];          // 0x648 GfxWorldDraw (ends 0x3890)
+    uint8_t _replayTail[0x4590 - 0x3890]; // 0x3890..0x4590; checksum is inside @0x3E60.
 };
 static_assert(offsetof(GfxWorld, baseName) == 0x08, "GfxWorld.baseName");
 static_assert(offsetof(GfxWorld, bspVersion) == 0x10, "GfxWorld.bspVersion");
 static_assert(offsetof(GfxWorld, dpvsPlanes) == 0x90, "GfxWorld.dpvsPlanes");
 static_assert(offsetof(GfxWorld, cells) == 0xB8, "GfxWorld.cells");
 static_assert(offsetof(GfxWorld, surfaces) == 0xC8, "GfxWorld.surfaces");
-static_assert(offsetof(GfxWorld, draw) == 0x488, "GfxWorld.draw");
-static_assert(sizeof(GfxWorld) == 0x45D0, "GfxWorld == g_assetSizes[31]");
+static_assert(offsetof(GfxWorld, smodels) == 0x150, "GfxWorld.smodels");
+static_assert(offsetof(GfxWorld, draw) == 0x648, "GfxWorld.draw");
+static_assert(sizeof(GfxWorld) == 0x4590, "GfxWorld == Replay 1.20 loader body");
 
 // Retail checksum offset (NOT a struct member here because the tail is opaque-padded):
 //   GFXWORLD_RETAIL_CHECKSUM_OFFSET = 0x3E60  (proven: gfx[0x3E60] == col_map[0xF0], 3 real

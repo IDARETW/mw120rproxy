@@ -7,8 +7,8 @@
 namespace iw8
 {
 
-// RETAIL (1.24 PC) stream indices. The header carries blockSize[11], BUT the retail zone-memory
-// allocator DB_AllocXZoneMemoryInternal (sub_140001E410D0) only reserves streams 0..7 (loop
+// Replay 1.20 PC stream indices. The header carries blockSize[11], but the zone-memory allocator
+// DB_AllocXZoneMemoryInternal only reserves streams 0..7 (loop
 // `v9<8`); streams 8..10 are header-only and NEVER get a memory region. The 8 streams map to 4
 // regions via off_140004A69A80 = {2,2,2,0,0,0,1,3} (DWORD table, mapper sub_140001830B50:
 // region0={3,4,5}, region1={6}, region2={0,1,2}, region3={7}). Empirically (mp_aniyah_tac.ff +
@@ -74,8 +74,8 @@ class ZoneBuffer
     // committed, zeroed backing instead of the null/short stream-4 region that memset(NULL)'d at
     // load (retail 0x48E3954 via 0x1E4A638). Tracked in calcSize_ so the .ff writer can decouple
     // XFile.size (= body raw len = the single Oodle frame's decompressed length) from ΣblockSize (=
-    // body + calc). Do NOT align() before a reserveCalc — align() materializes zero BODY bytes and
-    // would desync body.size() from XFile.size.
+    // body + calc). Call align() with the native allocator's alignment mask before reserving an
+    // aligned object. Both operations change memory reservations without adding file payload.
     //
     void reserveCalc(size_t n)
     {

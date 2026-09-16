@@ -5,8 +5,12 @@
 #include "log.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+
+#include <Windows.h>
 
 namespace zt
 {
@@ -50,20 +54,54 @@ bool iw8_write(const std::string &outputPath, const std::vector<uint8_t> &zoneBo
         mkdirs(directory);
     }
 
-    FILE *file = std::fopen(outputPath.c_str(), "wb");
+    // Write beside the destination and replace it only after the complete file
+    // has been flushed. A failed conversion must never leave a truncated .ff
+    // that looks installable to the launcher.
+    const std::string temporaryPath = outputPath + ".partial";
+    std::error_code removeError;
+    std::filesystem::remove(temporaryPath, removeError);
+    constexpr size_t headerSize = 0x88;
+    const auto targetDirectory =
+        std::filesystem::absolute(directory.empty() ? "." : directory).wstring();
+    ULARGE_INTEGER available{};
+    if (GetDiskFreeSpaceExW(targetDirectory.c_str(), &available, nullptr, nullptr) &&
+        available.QuadPart < resident.size() + headerSize)
+    {
+        err("iw8: insufficient free space for %s (need %llu bytes, available %llu bytes)",
+            outputPath.c_str(), static_cast<unsigned long long>(resident.size() + headerSize),
+            static_cast<unsigned long long>(available.QuadPart));
+        return false;
+    }
+    FILE *file = std::fopen(temporaryPath.c_str(), "wb");
     if (!file)
     {
-        err("iw8: cannot open %s for writing", outputPath.c_str());
+        err("iw8: cannot open %s for writing", temporaryPath.c_str());
         return false;
     }
 
-    constexpr size_t headerSize = 0x88;
     const bool written = std::fwrite(&header, 1, headerSize, file) == headerSize &&
                          std::fwrite(resident.data(), 1, resident.size(), file) == resident.size();
+    const int writeError = written ? 0 : errno;
     const bool closed = std::fclose(file) == 0;
+    const int closeError = closed ? 0 : errno;
     if (!written || !closed)
     {
-        err("iw8: failed to write %s", outputPath.c_str());
+        std::filesystem::remove(temporaryPath, removeError);
+        err("iw8: failed to write %s (%s)", outputPath.c_str(),
+            (writeError || closeError) ? std::strerror(writeError ? writeError : closeError) :
+                                         "short write or flush");
+        return false;
+    }
+
+    const std::filesystem::path destination = std::filesystem::absolute(outputPath);
+    const std::filesystem::path temporary = std::filesystem::absolute(temporaryPath);
+    if (!MoveFileExW(temporary.c_str(), destination.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        const DWORD error = GetLastError();
+        std::filesystem::remove(temporary, removeError);
+        err("iw8: cannot publish %s (Windows error %lu)", outputPath.c_str(),
+            static_cast<unsigned long>(error));
         return false;
     }
 

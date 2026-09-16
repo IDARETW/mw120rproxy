@@ -13,8 +13,8 @@ struct XseVertex
 {
     float xyz[3] = {0, 0, 0};
     float binormalSign = 0.f;
-    uint32_t color = 0;    // GfxColor.packed (RGBA bytes)
-    uint32_t texCoord = 0; // PackedTexCoords (two half-floats: lo=u, hi=v)
+    uint32_t color = 0;    // GfxColor.packed (BGRA bytes)
+    uint32_t texCoord = 0; // PackedTexCoords (two half-floats: lo=v, hi=u)
     uint32_t normal = 0;   // PackedUnitVec (4 signed bytes)
     uint32_t tangent = 0;  // PackedUnitVec
 };
@@ -79,9 +79,7 @@ struct XseFile
 XseFile parseXse(const std::vector<uint8_t> &xseFileBytes, const std::string &surfaceName);
 
 // Convenience: read <dumpDir>/XSurface/<surfaceName>.xse off disk and parseXse() it. Returns
-// loaded=false (with parseError) if the file is missing/unreadable. This is the entry the IW8
-// writer (write_xsurface.cpp) and the dump CLI use — it does NOT touch DumpSource (whose public
-// loadXSurface stub stays as-is) so there is no symbol clash. Fully offline.
+// loaded=false (with parseError) if the file is missing or unreadable.
 XseFile loadXseFile(const std::string &dumpDir, const std::string &surfaceName);
 
 } // namespace dumpsrc

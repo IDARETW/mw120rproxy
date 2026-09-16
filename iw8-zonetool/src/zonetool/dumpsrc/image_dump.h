@@ -32,6 +32,8 @@ struct ImageDumpFile
     int32_t height = 0;
     int32_t width = 0;
     int32_t depth = 0;
+    uint16_t numElements = 1; // DX10 array size (cube count for cube arrays)
+    bool ddsPayload = false;  // DDS payload is slice-major; other dump layouts are not assumed
 
     // GfxImageLoadDef block (STALE for map sidecars — carried best-effort)
     uint8_t mipLevels = 0;
@@ -56,7 +58,7 @@ struct Iw8ImageDef
     uint16_t width = 0;
     uint16_t height = 0;
     uint16_t depth = 1;
-    uint16_t numElements = 1; // 6 for cube
+    uint16_t numElements = 1; // array element count; cube arrays count cubes, not faces
     uint8_t semantic = 0;     // TextureSemantic
     uint8_t category = 0;     // GfxImageCategory
     uint8_t levelCount = 1;

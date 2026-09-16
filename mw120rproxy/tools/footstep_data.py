@@ -1,5 +1,3 @@
-from local_paths import COD4
-
 """Preserve authored surface categories in a compact walkable-triangle sidecar."""
 
 import json, math, struct
@@ -14,7 +12,7 @@ def surface_type(source, name):
     else:
         # Mod Tools raw materials use their on-disk header, not MaterialInfo.
         # Surface flags at byte 32 encode the IW3 type in bits 20..24.
-        p = (COD4 / "raw/materials") / name.lstrip(
+        p = Path(r"E:/CoD4/game_build/Call of Duty 4 Modern Warfare/raw/materials") / name.lstrip(
             ","
         )
         b = p.read_bytes() if p.exists() else b""

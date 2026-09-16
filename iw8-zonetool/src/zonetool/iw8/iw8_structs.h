@@ -39,12 +39,16 @@ enum IW8_XAssetType : int32_t
     ASSET_TYPE_FOGSPLINE = 37,
     ASSET_TYPE_ANIMCLASS = 38,
     ASSET_TYPE_PLAYERANIM = 39,
+    ASSET_TYPE_VFX = 44, // ParticleSystemDef
     ASSET_TYPE_IMPACT_FX = 45,
     ASSET_TYPE_SURFACE_FX = 46,
     ASSET_TYPE_RAWFILE = 51,
     ASSET_TYPE_SCRIPTFILE = 52,
     ASSET_TYPE_STRINGTABLE = 54,
+    ASSET_TYPE_NET_CONST_STRINGS = 61,
     ASSET_TYPE_LUAFILE = 62,
+    ASSET_TYPE_DYNENTITYLIST = 113,
+    ASSET_TYPE_EDGELIST = 116,
     ASSET_TYPE_COUNT = 0x100,
 };
 
@@ -52,33 +56,43 @@ enum IW8_XAssetType : int32_t
 // sizeof-equal this. ---
 namespace iw8sz
 {
+constexpr size_t PHYSICSASSET = 0x58;
 constexpr size_t XANIM = 0xA0;
 constexpr size_t XMODELSURFS = 0x60;
 constexpr size_t XMODEL = 0x2B0;
 constexpr size_t MATERIAL = 0x78;
 constexpr size_t TECHSET = 0x40;
 constexpr size_t IMAGE = 0xE8;
+constexpr size_t VFX = 0x80;
 constexpr size_t SOUNDBANK = 0x200;
 constexpr size_t COL_MAP = 0xF8;
 constexpr size_t COM_MAP = 0xA8;
 constexpr size_t GLASS_MAP = 0x10;
-constexpr size_t MAP_ENTS = 0x428;
+constexpr size_t MAP_ENTS = 0x408;
 constexpr size_t FX_MAP = 0x3CD0;
-constexpr size_t GFX_MAP = 0x45D0;
+constexpr size_t GFX_MAP = 0x4590;
 constexpr size_t GFX_MAP_TRZONE = 0x148;
 constexpr size_t LIGHTDEF = 0x20;
+constexpr size_t DYNENTITYLIST = 0x40;
+constexpr size_t EDGELIST = 0xA0;
 
 // String name used by build logging. Keep in sync with IW8_XAssetType.
 inline const char *type_name(int t)
 {
     switch (t)
     {
+    case ASSET_TYPE_PHYSICSASSET:
+        return "physicsasset";
     case ASSET_TYPE_XMODELSURFS:
         return "xmodelsurfs";
     case ASSET_TYPE_XMODEL:
         return "xmodel";
     case ASSET_TYPE_MATERIAL:
         return "material";
+    case ASSET_TYPE_VERTEXSHADER:
+        return "vertexshader";
+    case ASSET_TYPE_PIXELSHADER:
+        return "pixelshader";
     case ASSET_TYPE_IMAGE:
         return "image";
     case ASSET_TYPE_TECHSET:
@@ -103,6 +117,12 @@ inline const char *type_name(int t)
         return "surfacefx";
     case ASSET_TYPE_RAWFILE:
         return "rawfile";
+    case ASSET_TYPE_NET_CONST_STRINGS:
+        return "net_const_strings";
+    case ASSET_TYPE_DYNENTITYLIST:
+        return "dynentitylist";
+    case ASSET_TYPE_EDGELIST:
+        return "edgelist";
     default:
         return "unknown";
     }

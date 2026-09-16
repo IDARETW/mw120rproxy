@@ -41,6 +41,24 @@ if (-not $writer.Contains($clipMapPvs)) {
     $writer = $writer.Replace($clipMap, "$clipMap`r`n    $clipMapPvs")
 }
 
+$model = 'RegisterAssetDumper(std::make_unique<replay_export::Model>());'
+if (-not $writer.Contains($model)) {
+    $anchor = 'RegisterAssetDumper(std::make_unique<xmodel::DumperIW3>());'
+    if (($writer.Split($anchor).Count - 1) -ne 1) {
+        throw 'Could not find the IW3 model registration anchor'
+    }
+    $writer = $writer.Replace($anchor, "$anchor`r`n    $model")
+}
+
+$comWorld = 'RegisterAssetDumper(std::make_unique<replay_export::ComWorld>());'
+if (-not $writer.Contains($comWorld)) {
+    $anchor = '// REGISTER_DUMPER(AssetDumperComWorld)'
+    if (($writer.Split($anchor).Count - 1) -ne 1) {
+        throw 'Could not find the IW3 common-world registration anchor'
+    }
+    $writer = $writer.Replace($anchor, $comWorld)
+}
+
 $world = 'RegisterAssetDumper(std::make_unique<replay_export::World>());'
 if (-not $writer.Contains($world)) {
     $anchor = '// REGISTER_DUMPER(AssetDumperGfxWorld)'
@@ -48,6 +66,15 @@ if (-not $writer.Contains($world)) {
         throw 'Could not find the IW3 world registration anchor'
     }
     $writer = $writer.Replace($anchor, $world)
+}
+
+$fx = 'RegisterAssetDumper(std::make_unique<replay_export::Fx>());'
+if (-not $writer.Contains($fx)) {
+    $anchor = '// REGISTER_DUMPER(AssetDumperFxEffectDef)'
+    if (($writer.Split($anchor).Count - 1) -ne 1) {
+        throw 'Could not find the IW3 FX registration anchor'
+    }
+    $writer = $writer.Replace($anchor, "$fx`r`n    $anchor")
 }
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ReplayMapDumpers.h') `

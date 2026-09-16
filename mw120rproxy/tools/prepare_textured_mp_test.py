@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import io
 import json
-from local_paths import UNLINKER
 from pathlib import Path
 import shutil
 import struct
@@ -27,7 +26,10 @@ NAMES = ("ch_tile_floor03_col", "ch_tile_floor05_col", "chechnya_ft")
 
 def decode_wavelet(data):
     """Use OpenAssetTools' IW Huffman/wavelet decoder, retaining every image face."""
-    converter = UNLINKER.with_name("ImageConverter.exe")
+    converter = (
+        Path(__file__).resolve().parent
+        / "_vendor/OpenAssetTools/build/bin/Release_x86/ImageConverter.exe"
+    )
     if not converter.is_file():
         raise FileNotFoundError(
             "Wavelet IWI decoding requires the OpenAssetTools ImageConverter executable: "
@@ -277,7 +279,7 @@ def prepare(source, target):
         "game_tested": False,
         "limitations": [
             "Color textures only; original normal/specular maps and baked lighting are not imported.",
-            "Distant sky enclosure; cube orientation and native culling require in-game visual verification.",
+            "Distant sky enclosure; cube orientation and native culling require owner visual verification.",
         ],
     }
     (target / "texture_import.json").write_text(json.dumps(report, indent=2) + "\n")

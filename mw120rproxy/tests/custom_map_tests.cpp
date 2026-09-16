@@ -8,7 +8,6 @@
 #include "custom_physics.h"
 #include "custom_collision.h"
 #include "custom_omnvars.h"
-#include "custom_render.h"
 #include "custom_map_ui.h"
 #include "custom_images.h"
 #include "custom_audio.h"
@@ -50,7 +49,12 @@ void Check(bool value, const char* message) {
     }
 }
 fs::path root, packageRoot;
-const std::string id = "mp_proxy_fixture_" + std::to_string(GetCurrentProcessId());
+const std::string id = "mp_p" + std::to_string(GetCurrentProcessId());
+const std::string nestedId = id + "_n";
+const std::string largeId = id + "_l";
+const std::string contractId = id + "_c";
+const std::string fastfilesId = id + "_f";
+const std::string longId = "mp_1234567890123";
 void Text(const fs::path& path, const std::string& text) {
     std::ofstream(path) << text;
 }
@@ -105,38 +109,49 @@ void PackageTests() {
     root = fs::path(exe).parent_path();
     packageRoot = root / "mods/mw120r/maps";
     MakePackage(id);
-    MakePackage(id + "_nested");
-    MakePackage(id + "_large");
-    MakePackage(id + "_contract");
-    MakePackage(id + "_fastfiles");
-    fs::remove(packageRoot / (id + "_fastfiles") / "manifest.json");
-    Text(packageRoot / (id + "_fastfiles") / "map.json",
-         "{\"title\":\"Fastfile Fixture\",\"description\":\"No manifest required\"}");
+    MakePackage(nestedId);
+    MakePackage(largeId);
+    MakePackage(contractId);
+    MakePackage(fastfilesId);
+    MakePackage(longId);
+    fs::remove(packageRoot / fastfilesId / "manifest.json");
+    Text(packageRoot / fastfilesId / "map.json",
+         "{\"name\":\"Fastfile Fixture\",\"description\":\"No manifest required\"}");
     Text(
-        packageRoot / (id + "_nested") / "manifest.json",
+        packageRoot / nestedId / "manifest.json",
         "{\"nested\":{\"schema\":1,\"id\":\"mp_proxy_nested\",\"title\":\"Wrong scope\",\"gametypes\":[\"tdm\"]}}");
-    std::fstream large(packageRoot / (id + "_large") / (id + "_large.ff"),
+    std::fstream large(packageRoot / largeId / (largeId + ".ff"),
                        std::ios::binary | std::ios::in | std::ios::out);
     large.seekp(0x24);
     const uint32_t high = 1;
     large.write(reinterpret_cast<const char*>(&high), 4);
     large.close();
     Text(
-        packageRoot / (id + "_contract") / "manifest.json",
-        "{\"schema\":1,\"id\":\"" + id +
-            "_contract\",\"title\":\"Fixture\",\"gametypes\":[\"tdm\"],\"visibility\":\"unknown\"}");
+        packageRoot / contractId / "manifest.json",
+        "{\"schema\":1,\"id\":\"" + contractId +
+            "\",\"title\":\"Fixture\",\"gametypes\":[\"tdm\"],\"visibility\":\"unknown\"}");
     custommaps::Initialize(GetModuleHandleW(nullptr));
     Check(custommaps::Select(id.c_str()), "valid structural package selected");
-    Check(!custommaps::Select((id + "_nested").c_str()),
+    Check(!custommaps::Select(nestedId.c_str()),
           "nested manifest keys cannot satisfy top-level schema");
-    Check(!custommaps::Select((id + "_large").c_str()),
+    Check(!custommaps::Select(largeId.c_str()),
           "64-bit inflated size cannot evade block-size validation");
-    Check(!custommaps::Select((id + "_contract").c_str()),
+    Check(!custommaps::Select(contractId.c_str()),
           "unknown generated-world contracts are rejected");
-    Check(custommaps::Select((id + "_fastfiles").c_str()),
+    Check(!custommaps::Select(longId.c_str()),
+          "map ids longer than Replay's native field are rejected");
+    Check(custommaps::Select(fastfilesId.c_str()),
           "fastfile-only package with optional map metadata is accepted");
-    Check(custommaps::ActiveWorldContract(),
-          "fastfile-only package uses the native world contract");
+    Text(packageRoot / fastfilesId / "map.json",
+         "{\"name\":\"One\",\"title\":\"Two\"}");
+    custommaps::Refresh();
+    Check(!custommaps::Select(fastfilesId.c_str()),
+          "conflicting map metadata aliases are rejected");
+    Text(packageRoot / fastfilesId / "map.json",
+         "{\"name\":\"Fastfile Fixture\",\"description\":\"No manifest required\"}");
+    custommaps::Refresh();
+    Check(custommaps::Select(fastfilesId.c_str()),
+          "name-only map metadata remains accepted after reload");
     Check(custommaps::Select(id.c_str()), "manifest package can be reselected");
     std::string target;
     Check(custommaps::ResolveDiskRead(("zone/" + id + ".ff").c_str(), target),
@@ -559,134 +574,6 @@ void RuntimeTests() {
     Check(custommaps::Active().empty(), "full native command buffer rolls back selection");
     puts(
         "PASS: real-prologue native disk handles, overlay and six-argument key ABI, input lifecycle, Cbuf routing, frontend gate and overflow rollback");
-}
-unsigned visibilityCalls = 0, queryCalls = 0, expectedVisibility = 0;
-void NativeVisibility(unsigned view) {
-    Check(view == 0, "camera visibility ABI");
-    ++visibilityCalls;
-    SetLastError(0x9999);
-}
-void NativeQuery(const void* command) {
-    Check(command && visibilityCalls == expectedVisibility,
-          "fallback precedes native query completion");
-    Check(GetLastError() == 0x1234, "visibility wrapper preserves incoming LastError");
-    ++queryCalls;
-}
-unsigned nativeDrawCalls = 0;
-void NativeBspDraw(const void*) {
-    ++nativeDrawCalls;
-    SetLastError(0x3456);
-}
-void NativeBspDispatch(void*, const void*) {
-    ++nativeDrawCalls;
-    SetLastError(0x4567);
-}
-void RenderTests() {
-    for (uintptr_t rva : {0x18CDD20, 0x18F1EE0, 0x10C77870, 0x18D19C0, 0x18F9460})
-        Commit(rva);
-    PrologueFixture(replay::UmbraQueryStaticVisibilityCmd, {0x41, 0x5C, 0x5F, 0x5D},
-                    reinterpret_cast<const void*>(&NativeQuery));
-    PrologueFixture(replay::UmbraSetAllVisible, {},
-                    reinterpret_cast<const void*>(&NativeVisibility));
-    PrologueFixture(replay::AddBspDrawSurfacesCamera, {0x48, 0x81, 0xC4, 0xB0, 0, 0, 0, 0x5D},
-                    reinterpret_cast<const void*>(&NativeBspDraw));
-    PrologueFixture(replay::DrawBspSurf,
-                    {0x48, 0x8B, 0x74, 0x24, 0x60, 0x48, 0x83, 0xC4, 0x40, 0x5F},
-                    reinterpret_cast<const void*>(&NativeBspDispatch));
-    Check(customrender::Install(reinterpret_cast<uintptr_t>(image)) == hook::Status::Installed,
-          "checked visibility hook installed");
-    Check(!memcmp(image + replay::AddBspDrawSurfacesCamera.rva,
-                  replay::AddBspDrawSurfacesCamera.bytes, replay::AddBspDrawSurfacesCamera.size) &&
-              !memcmp(image + replay::DrawBspSurf.rva, replay::DrawBspSurf.bytes,
-                      replay::DrawBspSurf.size),
-          "BSP draw entry points remain unpatched");
-    reinterpret_cast<void (*)(const void*)>(image + replay::AddBspDrawSurfacesCamera.rva)(nullptr);
-    Check(nativeDrawCalls == 1 && GetLastError() == 0x3456, "native BSP call preserves LastError");
-    uintptr_t context[2]{};
-    reinterpret_cast<void (*)(void*, const void*)>(image + replay::DrawBspSurf.rva)(nullptr,
-                                                                                    context);
-    Check(nativeDrawCalls == 2 && GetLastError() == 0x4567,
-          "native BSP dispatch preserves LastError");
-    std::array<unsigned char, 0x4590> world{};
-    std::array<unsigned char, 0xA0> command{};
-    const char* name = "maps/mp/mp_test.d3dbsp";
-    memcpy(world.data(), &name, 8);
-    const auto worldPointer = reinterpret_cast<uintptr_t>(world.data());
-    const auto put32 = [&](size_t offset, unsigned value) {
-        memcpy(world.data() + offset, &value, sizeof(value));
-    };
-    const auto putPointer = [&](size_t offset, uintptr_t value) {
-        memcpy(world.data() + offset, &value, sizeof(value));
-    };
-    put32(0x10, 243);
-    put32(0x14, 1);
-    put32(0x18, 2);
-    for (const size_t offset : {0x1C, 0x24, 0x2C, 0x34})
-        put32(offset, 2);
-    put32(0x90, 1);
-    put32(0xC8, 1);
-    put32(0xCC, 1);
-    put32(0x7CC, 1);
-    put32(0x3DF0, 1);
-    put32(0x3F9C, 1);
-    put32(0x3FA0, 1);
-    for (const size_t offset : {0xA8, 0xB0, 0xB8, 0xC0, 0xF0, 0xF8, 0x100, 0x108, 0x7D0, 0x3D68,
-                                0x3DF8, 0x3EF0, 0x3EF8, 0x41C0})
-        putPointer(offset, worldPointer);
-    auto ptr = world.data();
-    memcpy(image + 0x10C77870, &ptr, 8);
-    MakePackage("mp_test");
-    custommaps::Refresh();
-    Check(custommaps::Select("mp_test"), "select visibility fixture");
-    auto query = reinterpret_cast<void (*)(const void*)>(image + 0x18CDD20);
-    const auto run = [&]() {
-        SetLastError(0x1234);
-        query(command.data());
-    };
-    expectedVisibility = 1;
-    run();
-    put32(0xC8, 4097);
-    run();
-    put32(0xC8, 1);
-    command[0x7C] = 1;
-    run();
-    command[0x7C] = 0;
-    world[0x4460] = 1;
-    run();
-    world[0x4460] = 0;
-    name = "maps/mp/mp_shipment.d3dbsp";
-    memcpy(world.data(), &name, 8);
-    run();
-    name = "maps/mp/mp_test.d3dbsp";
-    memcpy(world.data(), &name, 8);
-    custommaps::ClearSelection();
-    run();
-    Check(visibilityCalls == 1 && queryCalls == 6,
-          "only a validated first job of the selected no-tome world uses fallback");
-    MakePackage("mp_4doffice");
-    MakePackage("mp_nuketown");
-    custommaps::Refresh();
-    Check(custommaps::Select("mp_4doffice"), "select second map");
-    name = "maps/mp/mp_4doffice.d3dbsp";
-    memcpy(world.data(), &name, 8);
-    expectedVisibility = 2;
-    run();
-    Check(custommaps::Select("mp_nuketown"), "select third map");
-    run(); // The old office world must not match the newly selected map.
-    name = "maps/mp/mp_nuketown.d3dbsp";
-    memcpy(world.data(), &name, 8);
-    expectedVisibility = 3;
-    run();
-    Check(visibilityCalls == 3 && queryCalls == 9,
-          "visibility follows selected map and rejects stale world");
-    custommaps::ClearSelection();
-    fs::remove_all(packageRoot / "mp_4doffice");
-    fs::remove_all(packageRoot / "mp_nuketown");
-    // This fixed-name disposable package was created above only if absent.
-    fs::remove_all(packageRoot / "mp_test");
-    custommaps::Refresh();
-    puts(
-        "PASS: native visibility hook ABI, generated-world contract and completion order; malformed worlds, later jobs, real tomes, stock worlds and unselected maps pass through");
 }
 unsigned deserializeCalls = 0, clearMainCalls = 0, setMainCalls = 0, physicsLocks = 0;
 void* lastRaw = nullptr;
@@ -1578,6 +1465,9 @@ void NativeMapList() {
     *reinterpret_cast<int*>(image + 0xC4FD8B4) = 2;
 }
 void MapMenuTests() {
+    for (const auto& name : {id, nestedId, largeId, contractId, fastfilesId, longId})
+        fs::remove_all(packageRoot / name);
+    custommaps::Refresh();
     const std::string menuId = "mp_ui" + std::to_string(GetCurrentProcessId());
     Check(menuId.size() < 16, "native map id fixture fits engine field");
     MakePackage(menuId);
@@ -1608,6 +1498,7 @@ void MapMenuTests() {
     custommapui::SyncSelection("mp_shipment");
     Check(custommaps::Active().empty(), "stock map choice clears custom routing");
     fs::remove_all(packageRoot / menuId);
+    MakePackage(id);
     custommaps::Refresh();
     puts(
         "PASS: native map-list hook, display fields, valid package filtering, reload and normal-UI selection routing (arena loader mocked)");
@@ -1700,16 +1591,12 @@ int main(int argc, char** argv) {
                                                          {RuntimeTests, "UI"},
                                                          {NoclipTests, "noclip"},
                                                          {MapMenuTests, "map menu"},
-                                                         {RenderTests, "render"},
                                                          {PhysicsTests, "physics/ladder/glass"},
                                                          {ConvexNativeTests, "convex"},
                                                          {CompoundNativeTests, "compound"},
                                                          {OmnvarTests, "omnvars"}})
         RunFixture(test.first, test.second);
-    if (argc > 1)
-        NetConstTests(argv[1]);
-    else
-        puts("SKIP: Replay NCS package fixture not supplied");
+    NetConstTests(argc > 1 ? argv[1] : "custom_map_sources/mp_test/replay_package_v9");
     RunFixture(CustomImageTests, "custom images");
     RunFixture(CustomSurfaceTests, "custom surfaces");
     for (int packageIndex = 1; packageIndex < argc; ++packageIndex)
@@ -1743,8 +1630,7 @@ int main(int argc, char** argv) {
             }
         }
     // Only the three process-specific directories created by this test are removed.
-    for (const auto& name : {id, std::string(id + "_nested"), std::string(id + "_large"),
-                             std::string(id + "_contract"), std::string(id + "_fastfiles")})
+    for (const auto& name : {id, nestedId, largeId, contractId, fastfilesId, longId})
         fs::remove_all(packageRoot / name);
     return 0;
 }

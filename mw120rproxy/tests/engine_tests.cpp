@@ -166,10 +166,12 @@ uintptr_t NativeLinkAsset(int type, uintptr_t* header) {
     return 0x987;
 }
 const char* expectedText;
+int expectedPrintFlags = 3;
 uintptr_t expectedReader;
 va_list expectedArgs;
 uintptr_t NativePrint(unsigned channel, const char* text, int flags) {
-    Check(channel == 10 && text == expectedText && flags == 3 && GetLastError() == 0x1234,
+    Check(channel == 10 && text == expectedText && flags == expectedPrintFlags &&
+              GetLastError() == 0x1234,
           "print arguments and LastError forwarded");
     ++prints;
     SetLastError(0x4321);
@@ -242,6 +244,21 @@ void DiagnosticTests() {
               image + replay::PrintMessage.rva)(10, expectedText, 3) == 0xABC &&
               GetLastError() == 0x4321,
           "print result preserved");
+    expectedText = "repeated routine movement output\n";
+    expectedPrintFlags = 0;
+    for (unsigned i = 0; i < 500; ++i) {
+        SetLastError(0x1234);
+        Check(reinterpret_cast<uintptr_t (*)(unsigned, const char*, int)>(
+                  image + replay::PrintMessage.rva)(10, expectedText, expectedPrintFlags) ==
+                      0xABC &&
+                  GetLastError() == 0x4321,
+              "throttled file output still forwards every native print");
+    }
+    expectedPrintFlags = 3;
+    expectedText = "error after routine print flood\n";
+    SetLastError(0x1234);
+    reinterpret_cast<uintptr_t (*)(unsigned, const char*, int)>(image + replay::PrintMessage.rva)(
+        10, expectedText, expectedPrintFlags);
     std::vector<unsigned char> reader(0x120), descriptor(0x120), state(0x98400);
     strcpy_s(reinterpret_cast<char*>(descriptor.data()), descriptor.size(), "techsets_mp_test.ff");
     descriptor[0x50] = 1;
@@ -271,7 +288,14 @@ void DiagnosticTests() {
           "Sys_Error formatted text:", "frame[0]", "ASSET BEGIN type=29", "HavokBytes=0"})
         Check(log.find(expected) != std::string::npos,
               "diagnostic log includes native message, decoder state and stack");
-    Check(prints == 1 && discs == 1 && coms == 1 && fatals == 1,
+    const std::string repeated = "repeated routine movement output";
+    const auto firstRoutine = log.find(repeated);
+    Check(firstRoutine != std::string::npos &&
+              log.find(repeated, firstRoutine + 1) == std::string::npos &&
+              log.find("error after routine print flood") != std::string::npos &&
+              log.find("Omitted 499 repeated/burst non-error messages") != std::string::npos,
+          "routine print flood is bounded while subsequent error evidence survives");
+    Check(prints == 502 && discs == 1 && coms == 1 && fatals == 1,
           "all original error sinks called exactly once");
     puts(
         "PASS: four real-prologue error hooks preserve native ABI, va_list, return values and LastError; flushed call-chain log verified");

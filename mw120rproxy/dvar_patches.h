@@ -10,8 +10,13 @@ namespace dvars {
 // the A/B online-MP route block (UI-online dvars on, direct-service dvars off).
 void InitDefaults(bool onlineMpRoute, bool luiForceOnline = true);
 
+// True while a non-bool boot override needs the core registration hook even when
+// the optional dvar tracer is disabled.
+bool HasVariantBootOverrides();
+
 // Install the Dvar_RegisterBool override hook (+ the Dvar_RegisterVariant trace
-// hook when hookVariant). Verifies the decrypted prologue first; returns false
+// hook when hookVariant or a non-bool boot override requires it). Verifies the
+// decrypted prologue first; returns false
 // while .text is still ciphertext so the LoadImageA trigger retries. If the RVA
 // is still 0 (unknown) it logs once and returns true (nothing to retry).
 hook::Status InstallHook(uintptr_t moduleBase, bool hookBool, bool hookVariant);

@@ -1,7 +1,7 @@
 """Bounded CoD4 v25 raw-model reader for static Radiant props.
 
 Format cross-checked against mauserzjeh/cod-asset-importer assets/xmodel.rs and
-xmodelsurf.rs and Mod Tools files. No Blender/runtime dependency.
+xmodelsurf.rs and the owner's Mod Tools files. No Blender/runtime dependency.
 Positions in v25 surfaces are model-space bind positions; no animation is run.
 """
 

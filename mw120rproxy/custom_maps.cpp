@@ -337,12 +337,20 @@ bool ReadFastfileMetadata(custommaps::Package& package,
 
     std::string id;
     std::string title;
+    std::string name;
     std::string description;
     if (!OptionalString(text, "id", id) || !OptionalString(text, "title", title) ||
+        !OptionalString(text, "name", name) ||
         !OptionalString(text, "description", description)) {
         package.error = "map.json metadata must use strings";
         return false;
     }
+    if (!name.empty() && !title.empty() && name != title) {
+        package.error = "map.json name and title must match when both are present";
+        return false;
+    }
+    if (title.empty())
+        title = std::move(name);
     if (!id.empty() && id != package.id) {
         package.error = "map.json id must match the map folder";
         return false;

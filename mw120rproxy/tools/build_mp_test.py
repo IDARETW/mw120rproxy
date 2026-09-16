@@ -494,7 +494,7 @@ def build(args):
         description="Radiant world and static CoD4 props. Convex brush collision; Team Deathmatch; no bot navigation.",
         collision="convex-v3",
         glass="panes-v2",
-        visibility="all-visible-v1",
+        visibility="native-umbra-v1",
         world="replay-1.20-native-v1",
     )
     glass_data = glass_panes.encode(panes, surfaces)
@@ -506,7 +506,7 @@ def build(args):
 
     preview(package, "mp_test")
     spatial_grid = None
-    run([converter, "validate-output", package, "mp_test"], REPO, out / "validate.log")
+    run([converter, "validate-package", package, "mp_test"], REPO, out / "validate.log")
     run(
         [
             sys.executable,
@@ -611,9 +611,7 @@ def build(args):
                 "Bypass",
                 "-File",
                 TOOLS / "deploy_custom_map.ps1",
-                "-GameRoot",
-                args.replay.parent,
-                "-MapOutput",
+                "-PackageDir",
                 package,
             ],
             REPO,

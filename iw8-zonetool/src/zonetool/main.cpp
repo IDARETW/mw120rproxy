@@ -13,6 +13,7 @@
 #include "iw8/iw8_zone.h"
 #include "iw8/map_zone.h"
 #include "iw8/maps_write.h"
+#include "iw8/replay_dynentity.h"
 #include "iw8/replay_havok.h"
 #include "iw8/replay_impact.h"
 #include "iw8/replay_render.h"
@@ -22,9 +23,11 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -41,6 +44,7 @@ struct Args
     std::string collisionPath;
     std::string footstepsPath;
     std::string unlinkerExecutable;
+    std::vector<std::string> iw3Roots;
     std::vector<std::string> searchPaths;
     std::string metadataPath;
     std::string lightingProfile = "source";
@@ -66,9 +70,10 @@ void printUsage()
                 "  iw8-zonetool validate-output <map_output> <map>\n"
                 "options:\n"
                 "  --replay <game_dx12_ship_replay.exe>\n"
-                "  --collision <collision.bin>\n"
-                "  --footsteps <footsteps.bin>\n"
+                "  --collision <native collision input>\n"
+                "  --footsteps <native footstep input>\n"
                 "  --unlinker <OpenAssetTools\\Unlinker.exe>\n"
+                "  --iw3-root <CoD4 installation>\n"
                 "  --search-path <IW3 asset directory>\n"
                 "  --metadata <map.json>\n"
                 "  --lighting-profile source|aniyah-incursion\n"
@@ -106,6 +111,10 @@ bool parseArgs(const int argc, char **argv, Args &args)
         else if (value == "--unlinker" && index + 1 < argc)
         {
             args.unlinkerExecutable = argv[++index];
+        }
+        else if (value == "--iw3-root" && index + 1 < argc)
+        {
+            args.iw3Roots.emplace_back(argv[++index]);
         }
         else if (value == "--search-path" && index + 1 < argc)
         {
@@ -171,8 +180,7 @@ bool requireMapId(const std::string &map)
     {
         return true;
     }
-    err("map id '%s' is invalid; use at most 15 lower-case characters in mp_<name>",
-        map.c_str());
+    err("map id '%s' is invalid; use at most 15 lower-case characters in mp_<name>", map.c_str());
     return false;
 }
 
@@ -181,17 +189,14 @@ std::array<std::string, 5> zoneNames(const std::string &map)
     return {map, "srv_" + map, "eng_" + map, "ww_" + map, "techsets_" + map};
 }
 
-std::vector<std::string> expectedFiles(const std::string &map, const bool includeMetadata = false)
+std::vector<std::string> expectedFiles(const std::string &map)
 {
     std::vector<std::string> files;
     for (const std::string &zone : zoneNames(map))
     {
         files.push_back(zone + ".ff");
     }
-    if (includeMetadata)
-    {
-        files.emplace_back("map.json");
-    }
+    files.emplace_back("map.json");
     std::sort(files.begin(), files.end());
     return files;
 }
@@ -231,11 +236,16 @@ bool readMetadata(const std::string &path, MapMetadata &metadata)
             value = item->get<std::string>();
             return true;
         };
+        std::string name;
         if (!readString("id", metadata.id) || !readString("title", metadata.title) ||
-            !readString("description", metadata.description))
+            !readString("name", name) || !readString("description", metadata.description))
         {
-            throw std::runtime_error("id, title, and description must be strings");
+            throw std::runtime_error("id, name, title, and description must be strings");
         }
+        if (!name.empty() && !metadata.title.empty() && name != metadata.title)
+            throw std::runtime_error("name and title must match when both are present");
+        if (metadata.title.empty())
+            metadata.title = std::move(name);
         metadata.present = true;
     }
     catch (const std::exception &exception)
@@ -252,7 +262,8 @@ bool validateMetadata(const std::string &directory, const std::string &map, bool
     present = std::filesystem::exists(path);
     if (!present)
     {
-        return true;
+        err("metadata: package is missing map.json");
+        return false;
     }
 
     MapMetadata metadata;
@@ -270,11 +281,6 @@ bool validateMetadata(const std::string &directory, const std::string &map, bool
 
 bool writeMetadata(const std::string &directory, const MapMetadata &metadata)
 {
-    if (!metadata.present)
-    {
-        return true;
-    }
-
     nlohmann::json data = nlohmann::json::object();
     if (!metadata.id.empty())
     {
@@ -298,8 +304,7 @@ bool writeMetadata(const std::string &directory, const MapMetadata &metadata)
     return output.good();
 }
 
-bool prepareOutputDirectory(const std::string &outputDirectory, const std::string &map,
-                            const bool includeMetadata)
+bool prepareOutputDirectory(const std::string &outputDirectory, const std::string &map)
 {
     std::error_code error;
     if (!std::filesystem::exists(outputDirectory, error))
@@ -312,7 +317,7 @@ bool prepareOutputDirectory(const std::string &outputDirectory, const std::strin
         return false;
     }
 
-    const std::vector<std::string> expected = expectedFiles(map, includeMetadata);
+    const std::vector<std::string> expected = expectedFiles(map);
     for (const auto &entry : std::filesystem::directory_iterator(outputDirectory, error))
     {
         if (error || !entry.is_regular_file(error) ||
@@ -326,10 +331,16 @@ bool prepareOutputDirectory(const std::string &outputDirectory, const std::strin
     return !error;
 }
 
-bool validateZoneFile(const std::string &path)
+struct ZoneValidation
+{
+    uint32_t assetCount{};
+    std::array<uint32_t, ASSET_TYPE_COUNT> typeCounts{};
+};
+
+bool validateZoneFile(const std::string &path, ZoneValidation *details = nullptr)
 {
     std::vector<uint8_t> bytes;
-    if (!read_file(path, bytes) || bytes.size() < 0x8C)
+    if (!read_file(path, bytes) || bytes.size() < 0x8C + sizeof(IW8_XAssetList))
     {
         err("validate: cannot read a complete IW8 header from %s", path.c_str());
         return false;
@@ -354,15 +365,119 @@ bool validateZoneFile(const std::string &path)
         return false;
     }
 
+    if (header.transientFileType != 0 || header.residentHash != 0 ||
+        header.xfileHeader.preloadWalkSize != 0 ||
+        header.xfileHeader.blockSize[iw8::XFILE_BLOCK_TEMP] != sizeof(IW8_XAssetList) ||
+        header.xfileHeader.blockSize[iw8::XFILE_BLOCK_CALLBACK] != 0 ||
+        header.xfileHeader.blockSize[iw8::XFILE_BLOCK_SCRIPT] != 0 ||
+        header.xfileHeader.blockSize[iw8::XFILE_BLOCK_UNK10] != 0)
+    {
+        err("validate: %s has invalid Replay stream/header policy", path.c_str());
+        return false;
+    }
+
     uint64_t streamTotal = 0;
     for (const uint64_t size : header.xfileHeader.blockSize)
     {
+        if (size > (std::numeric_limits<uint64_t>::max)() - streamTotal)
+        {
+            err("validate: %s has overflowing stream sizes", path.c_str());
+            return false;
+        }
         streamTotal += size;
     }
     if (streamTotal < header.xfileHeader.size)
     {
         err("validate: %s has invalid stream sizes", path.c_str());
         return false;
+    }
+
+    IW8_XAssetList root{};
+    std::memcpy(&root, bytes.data() + 0x8C, sizeof(root));
+    const bool hasStrings = root.stringList.count != 0;
+    const bool hasAssets = root.assetCount != 0;
+    if (root.stringList.count < 0 || root.stringList.loaded != 0 || root.assetReadPos != 0 ||
+        root.stringList.strings !=
+            (hasStrings ? iw8::PTR_FOLLOWS : iw8::PTR_NULL) ||
+        root.assets != (hasAssets ? iw8::PTR_FOLLOWS : iw8::PTR_NULL) ||
+        (hasAssets && root.assetCount >
+                          header.xfileHeader.blockSize[iw8::XFILE_BLOCK_VIRTUAL] /
+                              sizeof(IW8_XAsset)))
+    {
+        err("validate: %s has an invalid root asset list", path.c_str());
+        return false;
+    }
+
+    size_t cursor = 0x8C + sizeof(root);
+    if (hasStrings)
+    {
+        const size_t stringCount = static_cast<size_t>(root.stringList.count);
+        if (stringCount > (bytes.size() - cursor) / sizeof(uint64_t))
+        {
+            err("validate: %s has a truncated script-string pointer list", path.c_str());
+            return false;
+        }
+        for (size_t index = 0; index < stringCount; ++index)
+        {
+            uint64_t pointer{};
+            std::memcpy(&pointer, bytes.data() + cursor, sizeof(pointer));
+            cursor += sizeof(pointer);
+            if (pointer != (index == 0 ? iw8::PTR_NULL : iw8::PTR_FOLLOWS))
+            {
+                err("validate: %s has an invalid script-string pointer", path.c_str());
+                return false;
+            }
+        }
+        for (size_t index = 1; index < stringCount; ++index)
+        {
+            const auto end = std::find(bytes.begin() + cursor, bytes.end(), uint8_t{});
+            if (end == bytes.end())
+            {
+                err("validate: %s has an unterminated script string", path.c_str());
+                return false;
+            }
+            cursor = static_cast<size_t>(end - bytes.begin()) + 1;
+        }
+    }
+
+    if (root.assetCount > (bytes.size() - cursor) / sizeof(IW8_XAsset))
+    {
+        err("validate: %s has a truncated top-level asset list", path.c_str());
+        return false;
+    }
+    std::array<uint32_t, ASSET_TYPE_COUNT> typeCounts{};
+    for (uint32_t index = 0; index < root.assetCount; ++index)
+    {
+        IW8_XAsset asset{};
+        std::memcpy(&asset, bytes.data() + cursor, sizeof(asset));
+        cursor += sizeof(asset);
+        if (asset.type < 0 || asset.type >= ASSET_TYPE_COUNT || asset._pad04 != 0 ||
+            (asset.header != iw8::PTR_INSERT &&
+             !(asset.type == ASSET_TYPE_LIGHTDEF && asset.header == iw8::PTR_FOLLOWS)))
+        {
+            err("validate: %s has an invalid top-level asset descriptor", path.c_str());
+            return false;
+        }
+        ++typeCounts[asset.type];
+    }
+    std::string summary;
+    for (size_t type = 0; type < typeCounts.size(); ++type)
+    {
+        if (!typeCounts[type])
+            continue;
+        if (!summary.empty())
+            summary += ", ";
+        const char *name = iw8sz::type_name(static_cast<int>(type));
+        summary += std::strcmp(name, "unknown") == 0 ? "type" + std::to_string(type) : name;
+        summary += '=';
+        summary += std::to_string(typeCounts[type]);
+    }
+    info("validate: %s contains %u top-level asset(s)%s%s", path.c_str(), root.assetCount,
+         summary.empty() ? "" : ": ", summary.c_str());
+    if (details)
+    {
+        details->assetCount = root.assetCount;
+        details->typeCounts = typeCounts;
     }
     return true;
 }
@@ -397,16 +512,42 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
         return false;
     }
     std::sort(actual.begin(), actual.end());
-    if (actual != expectedFiles(map, hasMetadata))
+    if (actual != expectedFiles(map))
     {
-        err("validate: output must contain exactly five map fastfiles and optional map.json");
+        err("validate: output must contain exactly five map fastfiles and map.json");
         return false;
     }
 
+    const auto zones = zoneNames(map);
+    std::array<ZoneValidation, 5> validation{};
     bool valid = true;
-    for (const std::string &zone : zoneNames(map))
+    for (size_t index = 0; index < zones.size(); ++index)
     {
-        valid = validateZoneFile(path_join(packageDirectory, zone + ".ff")) && valid;
+        valid = validateZoneFile(path_join(packageDirectory, zones[index] + ".ff"),
+                                 &validation[index]) &&
+                valid;
+    }
+    if (valid)
+    {
+        const auto &main = validation[0].typeCounts;
+        const auto &server = validation[1].typeCounts;
+        if (main[ASSET_TYPE_GFX_MAP] != 1 || main[ASSET_TYPE_GLASS_MAP] != 1 ||
+            main[ASSET_TYPE_IMPACT_FX] != 1 || server[ASSET_TYPE_COL_MAP] != 1 ||
+            server[ASSET_TYPE_COM_MAP] != 1 || server[ASSET_TYPE_MAP_ENTS] != 1 ||
+            server[ASSET_TYPE_NET_CONST_STRINGS] != replayncs::Count)
+        {
+            err("validate: package is missing a required native Replay map asset");
+            valid = false;
+        }
+        for (size_t index = 2; index < validation.size(); ++index)
+        {
+            if (validation[index].assetCount)
+            {
+                err("validate: generated localization/techset companion zones must be empty");
+                valid = false;
+                break;
+            }
+        }
     }
     if (valid)
     {
@@ -415,12 +556,13 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
     return valid;
 }
 
-const char *defaultEntities = "{ 212 \"worldspawn\" }\n"
-                              "{ 212 \"info_player_start\" 709 \"0 0 64\" 80 \"0 0 0\" }\n"
-                              "{ 212 \"mp_tdm_spawn\" 709 \"0 0 64\" 80 \"0 0 0\" }\n"
-                              "{ 212 \"mp_tdm_spawn_allies_start\" 709 \"-64 0 64\" 80 \"0 0 0\" }\n"
-                              "{ 212 \"mp_tdm_spawn_axis_start\" 709 \"64 0 64\" 80 \"0 180 0\" }\n"
-                              "{ 212 \"script_model\" 709 \"0 0 16\" 80 \"0 0 0\" }\n";
+const char *defaultEntities =
+    "{ 212 \"worldspawn\" }\n"
+    "{ 212 \"info_player_start\" 709 \"0 0 64\" 80 \"0 0 0\" }\n"
+    "{ 212 \"mp_tdm_spawn\" 709 \"0 0 64\" 80 \"0 0 0\" }\n"
+    "{ 212 \"mp_tdm_spawn_allies_start\" 709 \"-64 0 64\" 80 \"0 0 0\" }\n"
+    "{ 212 \"mp_tdm_spawn_axis_start\" 709 \"64 0 64\" 80 \"0 180 0\" }\n"
+    "{ 212 \"script_model\" 709 \"0 0 16\" 80 \"0 0 0\" }\n";
 
 struct AssetTally
 {
@@ -474,18 +616,6 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
              compassName.c_str());
     }
 
-    for (const std::string &name : source.listXModels())
-    {
-        if (iw8::addXModelFromDump(writer, dumpDirectory, name))
-        {
-            ++tally.models;
-        }
-        else
-        {
-            ++tally.failures;
-        }
-    }
-
     std::vector<std::string> surfaceFiles;
     if (list_dir(path_join(dumpDirectory, "XSurface"), surfaceFiles))
     {
@@ -504,6 +634,19 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
             {
                 ++tally.failures;
             }
+        }
+    }
+
+    // XModel bodies use packed references, so their XModelSurfs dependencies must precede them.
+    for (const std::string &name : source.listXModels())
+    {
+        if (iw8::addXModelFromDump(writer, dumpDirectory, name))
+        {
+            ++tally.models;
+        }
+        else
+        {
+            ++tally.failures;
         }
     }
 
@@ -589,8 +732,7 @@ iw8::MapSun loadLighting(const Args &args, const std::string &dumpDirectory,
         if (data.contains("primary_lights"))
         {
             const auto &sourceLights = data.at("primary_lights");
-            if (!sourceLights.is_array() || sourceLights.size() < 2 ||
-                sourceLights.size() > 65535)
+            if (!sourceLights.is_array() || sourceLights.size() < 2 || sourceLights.size() > 65535)
             {
                 throw std::runtime_error("invalid source primary-light array");
             }
@@ -623,6 +765,7 @@ iw8::MapSun loadLighting(const Args &args, const std::string &dumpDirectory,
                     throw std::runtime_error("invalid IW3 primary-light type or exponent");
                 light.type = static_cast<uint8_t>(type);
                 light.exponent = static_cast<uint8_t>(exponent);
+                light.canUseShadowMap = source.at("can_use_shadow_map").get<bool>();
 
                 const auto color = readVector(source.at("color"), "color");
                 const auto direction = readVector(source.at("direction"), "direction");
@@ -632,9 +775,9 @@ iw8::MapSun loadLighting(const Args &args, const std::string &dumpDirectory,
                 std::copy(color.begin(), color.end(), light.color);
                 std::copy(origin.begin(), origin.end(), light.origin);
 
-                const float sourceDirectionLength = std::sqrt(
-                    direction[0] * direction[0] + direction[1] * direction[1] +
-                    direction[2] * direction[2]);
+                const float sourceDirectionLength =
+                    std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] +
+                              direction[2] * direction[2]);
                 if (type != 0 && sourceDirectionLength <= 0.000001f)
                     throw std::runtime_error("primary-light direction has zero length");
                 if (sourceDirectionLength > 0.000001f)
@@ -670,16 +813,14 @@ iw8::MapSun loadLighting(const Args &args, const std::string &dumpDirectory,
                 light.definition = source.at("definition").get<std::string>();
                 if (!std::isfinite(light.radius) || light.radius < 0.0f ||
                     !std::isfinite(light.cosHalfFovOuter) ||
-                    !std::isfinite(light.cosHalfFovInner) ||
-                    !std::isfinite(light.rotationLimit) ||
+                    !std::isfinite(light.cosHalfFovInner) || !std::isfinite(light.rotationLimit) ||
                     !std::isfinite(light.translationLimit) || light.definition.size() > 255)
                 {
                     throw std::runtime_error("invalid primary-light scalar data");
                 }
-                if (type == 2 &&
-                    (light.cosHalfFovOuter <= 0.0f ||
-                     light.cosHalfFovOuter >= light.cosHalfFovInner ||
-                     light.cosHalfFovInner > 1.0f))
+                if (type == 2 && (light.cosHalfFovOuter <= 0.0f ||
+                                  light.cosHalfFovOuter >= light.cosHalfFovInner ||
+                                  light.cosHalfFovInner > 1.0f))
                 {
                     throw std::runtime_error("invalid IW3 spot-light field of view");
                 }
@@ -727,15 +868,43 @@ iw8::havok::BakeResult loadCollision(const Args &args, const std::string &dumpDi
 
 int writeMapPackage(const Args &args, const std::string &map, const std::string &outputDirectory,
                     const std::string &entities, const iw8::MapBounds &bounds,
-                    const std::string &dumpDirectory, const MapMetadata &metadata)
+                    const std::string &dumpDirectory, const MapMetadata &metadata,
+                    const std::vector<convert::TriggerModelSource> &triggers,
+                    const iw3::PreparedMap *prepared)
 {
-    if (!prepareOutputDirectory(outputDirectory, map, metadata.present))
+    if (!prepareOutputDirectory(outputDirectory, map))
     {
         return 2;
     }
 
     const std::string assetName = "maps/mp/" + map + ".d3dbsp";
     const iw8::MapSun lighting = loadLighting(args, dumpDirectory, assetName);
+    const std::string renderPath = path_join(dumpDirectory, assetName + ".render.json");
+    if (!file_exists(renderPath))
+    {
+        throw std::runtime_error("native render data is missing: " + renderPath);
+    }
+    const auto renderMesh = replayrender::Load(renderPath);
+    const auto glassInitCount = static_cast<uint32_t>(renderMesh.glassPanes.size());
+    iw8::havok::PhysicsAsset glassPhysics;
+    if (glassInitCount)
+    {
+        if (args.replayExecutable.empty())
+            throw std::runtime_error("native glass physics requires --replay");
+        iw8::havok::PrepareCollisionBaker(args.replayExecutable);
+        iw8::havok::PhysicsMesh dummy;
+        dummy.contents = 45440; // shipped Replay glasschunkdummydefault bodyContents
+        dummy.vertices = {{{-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f},
+                           {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f},
+                           {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f},
+                           {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}}};
+        dummy.triangles = {{{0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7},
+                            {0, 1, 5}, {0, 5, 4}, {1, 2, 6}, {1, 6, 5},
+                            {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7}}};
+        glassPhysics = iw8::havok::BakePhysicsAsset(
+            iw8maps::kGlassPhysicsName, dummy, 7, 9);
+    }
+    const auto glassPieceLimit = glassInitCount ? glassInitCount + 512u : 0u;
     int result = 0;
 
     {
@@ -751,9 +920,23 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
             }
             collision.models.push_back(worldModel);
         }
+        collision.triggers.reserve(triggers.size());
+        for (const auto &trigger : triggers)
+        {
+            if (trigger.collisionModel >= collision.models.size())
+                throw std::runtime_error("IW3 trigger references a missing collision model");
+            if (collision.models[trigger.collisionModel].shapeIndex ==
+                std::numeric_limits<uint16_t>::max())
+                throw std::runtime_error("IW3 trigger collision model has no native Havok shape");
+            collision.triggers.push_back({trigger.collisionModel, trigger.staticPhysics});
+        }
         info("collision: serialized native world %zu bytes, entities %zu bytes, %zu brush models",
              collision.world.size(), collision.entities.size(), collision.models.size());
-        iw8::buildSrvMapZone(buffer, assetName.c_str(), entities, bounds, lighting, collision);
+        const auto dynamicCounts = prepared ? iw8::CountDynamicEntities(prepared->dynamicEntities)
+                                            : iw8::DynamicEntityCounts{};
+        iw8::buildSrvMapZone(buffer, assetName.c_str(), entities, bounds, lighting, collision,
+                             glassInitCount, glassPieceLimit, dynamicCounts.models,
+                             dynamicCounts.brushes);
         if (!iw8_write(path_join(outputDirectory, "srv_" + map + ".ff"), buffer.data(),
                        writeParams(buffer)))
         {
@@ -763,25 +946,47 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
 
     {
         iw8::ZoneWriter writer;
-        const std::string renderPath = path_join(dumpDirectory, assetName + ".render.json");
-        if (!file_exists(renderPath))
-        {
-            throw std::runtime_error("native render data is missing: " + renderPath);
-        }
-
+        const auto dynamicCounts = prepared ? iw8::CountDynamicEntities(prepared->dynamicEntities)
+                                            : iw8::DynamicEntityCounts{};
         replayrender::RegisterMaterial(writer, renderPath);
         iw8::impact::Register(writer, map);
+        if (glassInitCount)
+            iw8::writePhysicsAsset(writer, glassPhysics);
+        if (prepared)
+        {
+            for (const auto &model : prepared->xmodels)
+            {
+                if (!model.physicsAsset.name.empty())
+                    iw8::writePhysicsAsset(writer, model.physicsAsset);
+                for (const auto &lod : model.lods)
+                    iw8xs_dump::writeXModelSurfs(writer, lod.name, lod);
+                iw8::writeXModel(writer, model.model);
+            }
+            iw8::RegisterDynamicEntityList(writer, prepared->dynamicEntities);
+        }
+        if (!renderMesh.glassPanes.empty())
+        {
+            writer.add(ASSET_TYPE_FX_MAP, assetName,
+                       [assetName, renderPath](iw8::ZoneWriter &output) {
+                           iw8maps::emitFxMapBody(output, assetName.c_str(), renderPath);
+                       });
+        }
         const auto primaryLightCount = static_cast<uint32_t>(lighting.primaryLights.size());
         const auto sunPrimaryLightIndex = lighting.sunPrimaryLightIndex;
+        const replayrender::StaticModels staticModels =
+            prepared ? prepared->staticModels : replayrender::StaticModels{};
         writer.add(ASSET_TYPE_GFX_MAP, assetName,
-                   [assetName, renderPath, primaryLightCount,
-                    sunPrimaryLightIndex](iw8::ZoneWriter &output) {
+                   [assetName, renderPath, primaryLightCount, sunPrimaryLightIndex,
+                    staticModels, dynamicCounts](iw8::ZoneWriter &output) {
                        iw8maps::emitGfxMapBody(output, assetName.c_str(), renderPath,
-                                               primaryLightCount, sunPrimaryLightIndex);
+                                               primaryLightCount, sunPrimaryLightIndex,
+                                               staticModels, dynamicCounts.models,
+                                               dynamicCounts.brushes);
                    });
-        writer.add(ASSET_TYPE_GLASS_MAP, assetName, [assetName](iw8::ZoneWriter &output) {
-            iw8maps::emitGlassMapBody(output, assetName.c_str());
-        });
+        writer.add(ASSET_TYPE_GLASS_MAP, assetName,
+                   [assetName, renderPath](iw8::ZoneWriter &output) {
+                       iw8maps::emitGlassMapBody(output, assetName.c_str(), renderPath);
+                   });
         const dumpsrc::DumpSource source(dumpDirectory, map);
         addMapAssets(writer, dumpDirectory, source, map);
         writer.build();
@@ -821,7 +1026,7 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
     return result;
 }
 
-int buildMap(const Args &args)
+int buildMap(const Args &args, const iw3::PreparedMap *prepared = nullptr)
 {
     if (args.positional.size() < 2)
     {
@@ -846,6 +1051,11 @@ int buildMap(const Args &args)
         err("metadata: id '%s' does not match map '%s'", metadata.id.c_str(), map.c_str());
         return 2;
     }
+    metadata.present = true;
+    if (metadata.id.empty())
+        metadata.id = map;
+    if (metadata.title.empty())
+        metadata.title = map;
     const std::string outputDirectory = args.outputDirectory.empty()
                                             ? path_join(dumpDirectory, map + "_out")
                                             : args.outputDirectory;
@@ -858,6 +1068,7 @@ int buildMap(const Args &args)
     }
 
     std::string entities;
+    std::vector<convert::TriggerModelSource> triggers;
     bool foundEntities = false;
     for (const std::string &path : {path_join(dumpDirectory, map + "_iw8_ents.txt"),
                                     path_join(path_dir(dumpDirectory), map + "_iw8_ents.txt")})
@@ -873,7 +1084,8 @@ int buildMap(const Args &args)
     const dumpsrc::EntsDump sourceEntities = source.loadEnts();
     if (!foundEntities && sourceEntities.loaded && !sourceEntities.text.empty())
     {
-        const size_t converted = convert::iw3ToIw8EntityString(sourceEntities.text, entities);
+        const size_t converted =
+            convert::iw3ToIw8EntityString(sourceEntities.text, entities, &triggers);
         if (converted == 0)
         {
             err("build-map: could not convert any source entities");
@@ -931,7 +1143,8 @@ int buildMap(const Args &args)
         info("common world: %d primary lights", commonWorld.primaryLightCount);
     }
 
-    return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory, metadata);
+    return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory, metadata,
+                           triggers, prepared);
 }
 
 int buildIw3(const Args &args)
@@ -964,15 +1177,54 @@ int buildIw3(const Args &args)
         return 2;
     }
 
+    // Direct conversion produces a complete installable package. Always emit
+    // the one supported loose configuration file, even when the caller does
+    // not provide a custom title or description.
+    metadata.present = true;
+    if (metadata.id.empty())
+    {
+        metadata.id = map;
+    }
+    if (metadata.title.empty())
+    {
+        metadata.title = map;
+    }
+
     iw8::havok::PrepareCollisionBaker(args.replayExecutable);
 
     iw3::ImportOptions options;
     options.fastfile = args.positional[0];
     options.map = map;
     options.unlinker = args.unlinkerExecutable;
+    const auto requestedOutput = args.outputDirectory.empty()
+                                     ? std::filesystem::path(args.positional[0]).parent_path() /
+                                           (map + "_iw8")
+                                     : std::filesystem::path(args.outputDirectory);
+    options.scratchRoot = std::filesystem::absolute(requestedOutput).parent_path();
     for (const std::string &path : args.searchPaths)
     {
         options.searchPaths.emplace_back(path);
+    }
+    // The fastfile directory is always a valid source root. A user may set
+    // IW3_GAME_ROOT or COD4_ROOT once for the matching main/raw installation;
+    // explicit --search-path values remain repeatable for custom asset packs.
+    options.searchPaths.emplace_back(options.fastfile.parent_path());
+    for (const char *name : {"IW3_GAME_ROOT", "COD4_ROOT"})
+    {
+        if (const char *value = std::getenv(name); value && *value)
+        {
+            const std::filesystem::path root(value);
+            options.searchPaths.push_back(root);
+            options.searchPaths.push_back(root / "main");
+            options.searchPaths.push_back(root / "raw");
+        }
+    }
+    for (const std::string &value : args.iw3Roots)
+    {
+        const std::filesystem::path root(value);
+        options.searchPaths.push_back(root);
+        options.searchPaths.push_back(root / "main");
+        options.searchPaths.push_back(root / "raw");
     }
     iw3::PreparedMap prepared = iw3::PrepareFastfile(options);
 
@@ -980,12 +1232,18 @@ int buildIw3(const Args &args)
     build.command = "build-map";
     build.positional = {prepared.root.string(), map};
     build.collisionPath = prepared.collision.string();
+    build.footstepsPath = prepared.footsteps.string();
+    if (!writeMetadata(prepared.root.string(), metadata))
+    {
+        return 1;
+    }
+    build.metadataPath = (prepared.root / "map.json").string();
     if (build.outputDirectory.empty())
     {
         build.outputDirectory =
             (std::filesystem::path(args.positional[0]).parent_path() / (map + "_iw8")).string();
     }
-    return buildMap(build);
+    return buildMap(build, &prepared);
 }
 
 int inspect(const Args &args)
@@ -1062,6 +1320,11 @@ try
     {
         printUsage();
         return 2;
+    }
+    if (args.command == "--help" || args.command == "-h" || args.command == "-?")
+    {
+        printUsage();
+        return 0;
     }
     if (args.command == "build-map")
     {

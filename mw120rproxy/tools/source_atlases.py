@@ -77,11 +77,13 @@ def tint_image(image, tint):
 
 def pack(materials, surfaces, load_image):
     keys = sorted({tile_key(materials[s["material"]]) for s in surfaces})
-    if len(keys) > 250:
-        raise ValueError(f"{len(keys)} material combinations exceed the 250-tile atlas budget")
     columns = 4
     while columns * columns < len(keys) + 6:
         columns *= 2
+    # The generated world shader supports up to a 32x32 grid in the fixed 4K atlas.
+    # Six cells are reserved for the sky, leaving 1,018 source material combinations.
+    if columns > 32:
+        raise ValueError(f"{len(keys)} material combinations exceed the 1018-tile atlas budget")
     cell = 4096 // columns
     atlases = [Image.new("RGBA", (4096, 4096)) for _ in range(3)]
     for tile, key in enumerate(keys):

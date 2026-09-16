@@ -3,21 +3,17 @@
 #include "common/log.h"
 #include "xmodel_dump.h"
 #include <cstring>
+#include <type_traits>
 
 namespace dumpsrc
 {
 
 // IW5 32-bit struct sizes used by the .xme6 walk (pack(1)/pack(4), 4-byte ptrs). A wrong size
-// desyncs the stream; BinReader::ok() then catches it and we keep the header-level result.
+// desyncs the stream; incomplete records must not reach the asset writer.
 namespace iw5xm
 {
 constexpr size_t XModel = 308;        // total (Structs.hpp:1009 "total size 308")
 constexpr size_t shortSz = 2;         // boneNames element (read_array<short>)
-constexpr size_t u8Sz = 1;            // parentList / partClassification element
-constexpr size_t XModelAngle = 8;     // tagAngles
-constexpr size_t XModelTagPos = 12;   // tagPositions
-constexpr size_t DObjAnimMat = 32;    // animMatrix
-constexpr size_t XBoneInfo = 28;      // boneInfo
 constexpr size_t MaterialPtr = 4;     // materials (pointer array, raw)
 constexpr size_t XModelCollSurf = 56; // colSurf
 constexpr size_t XModelCollTri = 48;  // colSurf[i].tris
@@ -87,8 +83,8 @@ bool parseXModel(const std::vector<uint8_t> &bytes, const std::string &nameHint,
 
     if (out.scale == 0.f)
         out.scale = 1.f;
-    if (out.numLods > 4)
-        out.numLods = 4; // IW5 XModel has exactly lods[4]
+    if (out.numLods > 4 || out.numRootBones > out.numBones || out.numColSurfs < 0)
+        return false;
     const int animBones = (out.numBones > out.numRootBones) ? (out.numBones - out.numRootBones) : 0;
 
     // per-LOD scalars from the header blob (the surface NAMES come later via read_asset)
@@ -107,7 +103,6 @@ bool parseXModel(const std::vector<uint8_t> &bytes, const std::string &nameHint,
     std::string realName = r.read_string();
     if (r.ok() && !realName.empty())
         out.name = realName;
-    out.loaded = r.ok(); // minimum success once header+name parsed
     if (!r.ok())
     {
         warn("read_xmodel: '%s' name read failed: %s", nameHint.c_str(), r.error().c_str());
@@ -117,22 +112,36 @@ bool parseXModel(const std::vector<uint8_t> &bytes, const std::string &nameHint,
     // 3) boneNames: array<short> then numBones×read_string
     uint32_t c = 0;
     r.read_array(iw5xm::shortSz, c); // the (stale) short[] handles; names follow
+    if (!r.ok() || c != out.numBones)
+        return false;
     out.boneNames.reserve(out.numBones);
     for (int i = 0; i < out.numBones && r.ok(); ++i)
         out.boneNames.push_back(r.read_string());
 
-    // 4) parentList / tagAngles / tagPositions (count = animBones)
-    r.read_array(iw5xm::u8Sz, c);         // parentList
-    r.read_array(iw5xm::XModelAngle, c);  // tagAngles
-    r.read_array(iw5xm::XModelTagPos, c); // tagPositions
-
-    // 5) partClassification (numBones) / animMatrix (numBones) / boneInfo (numBones)
-    r.read_array(iw5xm::u8Sz, c);        // partClassification
-    r.read_array(iw5xm::DObjAnimMat, c); // animMatrix
-    r.read_array(iw5xm::XBoneInfo, c);   // boneInfo
+    const auto readArray = [&](auto &array, uint32_t expected) {
+        using Element = typename std::decay_t<decltype(array)>::value_type;
+        const auto data = r.read_array(sizeof(Element), c);
+        if (!r.ok() || c != expected || data.size() != expected * sizeof(Element))
+            return false;
+        array.resize(expected);
+        if (!data.empty())
+            std::memcpy(array.data(), data.data(), data.size());
+        return true;
+    };
+    auto &skeleton = out.skeleton;
+    if (!readArray(skeleton.parentList, animBones) || !readArray(skeleton.quats, animBones) ||
+        !readArray(skeleton.trans, animBones) ||
+        !readArray(skeleton.partClassification, out.numBones) ||
+        !readArray(skeleton.baseMat, out.numBones) || !readArray(skeleton.boneInfo, out.numBones))
+    {
+        warn("read_xmodel: '%s' has incomplete skeleton arrays", out.name.c_str());
+        return false;
+    }
 
     // 6) materials: array<Material*> (raw ptrs) then numSurfaces×read_asset<Material>
     r.read_array(iw5xm::MaterialPtr, c); // the (stale) Material*[] ; real names follow as assets
+    if (!r.ok() || c != out.numSurfaces)
+        return false;
     out.materials.reserve(out.numSurfaces);
     for (int i = 0; i < out.numSurfaces && r.ok(); ++i)
     {
@@ -166,12 +175,10 @@ bool parseXModel(const std::vector<uint8_t> &bytes, const std::string &nameHint,
     out.clean = r.ok() && r.eof();
     if (!out.clean)
     {
-        // The header + name + LOD links are still usable for a load-safe XModel; warn and proceed.
-        warn("read_xmodel: '%s' walk did not consume cleanly (%s, pos=%zu/%zu) — header+links kept",
-             out.name.c_str(), r.ok() ? "trailing bytes" : r.error().c_str(), r.pos(),
-             bytes.size());
+        warn("read_xmodel: '%s' walk did not consume cleanly (%s, pos=%zu/%zu)", out.name.c_str(),
+             r.ok() ? "trailing bytes" : r.error().c_str(), r.pos(), bytes.size());
     }
-    (void)animBones;
+    out.loaded = out.clean;
     return out.loaded;
 }
 

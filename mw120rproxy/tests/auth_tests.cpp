@@ -36,7 +36,8 @@ void DecoderTest() {
     auto* code = static_cast<uint8_t*>(
         VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     Check(code != nullptr, "allocate native decoder fixture");
-    const uint8_t prefix[] = {0x48, 0x83, 0xEC, 0x58, 0x48, 0x8B, 0xC1};
+    const uint8_t prefix[] = {0x48, 0x83, 0xEC, 0x58,
+                              0x48, 0x8B, 0xC1}; // stack scratch; rax=object
     memcpy(code, prefix, sizeof(prefix));
     memcpy(code + sizeof(prefix), kNativeOwnershipDecoder, sizeof(kNativeOwnershipDecoder));
     const uint8_t tail[] = {0x41, 0x8B, 0xC0, 0x48, 0x83, 0xC4, 0x58, 0xC3}; // return r8d

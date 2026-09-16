@@ -7,9 +7,11 @@ namespace convert::xmodel
 
 bool toIw8(const dumpsrc::XModelDumpFull &in, Iw8XModelRecord &out)
 {
-    if (!in.loaded)
+    if (!in.loaded || !in.clean || in.numLods > in.lods.size() || in.numRootBones > in.numBones ||
+        in.boneNames.size() != in.numBones || in.materials.size() != in.numSurfaces)
     {
-        zt::warn("conv_xmodel: source '%s' not loaded", in.name.c_str());
+        zt::warn("conv_xmodel: source '%s' is incomplete or has inconsistent counts",
+                 in.name.c_str());
         return false;
     }
     out = Iw8XModelRecord{};
@@ -20,7 +22,7 @@ bool toIw8(const dumpsrc::XModelDumpFull &in, Iw8XModelRecord &out)
     out.numBones = in.numBones;
     out.numRootBones = in.numRootBones;
     out.numClientBones = 0;
-    out.shadowCutoffLod = 0;
+    out.shadowCutoffLod = 6;
     out.lodRampType = in.lodRampType;
     out.flags = (uint32_t)in.flags; // zero-extend char -> u32
     out.contents = in.contents;
@@ -33,6 +35,7 @@ bool toIw8(const dumpsrc::XModelDumpFull &in, Iw8XModelRecord &out)
     }
 
     out.boneNames = in.boneNames; // [numBones]
+    out.skeleton = in.skeleton;
 
     // per-LOD info
     const int nl = (in.numLods <= 4) ? in.numLods : 4;
@@ -57,8 +60,10 @@ bool toIw8(const dumpsrc::XModelDumpFull &in, Iw8XModelRecord &out)
     // materials (cross-ref names) — [numsurfs]. Empty names (null materials) are kept as "" so the
     // handle slot count stays == numsurfs; the writer emits a NULL Material* for those.
     out.materials = in.materials;
-    if ((int)out.materials.size() != (int)out.numsurfs)
-        out.materials.resize(out.numsurfs); // clamp to declared count (writer-side safety)
+    // Older engines do not carry IW8's per-surface high-mip streaming radii. A zero value is the
+    // native IW8 sentinel for surfaces without a derived high-mip radius; the array itself must
+    // still exist because Replay's model-to-material table reads every surface slot unconditionally.
+    out.himipRadiusInvSq.assign(out.numsurfs, 0.0f);
 
     out.physPresetName = in.physPresetName;
     out.physCollmapName = in.physCollmapName;

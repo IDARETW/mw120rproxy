@@ -81,6 +81,12 @@ bool emitImageBody(iw8::ZoneWriter &zw, const Iw8ImageDef &def)
         return false;
     }
 
+    if (def.pixels.size() > UINT32_MAX || (!def.pixels.empty() && def.totalSize != def.pixels.size()))
+    {
+        err("dumpimg: emitImageBody: '%s' resident payload size does not match totalSize",
+            def.name.c_str());
+        return false;
+    }
     const uint32_t pixSize = (uint32_t)def.pixels.size();
 
     // 1) build the fixed 0xE8 GfxImage struct.
@@ -109,8 +115,10 @@ bool emitImageBody(iw8::ZoneWriter &zw, const Iw8ImageDef &def)
     s64(gi, kGI_fallback, iw8::PTR_NULL); // no low-res fallback
     s64(gi, kGI_pixels, pixSize ? iw8::PTR_FOLLOWS : iw8::PTR_NULL);
 
-    // Replay reads non-streamed image pixels from TEMP_PRELOAD. The nested push matches shipped
-    // resident UI images and lets Image_LoadPixels create the native texture.
+    // Replay reads non-streamed image pixels from TEMP_PRELOAD. The converter has already laid
+    // out every mip/slice subresource with its native 16-byte stride; this writer only aligns the
+    // payload's stream start. The nested push matches shipped resident UI images and lets
+    // Image_LoadPixels create the native texture.
     zw.pushStream(iw8::XFILE_BLOCK_TEMP_PRELOAD);
     zw.align(15);
     zw.write(gi, sizeof(gi));

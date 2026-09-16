@@ -106,7 +106,9 @@ void InspectStartupCallback(const CONTEXT* c) {
         }
     }
 }
-
+// First-chance evidence only; never consume exceptions or change execution.
+// Avoid the logger's mutex. Debug breakpoints have their own budget so
+// handled assertions cannot consume the crash-evidence records.
 LONG CALLBACK ExceptionObserver(EXCEPTION_POINTERS* pointers) {
     const auto* record = pointers->ExceptionRecord;
     const DWORD savedError = GetLastError();

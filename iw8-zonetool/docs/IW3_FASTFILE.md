@@ -1,12 +1,19 @@
 # Direct IW3 fastfile conversion
 
 The native `build-iw3` command reads a generated CoD4 multiplayer fastfile and writes the five
-fastfiles expected by MW120R. It can also write optional `map.json` metadata. Extraction and
-intermediate map data stay in a temporary directory and are deleted when the command finishes.
+fastfiles expected by MW120R plus `map.json`. Extraction and
+intermediate map data stay in a private temporary directory beside the requested output and are
+deleted when the command finishes. Use `-o` on a drive with room for both extraction and output.
 
-## Prepare OpenAssetTools once
+## OpenAssetTools Unlinker
 
-Clone OpenAssetTools and check out the version used by this project:
+Direct IW3 extraction uses the native OpenAssetTools `Unlinker.exe`. A matching
+build is kept with this workspace at
+`mw120rproxy/tools/_vendor/OpenAssetTools/build/bin/Release_x86/Unlinker.exe`.
+Pass that path with `--unlinker`, or let the compiler discover it beside the
+ZoneTool binary or through `IW8_ZONETOOL_UNLINKER`.
+
+If the bundled executable is not present, build the pinned OpenAssetTools source once:
 
 ```powershell
 git clone https://github.com/Laupetin/OpenAssetTools.git
@@ -23,6 +30,12 @@ From the MW120R source folder, install the IW3 map exporters:
 Build the OpenAssetTools `Unlinker` target according to its Windows build instructions. Keep the
 resulting `Unlinker.exe`; it is the only external conversion program used by `build-iw3`.
 
+If you built Unlinker with an older version of these exporters, run the configuration script
+again and rebuild Unlinker. Model conversion now reads the original indexed IW3 vertices,
+tangents, colors, and material assignments directly. An older exporter will report missing model
+attributes. All extracted model data stays in the temporary conversion directory; the final
+output is still five fastfiles and `map.json`.
+
 ## Convert a map
 
 Build `iw8-zonetool`, set these values to paths that exist on your computer, and run the command
@@ -31,7 +44,8 @@ from the MW120R source folder in PowerShell:
 ```powershell
 $mapName = 'mp_example'
 $mapFolder = 'C:\Maps\mp_example'
-$replay = 'D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)\game_dx12_ship_replay.exe'
+$iw3Root = 'C:\Games\Call of Duty 4 Modern Warfare'
+$replay = 'E:\IW8\Builds\1.20-replay\game_dx12_ship_replay.exe'
 $unlinker = '.\mw120rproxy\tools\_vendor\OpenAssetTools\build\bin\Release_x86\Unlinker.exe'
 $zoneTool = '.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
 $output = Join-Path $mapFolder 'converted'
@@ -41,6 +55,9 @@ foreach ($file in @($zoneTool, (Join-Path $mapFolder "$mapName.ff"), $replay, $u
         throw "File not found: $file"
     }
 }
+if (-not (Test-Path -LiteralPath (Join-Path $iw3Root 'main') -PathType Container)) {
+    throw "CoD4 main directory not found under: $iw3Root"
+}
 
 & $zoneTool build-iw3 `
     (Join-Path $mapFolder "$mapName.ff") `
@@ -48,6 +65,7 @@ foreach ($file in @($zoneTool, (Join-Path $mapFolder "$mapName.ff"), $replay, $u
     -o $output `
     --replay $replay `
     --unlinker $unlinker `
+    --iw3-root $iw3Root `
     --search-path $mapFolder
 
 if ($LASTEXITCODE -ne 0) {
@@ -63,7 +81,7 @@ PowerShell and Command Prompt quote executable paths differently. In PowerShell,
 operator as shown above. In Command Prompt, use double quotes and do not use single quotes:
 
 ```bat
-".\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe" build-iw3 "C:\Maps\mp_example\mp_example.ff" mp_example -o "C:\Maps\mp_example\converted" --replay "D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)\game_dx12_ship_replay.exe" --unlinker ".\mw120rproxy\tools\_vendor\OpenAssetTools\build\bin\Release_x86\Unlinker.exe" --search-path "C:\Maps\mp_example"
+".\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe" build-iw3 "C:\Maps\mp_example\mp_example.ff" mp_example -o "C:\Maps\mp_example\converted" --replay "E:\IW8\Builds\1.20-replay\game_dx12_ship_replay.exe" --unlinker ".\mw120rproxy\tools\_vendor\OpenAssetTools\build\bin\Release_x86\Unlinker.exe" --iw3-root "E:\CoD4\game_build\Call of Duty 4 Modern Warfare"
 ```
 
 If a Command Prompt command begins with `'.\iw8-zonetool`, Windows includes the single quote in
@@ -80,17 +98,25 @@ iw8-zonetool.exe build-iw3 'D:\CoD4\mp_old.ff' mp_new `
     --unlinker 'D:\Tools\OpenAssetTools\Unlinker.exe'
 ```
 
-`build-iw3` also reads a sibling `<map>_load.ff` when present. `--search-path` is repeatable and
-lets Unlinker resolve assets stored outside the map zone. `--unlinker` may be omitted when
+`build-iw3` also reads a sibling `<map>_load.ff` when present. The fastfile directory is searched
+automatically. Pass `--iw3-root "C:\\Games\\Call of Duty 4 Modern Warfare"` to add its root,
+`main`, and `raw` directories in one option. You may instead set `IW3_GAME_ROOT` or `COD4_ROOT`
+to a CoD4 installation for repeated conversions. `--search-path` remains repeatable for custom
+asset packs. `--unlinker` may be omitted when
 `Unlinker.exe` is beside `iw8-zonetool.exe`, under `tools`, available on `PATH`, or named by the
 `IW8_ZONETOOL_UNLINKER` environment variable. The earlier `MW120R_UNLINKER` variable is also
 accepted.
+
+The converter resolves exported material JSON from every explicit search root. CoD4's binary-only
+`mc/lambert1` placeholder is represented by the native adapter, so it does not need a hand-written
+material file. Other referenced images and materials still need to be present in the supplied map
+directory, IWD extraction, or CoD4 `main`/`raw` roots; missing source data is reported by name.
 
 If conversion reports that Unlinker cannot be started or that the file does not exist, run
 `Test-Path -LiteralPath '<your Unlinker.exe path>'` in PowerShell. Fix that path before changing
 any other option.
 
-The output directory contains these five fastfiles:
+The output directory contains five fastfiles and `map.json`:
 
 ```text
 mp_example.ff
@@ -98,19 +124,20 @@ srv_mp_example.ff
 eng_mp_example.ff
 ww_mp_example.ff
 techsets_mp_example.ff
+map.json
 ```
 
-No JSON is required. To set the lobby title or description, pass one small file with `--metadata`:
+No input JSON is required. The converter creates `map.json` with the map id and a default title. To set a friendly lobby title or description, pass one small file with `--metadata`. `name` and `title` are accepted aliases and must match if both are present:
 
 ```json
 {
-  "title": "Example Map",
+  "name": "Example Map",
   "description": "Converted from CoD4"
 }
 ```
 
-`id` is also allowed when it matches the target map id. `map.json` is the only loose file accepted
-beside the five fastfiles.
+`id` is also allowed when it matches the target map id. The supplied values are written to the
+output `map.json`, which is the only loose file accepted beside the five fastfiles.
 
 Installation validates the output automatically. To inspect a failed conversion manually:
 
@@ -118,8 +145,21 @@ Installation validates the output automatically. To inspect a failed conversion 
 iw8-zonetool.exe validate-output 'D:\CoD4\zone\english\mp_example_iw8' mp_example
 ```
 
-Direct conversion includes the playable world mesh, placed static models, collision, entities,
-source sun, vertex colors, and an available HUD minimap. The world uses Replay's stock material.
-IW3 and IW8 use different technique-set and shader layouts, so source materials cannot be copied
-verbatim. Maps that need converted textures, baked lighting, doors, glass, ladders, or other
-authored data should use `build-map` with the prepared input format.
+Direct conversion reads the world mesh, placed model LODs, material assignments, collision,
+supported entities, source sun, lightmaps, light grid, reflection probes, vertex colors, and an
+available HUD minimap. Model conversion preserves the original indexed geometry and UVs, and
+generates Replay material/technique assets from the source color, normal, and response images.
+Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
+sets themselves cannot be copied verbatim because the engines use different shader layouts.
+
+The same command serializes native glass and ladder data where those source features are
+recognized. It also converts surface information into native footstep and collision tags in
+`srv_<map>.ff`. These features do not require an additional export step, package directory,
+`build-map` invocation, or loose sidecar. Multiplayer spawn markers retain their source origins
+and angles, including DM, Domination, Sabotage, Search and Destroy, CTF, and TDM markers.
+
+Arbitrary IW3 gameplay scripts, scripted doors/movers, destructible systems, and arbitrary FX
+graphs are not translated by this path yet. The Unlinker now collects map-local and shared FX
+source graphs and their typed dependencies for the native VFX writer under development; the
+current output still uses the fixed Replay impact table. Successful structural validation checks
+the generated package; it is not a gameplay or visual acceptance test for every converted feature.

@@ -31,7 +31,7 @@ def mesh_polygons(parts):
 
 
 class FoliageTests(unittest.TestCase):
-    def test_tree_material_flags(self):
+    def test_owner_tree_material_flags(self):
         for name in ("mtl_pine", "mtl_pine_canopy"):
             self.assertEqual(material_image(COD4 / "raw", name), ("tree_pine_col", True))
         with self.assertRaises(ShadowOnlyMaterial):

@@ -7,13 +7,32 @@
 namespace dumpsrc
 {
 
-// ===================================================================================================
-// Stage A result — XModelDumpFull. One LOD's surface-link + the header counts + bone/material
-// NAMES. Pointer/geometry blobs are NOT kept: IW8 references XModelSurfs/Material by name
-// (cross-ref), and the geometry lives in the sibling .xse files (the xsurface family owns those).
-// We keep only what the IW8 XModel(9) struct needs: counts, scalars, bounds(none in IW5 header —
-// derived), per-LOD link names, and material names.
-// ===================================================================================================
+struct ModelBindPose
+{
+    std::array<float, 4> quat{};
+    std::array<float, 3> trans{};
+    float transWeight{};
+};
+static_assert(sizeof(ModelBindPose) == 32);
+
+struct ModelBoneInfo
+{
+    std::array<float, 3> midPoint{}, halfSize{};
+    float radiusSquared{};
+};
+static_assert(sizeof(ModelBoneInfo) == 28);
+
+struct ModelSkeleton
+{
+    std::vector<uint8_t> parentList;
+    std::vector<std::array<int16_t, 4>> quats;
+    std::vector<std::array<float, 3>> trans;
+    std::vector<uint8_t> partClassification;
+    std::vector<ModelBindPose> baseMat;
+    std::vector<ModelBoneInfo> boneInfo;
+};
+
+// Model metadata and skeleton from an IW5 .xme6 dump. Geometry lives in the sibling .xse assets.
 struct XModelLodDump
 {
     float dist = 0.f;                   // IW5 XSurfaceLod.dist
@@ -46,9 +65,9 @@ struct XModelDumpFull
                           0}; // @+264 (IW5 Bounds.midPoint) — model-space, == IW8 Bounds.midPoint
     float boundsHalf[3] = {0, 0, 0}; // @+276 (IW5 Bounds.halfSize) — == IW8 Bounds.halfSize
 
-    // bone names (script strings; [numBones]) — kept for completeness / boneName re-emit (offline =
-    // 0 ids)
+    // Bone names become zone-local script-string indices during serialization.
     std::vector<std::string> boneNames;
+    ModelSkeleton skeleton;
 
     // per-LOD surface links + scalars ([numLods] meaningful; up to 4 in IW5)
     std::array<XModelLodDump, 4> lods{};
@@ -73,9 +92,7 @@ struct XModelDumpFull
     }
 };
 
-// Read XModel/<name>.xme6 under <dumpDir> into `out`. Returns out.loaded. On a mid-stream desync
-// the header counts + name are still returned (out.loaded stays true if the header+name read),
-// out.clean is set false, and a warning is logged. Fully offline (file-in only).
+// Read XModel/<name>.xme6 under <dumpDir>. Incomplete or inconsistent records return false.
 bool readXModel(const std::string &dumpDir, const std::string &name, XModelDumpFull &out);
 
 // Lower-level: parse an already-loaded .xme6 byte buffer. (readXModel = read file + this.)
@@ -84,12 +101,7 @@ bool parseXModel(const std::vector<uint8_t> &bytes, const std::string &nameHint,
 
 } // namespace dumpsrc
 
-// ===================================================================================================
-// Stage B input — Iw8XModelRecord: the IW5->IW8 converted, writer-ready record. Mirrors exactly the
-// fields the IW8 XModel(9)=0x2B0 struct + its trailing arrays need; every cross-reference is a NAME
-// the writer turns into a tagged pointer (NULL for the load-safe converter, packed-offset once a
-// zone-wide asset table exists). Owned here so reader/converter/writer share ONE definition.
-// ===================================================================================================
+// Converted Replay model data. Asset names become packed references when the zone is written.
 namespace convert::xmodel
 {
 
@@ -122,12 +134,15 @@ struct Iw8XModelRecord
     float boundsMid[3] = {0, 0, 0};
     float boundsHalf[3] = {0, 0, 0};
 
-    std::vector<std::string> boneNames; // [numBones] (offline: emitted as zeroed script-string ids)
+    std::vector<std::string> boneNames; // [numBones], remapped through the zone script-string table
+    dumpsrc::ModelSkeleton skeleton;
     std::vector<Iw8LodInfo> lods;       // [numLods]  (XModel.lodInfo[6]; extras zeroed by writer)
     std::vector<std::string> materials; // [numsurfs] material cross-ref names (materialHandles)
+    std::vector<float> himipRadiusInvSq; // [numsurfs] required by Replay's stream-combine builder
 
     std::string physPresetName; // informational (PhysicsAsset cross-ref deferred)
     std::string physCollmapName;
+    std::string physicsAssetName;
 };
 
 // IW5 dump -> IW8 record. Pure field mapping (no I/O). Returns true on success.
@@ -141,16 +156,20 @@ bool toIw8(const dumpsrc::XModelDumpFull &in, Iw8XModelRecord &out);
 namespace iw8
 {
 class ZoneWriter;
+namespace havok
+{
+struct PhysicsAsset;
 }
+} // namespace iw8
 
 namespace iw8
 {
 
 // Register the IW8 XModel(9) asset body for `rec` into the writer (zw.add(...) with the body
-// callback). The body serializes the 0x2B0 struct + trailing arrays in load-read order with the raw
-// tagged-pointer sentinels. Cross-refs (materialHandles, lod surfs) are NULL in the converter
-// (load-safe; see notes in write_xmodel.cpp). Call before zw.build().
+// callback). Materials and LOD surface assets must be registered before the model. Bone names
+// are registered in the zone's script-string table. Call before zw.build().
 void writeXModel(ZoneWriter &zw, const convert::xmodel::Iw8XModelRecord &rec);
+void writePhysicsAsset(ZoneWriter &zw, const havok::PhysicsAsset &asset);
 
 // Convenience: read <dumpDir>/XModel/<name>.xme6 -> convert -> register. Returns false if the .xme6
 // is missing or unparseable; the caller logs and skips that asset.

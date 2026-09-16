@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <d3dcompiler.h>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
+#include <optional>
 #include <set>
 #include <stdexcept>
 namespace replayrender
@@ -40,8 +43,149 @@ std::vector<uint8_t> unhex(const std::string &s)
     return b;
 }
 
-Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
-                          const bool cubemap)
+namespace
+{
+std::optional<uint8_t> generatedTextureSlot(const char *name)
+{
+    if (!std::strcmp(name, "sourceAtlas"))
+        return uint8_t{0};
+    if (!std::strcmp(name, "sourceNormalAtlas"))
+        return uint8_t{9};
+    if (!std::strcmp(name, "sourceResponseAtlas"))
+        return uint8_t{59};
+    return std::nullopt;
+}
+
+bool hasMaterialTextureSlot(const std::vector<uint8_t> &headers, const uint8_t slot)
+{
+    unsigned matches = 0;
+    for (size_t offset = 0; offset < headers.size(); offset += 8)
+        if (headers[offset] == slot)
+            ++matches;
+    return matches == 1;
+}
+
+bool hasPixelTextureArgument(const std::vector<uint8_t> &args, const uint8_t registerIndex,
+                             const uint8_t materialSlot)
+{
+    for (size_t offset = 0; offset < args.size(); offset += 6)
+        if (args[offset] == 5 && args[offset + 1] == 0x10 && args[offset + 2] == registerIndex &&
+            args[offset + 3] == 0 && args[offset + 4] == materialSlot && args[offset + 5] == 0)
+            return true;
+    return false;
+}
+
+bool hasCodeTextureArgument(const std::vector<uint8_t> &args, const uint8_t stageMask,
+                            const uint8_t destination, const uint16_t codeImage)
+{
+    for (size_t offset = 0; offset < args.size(); offset += 6)
+        if (args[offset] == 8 && args[offset + 1] == stageMask &&
+            args[offset + 2] == destination && args[offset + 3] == 0 &&
+            args[offset + 4] == (codeImage & 0xff) && args[offset + 5] == (codeImage >> 8))
+            return true;
+    return false;
+}
+
+void validateGeneratedTextureBindings(const Material &material, const bool staticModel)
+{
+    for (const auto &technique : material.techniques)
+    {
+        if (technique.shaders[3].empty())
+            continue;
+        const auto shader = std::find_if(
+            material.shaders.begin(), material.shaders.end(), [&](const Shader &candidate) {
+                return candidate.type == 17 && candidate.name == technique.shaders[3];
+            });
+        if (shader == material.shaders.end() || shader->program.empty())
+            continue;
+
+        ID3D11ShaderReflection *reflection = nullptr;
+        if (FAILED(D3DReflect(shader->program.data(), shader->program.size(),
+                              __uuidof(ID3D11ShaderReflection),
+                              reinterpret_cast<void **>(&reflection))) ||
+            !reflection)
+            throw std::runtime_error("Cannot reflect generated pixel shader " + shader->name);
+        D3D11_SHADER_DESC description{};
+        const HRESULT descriptionResult = reflection->GetDesc(&description);
+        if (FAILED(descriptionResult))
+        {
+            reflection->Release();
+            throw std::runtime_error("Cannot read generated pixel shader reflection " +
+                                     shader->name);
+        }
+        uint32_t techniqueType{};
+        std::memcpy(&techniqueType, technique.header.data() + 8, sizeof(techniqueType));
+        const bool litForwardPlus = techniqueType == 34;
+        bool gtaoImage = false;
+        bool gtaoSampler = false;
+        for (unsigned resourceIndex = 0; resourceIndex < description.BoundResources;
+             ++resourceIndex)
+        {
+            D3D11_SHADER_INPUT_BIND_DESC binding{};
+            if (FAILED(reflection->GetResourceBindingDesc(resourceIndex, &binding)))
+            {
+                reflection->Release();
+                throw std::runtime_error("Cannot read generated pixel texture binding " +
+                                         shader->name);
+            }
+            const std::string resourceName = binding.Name ? binding.Name : "";
+            if (resourceName == "gtaoImage")
+            {
+                const uint8_t stageMask = staticModel ? 0x12 : 0x10;
+                if (binding.Type != D3D_SIT_TEXTURE || binding.BindPoint != 95 ||
+                    binding.BindCount != 1 ||
+                    !hasCodeTextureArgument(technique.args, stageMask, 7, 0))
+                {
+                    reflection->Release();
+                    throw std::runtime_error(
+                        "Generated GTAO image is not bound to native code image 0 at t95: " +
+                        technique.name);
+                }
+                gtaoImage = true;
+                continue;
+            }
+            if (resourceName == "gtaoSampler")
+            {
+                if (binding.Type != D3D_SIT_SAMPLER || binding.BindPoint != 8 ||
+                    binding.BindCount != 1)
+                {
+                    reflection->Release();
+                    throw std::runtime_error("Generated GTAO sampler is not bound to s8: " +
+                                             technique.name);
+                }
+                gtaoSampler = true;
+                continue;
+            }
+            const auto materialSlot = generatedTextureSlot(resourceName.c_str());
+            if (!materialSlot || binding.Type != D3D_SIT_TEXTURE)
+                continue;
+            if (!hasMaterialTextureSlot(material.textureHeaders, *materialSlot))
+            {
+                reflection->Release();
+                throw std::runtime_error("Generated pixel texture semantic is not bound: " +
+                                         resourceName + " in " + technique.name);
+            }
+            if (binding.BindPoint > UINT8_MAX ||
+                !hasPixelTextureArgument(technique.args, static_cast<uint8_t>(binding.BindPoint),
+                                         *materialSlot))
+            {
+                reflection->Release();
+                throw std::runtime_error("Generated pixel texture has no native type-5 argument: " +
+                                         resourceName + " in " + technique.name);
+            }
+        }
+        if (litForwardPlus && (!gtaoImage || !gtaoSampler))
+        {
+            reflection->Release();
+            throw std::runtime_error("Generated lit pass is missing its native GTAO t95/s8 bindings: " +
+                                     technique.name);
+        }
+        reflection->Release();
+    }
+}
+} // namespace
+
+Image LoadImageDefinition(const std::string &path, const nlohmann::json &source, const bool cubemap)
 {
     Image image;
     image.name = source.at("name");
@@ -60,8 +204,7 @@ Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
         width > 4096 || height > 4096 || !depth || !numElements || depth > 4096 ||
         numElements > 2048 || semantic > UINT8_MAX || category > UINT8_MAX || !image.mipCount ||
         image.mipCount > 13 || image.format < 6 || image.format > 7 ||
-        mapType != (cubemap ? 0x8000u : 0u) ||
-        std::filesystem::path(pixels).filename() != pixels ||
+        mapType != (cubemap ? 0x8000u : 0u) || std::filesystem::path(pixels).filename() != pixels ||
         pixels.find("..") != std::string::npos)
         throw std::runtime_error("Invalid resident Replay image definition");
     if (cubemap && (width != height || depth != 1 || numElements != 1))
@@ -72,7 +215,11 @@ Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
     const size_t slices = cubemap ? 6u : image.numElements;
     for (unsigned level = 0; level < image.mipCount; ++level)
     {
-        length += size_t(mipWidth) * mipHeight * 4 * slices;
+        const size_t subresource = size_t(mipWidth) * mipHeight * 4;
+        if (subresource > (SIZE_MAX - 15) ||
+            ((subresource + 15) & ~size_t{15}) > (SIZE_MAX - length) / slices)
+            throw std::runtime_error("Resident Replay image allocation exceeds address space");
+        length += ((subresource + 15) & ~size_t{15}) * slices;
         if (level + 1 < image.mipCount && mipWidth == 1 && mipHeight == 1)
             throw std::runtime_error("Mip count exceeds dimensions");
         mipWidth = std::max(1u, mipWidth / 2);
@@ -96,11 +243,20 @@ Image LoadImageDefinition(const std::string &path, const nlohmann::json &source,
     return image;
 }
 
-Material LoadMaterial(const std::string &path, const nlohmann::json &j)
+Material LoadMaterial(const std::string &path, const nlohmann::json &j,
+                      const bool auxiliaryEffect = false)
 {
     Material m;
     m.material = j.at("material").get<std::string>();
-    const bool owned = m.material == "w/mw120r_test" ||
+    constexpr std::string_view effectPrefix = "elcq/mw120r_fx_";
+    const bool ownedEffect = auxiliaryEffect && m.material.starts_with(effectPrefix) &&
+                             m.material.size() <= 128 &&
+                             std::all_of(m.material.begin() + effectPrefix.size(),
+                                         m.material.end(), [](char c) {
+                                         return (c >= 'a' && c <= 'z') ||
+                                                (c >= '0' && c <= '9') || c == '_';
+                             });
+    const bool owned = ownedEffect || m.material == "w/mw120r_test" ||
                        (m.material.starts_with("w/mw120r_mp_") && m.material.size() > 12 &&
                         m.material.size() <= 80 &&
                         std::all_of(m.material.begin() + 12, m.material.end(), [](char c) {
@@ -186,15 +342,29 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j)
             if (m.techset == "tw/mw120r_graybox_v1" ||
                 (owned && m.techset.starts_with("tw/mw120r_mp_")))
             {
-                if (m.techsetHeader[0x12] != 0x21 || m.materialInfo.size() != 32 ||
-                    m.materialInfo[14] != 0x21)
-                    throw std::runtime_error("Graybox material must use static-world geometry");
+                uint32_t materialType{}, techsetType{};
+                if (m.materialInfo.size() != 32)
+                    throw std::runtime_error("Generated material metadata is incomplete");
+                std::memcpy(&materialType, m.materialInfo.data() + 0xC, sizeof(materialType));
+                std::memcpy(&techsetType, m.techsetHeader.data() + 0x10, sizeof(techsetType));
+                const bool staticWorld = materialType == 0x210000u && techsetType == 0x210000u;
+                const bool staticModel = materialType == 589844u && techsetType == 589844u;
+                const bool glass = materialType == 0x100000u && techsetType == 0x100000u;
+                if (!staticWorld && !staticModel && !glass)
+                    throw std::runtime_error(
+                        "Generated material has an incompatible geometry type");
                 for (const auto &t : m.techniques)
                 {
-                    // R_DrawBspSurf at Replay RVA 18F9460 dispatches only 32..38.
-                    // Brush-model layouts 39..47 silently skip this draw path.
-                    if (t.header[0x9C] < 32 || t.header[0x9C] > 38)
-                        throw std::runtime_error("Shader layout is incompatible with static BSP");
+                    const uint8_t layout = t.header[0x9C];
+                    uint32_t techniqueType{};
+                    std::memcpy(&techniqueType, t.header.data() + 8, sizeof(techniqueType));
+                    const uint8_t nativeStaticLayout = techniqueType == 34 ? 2 : 1;
+                    if ((staticWorld && (layout < 32 || layout > 38)) ||
+                        (staticModel && layout != nativeStaticLayout) ||
+                        (glass && layout != 31))
+                        throw std::runtime_error("Shader layout is incompatible with its geometry");
+                    if (glass && t.header[0x0F + 1] >= t.header[0x0E])
+                        throw std::runtime_error("Glass vertex declaration has no native pipeline state");
                     for (unsigned k = 0; k < 4; ++k)
                         if (!t.shaders[k].empty() &&
                             std::none_of(m.shaders.begin(), m.shaders.end(), [&](const Shader &s) {
@@ -203,12 +373,34 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j)
                             throw std::runtime_error("Missing ordered shader definition");
                 }
             }
+            if (ownedEffect && m.techset.starts_with("tw/mw120r_fx_"))
+            {
+                uint32_t materialType{}, techsetType{};
+                if (m.materialInfo.size() != 32)
+                    throw std::runtime_error("Replay effect material metadata is incomplete");
+                std::memcpy(&materialType, m.materialInfo.data() + 0xC, sizeof(materialType));
+                std::memcpy(&techsetType, m.techsetHeader.data() + 0x10, sizeof(techsetType));
+                if (materialType != 0x40200Cu || techsetType != materialType)
+                    throw std::runtime_error("Replay effect material must use an effect-quad techset");
+                for (const auto &t : m.techniques)
+                {
+                    if (t.header[0x9C] != 0)
+                        throw std::runtime_error("Replay effect shader layout is not an effect quad");
+                    for (unsigned k = 0; k < 4; ++k)
+                        if (!t.shaders[k].empty() &&
+                            std::none_of(m.shaders.begin(), m.shaders.end(), [&](const Shader &s) {
+                                return s.type == 14 + k && s.name == t.shaders[k];
+                            }))
+                            throw std::runtime_error("Missing ordered Replay effect shader");
+                }
+            }
         }
         if (m.materialInfo.size() != 32 || m.bufferIndices.size() != 195 ||
             (!m.techset.starts_with("w/lit_3_") && m.techset != "tw/mw120r_graybox_v1" &&
-             !(owned && m.techset.starts_with("tw/mw120r_mp_") && !m.techniques.empty())) ||
+             !(owned && m.techset.starts_with("tw/mw120r_mp_") && !m.techniques.empty()) &&
+             !(ownedEffect && m.techset.starts_with("tw/mw120r_fx_") && !m.techniques.empty())) ||
             m.techset.size() > 200)
-            throw std::runtime_error("Invalid Replay world material metadata");
+            throw std::runtime_error("Invalid Replay material metadata");
         if (d.contains("imageDefinitions"))
             for (const auto &im : d.at("imageDefinitions"))
             {
@@ -229,6 +421,13 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j)
                 throw std::runtime_error("Material texture has no image definition");
             m.textureHeaders.insert(m.textureHeaders.end(), h.begin(), h.end());
             m.images.push_back(image);
+        }
+        if (!m.techniques.empty() &&
+            (m.techset == "tw/mw120r_graybox_v1" || m.techset.starts_with("tw/mw120r_mp_")))
+        {
+            uint32_t materialType{};
+            std::memcpy(&materialType, m.materialInfo.data() + 0xC, sizeof(materialType));
+            validateGeneratedTextureBindings(m, materialType == 589844u);
         }
         for (const auto &cb : d.at("buffers"))
         {
@@ -318,15 +517,14 @@ std::vector<uint8_t> packObjectIndices(uint32_t objectCount, unsigned width)
     {
         for (unsigned bit = 0; bit < width; ++bit)
             if (object & (uint32_t(1) << bit))
-                result[size_t(bitOffset + bit) >> 3] |=
-                    uint8_t(1u << ((bitOffset + bit) & 7));
+                result[size_t(bitOffset + bit) >> 3] |= uint8_t(1u << ((bitOffset + bit) & 7));
         bitOffset += width;
     }
     return result;
 }
 
-uint32_t unpackObjectIndex(const std::vector<uint8_t> &data, uint32_t offset,
-                           uint64_t bitOffset, unsigned width)
+uint32_t unpackObjectIndex(const std::vector<uint8_t> &data, uint32_t offset, uint64_t bitOffset,
+                           unsigned width)
 {
     uint32_t result = 0;
     for (unsigned bit = 0; bit < width; ++bit)
@@ -348,45 +546,45 @@ void validateRange(const std::vector<uint8_t> &data, uint32_t offset, uint64_t s
 }
 
 void validateUmbraTome(const std::vector<uint8_t> &data, uint32_t objectCount,
-                       unsigned width)
+                       uint32_t worldSurfaceCount, unsigned width)
 {
     if (data.size() < kUmbraHeaderSize || data.size() > UINT32_MAX ||
         read32(data, 0) != kUmbraVersion || read32(data, 8) != data.size())
         throw std::runtime_error("Invalid conservative Umbra header");
     if (read32(data, 4) != crc32c(data.data() + 8, data.size() - 8))
         throw std::runtime_error("Invalid conservative Umbra checksum");
-    if (read32(data, 0x2C) != 33 || read32(data, 0x38) != 0 ||
-        read32(data, 0x40) != objectCount || read32(data, 0x4C) != 0 ||
-        read32(data, 0x54) != width || read32(data, 0x5C) != objectCount ||
-        read32(data, 0x7C) != 0 || read32(data, 0x8C) != 1 ||
+    if (read32(data, 0x2C) != 33 || read32(data, 0x38) != 0 || read32(data, 0x40) != objectCount ||
+        read32(data, 0x4C) != 0 || read32(data, 0x54) != width ||
+        read32(data, 0x5C) != objectCount || read32(data, 0x7C) != 0 || read32(data, 0x8C) != 1 ||
         read32(data, 0x90) != 1 || read32(data, 0x94) != 0)
         throw std::runtime_error("Invalid conservative Umbra topology");
 
     validateRange(data, read32(data, 0x30), 4, "top-level tree");
     validateRange(data, read32(data, 0x34), 4, "top-level map");
     validateRange(data, read32(data, 0x44), uint64_t(objectCount) * 24, "object bounds");
-    validateRange(data, read32(data, 0x48), uint64_t(objectCount) * 32,
-                  "object distances");
+    validateRange(data, read32(data, 0x48), uint64_t(objectCount) * 32, "object distances");
     validateRange(data, read32(data, 0x50), uint64_t(objectCount) * 4, "user IDs");
-    validateRange(data, read32(data, 0x58),
-                  (uint64_t(objectCount) * width + 31) / 32 * 4, "object list");
+    validateRange(data, read32(data, 0x58), (uint64_t(objectCount) * width + 31) / 32 * 4,
+                  "object list");
     validateRange(data, read32(data, 0x88), 8, "cell starts");
     validateRange(data, read32(data, 0x9C), 4, "tile LOD");
     validateRange(data, read32(data, 0xA0), 4, "tile table");
     validateRange(data, read32(data, 0x14C), 4, "tile portal expansion");
     if (read32(data, read32(data, 0x30)) != 3 || read32(data, read32(data, 0x34)) != 0 ||
-        read32(data, read32(data, 0x88)) != 0 ||
-        read32(data, read32(data, 0x88) + 4) != 1 ||
-        readFloat(data, read32(data, 0x9C)) != 1.0f ||
-        readFloat(data, read32(data, 0x14C)) != 0.0f)
+        read32(data, read32(data, 0x88)) != 0 || read32(data, read32(data, 0x88) + 4) != 1 ||
+        readFloat(data, read32(data, 0x9C)) != 1.0f || readFloat(data, read32(data, 0x14C)) != 0.0f)
         throw std::runtime_error("Invalid conservative Umbra tile metadata");
 
     const uint32_t userIDs = read32(data, 0x50);
     const uint32_t objectLists = read32(data, 0x58);
     for (uint32_t object = 0; object < objectCount; ++object)
-        if (read32(data, userIDs + object * 4) != object ||
+    {
+        const uint32_t expectedUserID =
+            object < worldSurfaceCount ? object : 0x10000000u + object - worldSurfaceCount;
+        if (read32(data, userIDs + object * 4) != expectedUserID ||
             unpackObjectIndex(data, objectLists, uint64_t(object) * width, width) != object)
             throw std::runtime_error("Conservative Umbra object mapping is not lossless");
+    }
 
     const uint32_t tile = read32(data, read32(data, 0xA0));
     validateRange(data, tile, kUmbraTileHeaderSize, "tile");
@@ -403,19 +601,18 @@ void validateUmbraTome(const std::vector<uint8_t> &data, uint32_t objectCount,
         read32(data, tile + read32(data, tile + 0x20)) != 0)
         throw std::runtime_error("Invalid conservative Umbra tile traversal");
     const uint32_t cell = tile + read32(data, tile + 0x38);
-    if (read32(data, cell) != 0 || read32(data, cell + 4) != 0 ||
-        read32(data, cell + 8) != 0 || read32(data, cell + 12) != objectCount ||
-        read32(data, cell + 16) != UINT32_MAX || read32(data, cell + 20) != 0x80000000 ||
-        read32(data, cell + 24) != 0 || read32(data, cell + 28) != 0x0000FFFF ||
-        read32(data, cell + 32) != UINT32_MAX)
+    if (read32(data, cell) != 0 || read32(data, cell + 4) != 0 || read32(data, cell + 8) != 0 ||
+        read32(data, cell + 12) != objectCount || read32(data, cell + 16) != UINT32_MAX ||
+        read32(data, cell + 20) != 0x80000000 || read32(data, cell + 24) != 0 ||
+        read32(data, cell + 28) != 0x0000FFFF || read32(data, cell + 32) != UINT32_MAX)
         throw std::runtime_error("Invalid conservative Umbra cell");
 }
 } // namespace
 
 replaybounds::Bounds LoadBounds(const nlohmann::json &value)
 {
-    if (!value.is_array() || value.size() != 2 || !value[0].is_array() ||
-        !value[1].is_array() || value[0].size() != 3 || value[1].size() != 3)
+    if (!value.is_array() || value.size() != 2 || !value[0].is_array() || !value[1].is_array() ||
+        value[0].size() != 3 || value[1].size() != 3)
         throw std::runtime_error("Brush-model bounds require two three-component vectors");
 
     replaybounds::Bounds bounds;
@@ -427,8 +624,8 @@ replaybounds::Bounds LoadBounds(const nlohmann::json &value)
             std::abs(minimum) > 100000 || std::abs(maximum) > 100000)
             throw std::runtime_error("Invalid brush-model bounds");
         bounds.midpoint[axis] = float((minimum + maximum) * 0.5);
-        const double required = std::max(maximum - bounds.midpoint[axis],
-                                         bounds.midpoint[axis] - minimum);
+        const double required =
+            std::max(maximum - bounds.midpoint[axis], bounds.midpoint[axis] - minimum);
         bounds.halfSize[axis] = float(required);
         if (double(bounds.halfSize[axis]) < required)
             bounds.halfSize[axis] =
@@ -450,10 +647,18 @@ Mesh Load(const std::string &path)
     if (j.contains("additionalMaterials"))
         for (const auto &definition : j.at("additionalMaterials"))
         {
-            if (m.additionalMaterials.size() >= 3)
-                throw std::runtime_error("At most three additional materials are supported");
+            if (m.additionalMaterials.size() >= 6)
+                throw std::runtime_error("At most six additional materials are supported");
             m.additionalMaterials.push_back(LoadMaterial(path, definition));
         }
+    if (j.contains("assetMaterials"))
+    {
+        const auto &definitions = j.at("assetMaterials");
+        if (!definitions.is_array() || definitions.size() > 4096)
+            throw std::runtime_error("Invalid auxiliary material table");
+        for (const auto &definition : definitions)
+            m.assetMaterials.push_back(LoadMaterial(path, definition, true));
+    }
     const auto &list = j.at("surfaces");
     const unsigned atlasLayout = j.value("atlasVertexLayout", 1u);
     if (atlasLayout < 1 || atlasLayout > 3)
@@ -504,9 +709,43 @@ Mesh Load(const std::string &path)
         }
         return result;
     };
+    if (j.contains("glassPanes"))
+    {
+        const auto &panes = j.at("glassPanes");
+        if (!panes.is_array() || panes.size() > 65535)
+            throw std::runtime_error("Invalid Replay glass-pane table");
+        for (const auto &source : panes)
+        {
+            GlassPane pane;
+            pane.material = source.at("material").get<std::string>();
+            const auto material = std::find_if(m.assetMaterials.begin(), m.assetMaterials.end(),
+                [&](const Material &candidate) { return candidate.material == pane.material; });
+            if (material == m.assetMaterials.end() || material->techniques.empty() ||
+                std::any_of(material->techniques.begin(), material->techniques.end(),
+                            [](const Technique &technique) { return technique.header[0x9C] != 31; }))
+                throw std::runtime_error("Glass pane requires a native glass material");
+            const auto origin = vector(source.at("origin"), 3);
+            const auto quaternion = vector(source.at("quaternion"), 4);
+            const auto texVecs = vector(source.at("texVecs"), 4);
+            const auto texOrigin = vector(source.at("texCoordOrigin"), 2);
+            std::copy(texVecs.begin(), texVecs.end(), pane.texVecs.begin());
+            std::copy(texOrigin.begin(), texOrigin.end(), pane.texCoordOrigin.begin());
+            std::copy(origin.begin(), origin.end(), pane.origin.begin());
+            std::copy(quaternion.begin(), quaternion.end(), pane.quaternion.begin());
+            pane.halfWidth = source.at("halfWidth").get<float>();
+            pane.halfHeight = source.at("halfHeight").get<float>();
+            pane.halfThickness = source.at("halfThickness").get<float>();
+            const float quaternionLength = std::inner_product(
+                pane.quaternion.begin(), pane.quaternion.end(), pane.quaternion.begin(), 0.0f);
+            if (std::abs(quaternionLength - 1.0f) > 0.001f || pane.halfWidth < 0.125f ||
+                pane.halfHeight < 0.125f || pane.halfThickness < 0.125f ||
+                pane.halfWidth * 32.0f > 32767.0f || pane.halfHeight * 32.0f > 32767.0f)
+                throw std::runtime_error("Invalid Replay glass-pane geometry");
+            m.glassPanes.push_back(pane);
+        }
+    }
     const auto &reflectionProbes = j.at("reflectionProbes");
-    if (!reflectionProbes.is_array() || reflectionProbes.empty() ||
-        reflectionProbes.size() > 256)
+    if (!reflectionProbes.is_array() || reflectionProbes.empty() || reflectionProbes.size() > 256)
         throw std::runtime_error("Invalid Replay reflection-probe table");
     std::set<std::string> reflectionImages;
     for (const auto &source : reflectionProbes)
@@ -523,14 +762,11 @@ Mesh Load(const std::string &path)
             throw std::runtime_error("Replay reflection probe requires four SH vectors");
         for (std::size_t channel = 0; channel < probe.sh.size(); ++channel)
         {
-            if (!sh.at(channel).is_array() ||
-                sh.at(channel).size() != probe.sh[channel].size())
+            if (!sh.at(channel).is_array() || sh.at(channel).size() != probe.sh[channel].size())
                 throw std::runtime_error("Replay reflection-probe SH vector has invalid width");
-            for (std::size_t coefficient = 0; coefficient < probe.sh[channel].size();
-                 ++coefficient)
+            for (std::size_t coefficient = 0; coefficient < probe.sh[channel].size(); ++coefficient)
             {
-                probe.sh[channel][coefficient] =
-                    sh.at(channel).at(coefficient).get<float>();
+                probe.sh[channel][coefficient] = sh.at(channel).at(coefficient).get<float>();
                 if (!std::isfinite(probe.sh[channel][coefficient]))
                     throw std::runtime_error("Replay reflection-probe SH value is non-finite");
             }
@@ -601,8 +837,7 @@ Mesh Load(const std::string &path)
                 std::size_t end = begin + 1;
                 while (end < owned.size() && owned[end] == owned[end - 1] + 1)
                     ++end;
-                leaves.push_back(
-                    {bounds, owned[begin], static_cast<unsigned>(end - begin), 0, 0});
+                leaves.push_back({bounds, owned[begin], static_cast<unsigned>(end - begin), 0, 0});
                 begin = end;
             }
         }
@@ -614,8 +849,7 @@ Mesh Load(const std::string &path)
         }
         else
         {
-            cell.trees.push_back(
-                {cell.bounds, 0, 0, 48, static_cast<uint16_t>(leaves.size())});
+            cell.trees.push_back({cell.bounds, 0, 0, 48, static_cast<uint16_t>(leaves.size())});
             cell.trees.insert(cell.trees.end(), leaves.begin(), leaves.end());
         }
         m.cells.push_back(std::move(cell));
@@ -857,6 +1091,317 @@ void StampWorld(std::vector<uint8_t> &w, const Mesh &m)
     put(w.data(), 0x41E0, PTR_FOLLOWS); // sortedSurfaces[words*32], disk-backed uint32
     put(w.data(), 0x41F8, PTR_FOLLOWS); // surface casts-sun-shadow bits, runtime
 }
+
+namespace
+{
+constexpr size_t kStaticModelsOffset = 0x150;
+
+struct StaticModelLayout
+{
+    struct Surface
+    {
+        uint16_t model{};
+        uint8_t lod{};
+        uint8_t index{};
+        uint16_t material{};
+        replaybounds::Bounds bounds{};
+        float drawDistance{};
+    };
+
+    std::vector<Surface> surfaces;
+    std::vector<uint16_t> firstSurface;
+    std::vector<std::string> materials;
+};
+
+void ValidateBounds(const replaybounds::Bounds &bounds, const char *kind)
+{
+    for (unsigned axis = 0; axis < 3; ++axis)
+    {
+        if (!std::isfinite(bounds.midpoint[axis]) || !std::isfinite(bounds.halfSize[axis]) ||
+            bounds.halfSize[axis] < 0)
+            throw std::runtime_error(std::string("Invalid static-model ") + kind + " bounds");
+    }
+}
+
+StaticModelLayout BuildStaticModelLayout(const StaticModels &source)
+{
+    if (source.models.size() > UINT16_MAX || source.instances.size() > UINT16_MAX)
+        throw std::runtime_error("Static-model table exceeds Replay counts");
+
+    StaticModelLayout result;
+    result.firstSurface.reserve(source.models.size());
+    for (size_t modelIndex = 0; modelIndex < source.models.size(); ++modelIndex)
+    {
+        const auto &model = source.models[modelIndex];
+        if (model.name.empty() || model.lods.empty() || model.lods.size() > 6)
+            throw std::runtime_error("Invalid Replay static-model definition");
+        ValidateBounds(model.bounds, "model");
+        if (result.surfaces.size() > UINT16_MAX)
+            throw std::runtime_error("Static-model surface table exceeds Replay indices");
+        result.firstSurface.push_back(static_cast<uint16_t>(result.surfaces.size()));
+
+        size_t modelSurfaceCount = 0;
+        float previousDistance = 0;
+        for (size_t lodIndex = 0; lodIndex < model.lods.size(); ++lodIndex)
+        {
+            const auto &lod = model.lods[lodIndex];
+            if (lod.surfaces.empty() || lod.surfaces.size() > UINT8_MAX ||
+                !std::isfinite(lod.distance) || lod.distance <= previousDistance)
+                throw std::runtime_error("Invalid Replay static-model LOD");
+            previousDistance = lod.distance;
+            if (modelSurfaceCount + lod.surfaces.size() > UINT8_MAX)
+                throw std::runtime_error("Static model exceeds Replay's per-model surface limit");
+
+            for (size_t surfaceIndex = 0; surfaceIndex < lod.surfaces.size(); ++surfaceIndex)
+            {
+                const auto &surface = lod.surfaces[surfaceIndex];
+                if (surface.material.empty())
+                    throw std::runtime_error("Static-model surface has no material");
+                ValidateBounds(surface.bounds, "surface");
+                auto found =
+                    std::find(result.materials.begin(), result.materials.end(), surface.material);
+                if (found == result.materials.end())
+                {
+                    if (result.materials.size() == UINT16_MAX)
+                        throw std::runtime_error(
+                            "Static-model material table exceeds Replay indices");
+                    result.materials.push_back(surface.material);
+                    found = std::prev(result.materials.end());
+                }
+                result.surfaces.push_back({static_cast<uint16_t>(modelIndex),
+                                           static_cast<uint8_t>(lodIndex),
+                                           static_cast<uint8_t>(surfaceIndex),
+                                           static_cast<uint16_t>(found - result.materials.begin()),
+                                           surface.bounds, model.lods.back().distance});
+            }
+            modelSurfaceCount += lod.surfaces.size();
+        }
+    }
+    if (result.surfaces.size() > UINT16_MAX)
+        throw std::runtime_error("Static-model surface table exceeds Replay indices");
+    for (const auto &instance : source.instances)
+    {
+        if (instance.model >= source.models.size() || !std::isfinite(instance.scale) ||
+            instance.scale <= 0)
+            throw std::runtime_error("Invalid Replay static-model instance");
+        double quaternionLength = 0;
+        for (const float value : instance.origin)
+            if (!std::isfinite(value) || std::abs(double(value) * 4096.0) > INT32_MAX)
+                throw std::runtime_error("Static-model origin exceeds Replay fixed-point range");
+        for (const float value : instance.quaternion)
+        {
+            if (!std::isfinite(value))
+                throw std::runtime_error("Static-model quaternion is not finite");
+            quaternionLength += double(value) * value;
+        }
+        if (quaternionLength < 1.0e-12)
+            throw std::runtime_error("Static-model quaternion has zero length");
+    }
+    return result;
+}
+
+std::array<float, 4> NormalizeQuaternion(const std::array<float, 4> &source)
+{
+    double length = 0;
+    for (const float value : source)
+        length += double(value) * value;
+    const float inverse = static_cast<float>(1.0 / std::sqrt(length));
+    std::array<float, 4> result{};
+    for (unsigned index = 0; index < 4; ++index)
+        result[index] = source[index] * inverse;
+    return result;
+}
+
+replaybounds::Bounds TransformBounds(const replaybounds::Bounds &bounds,
+                                     const StaticModelInstance &instance)
+{
+    const auto q = NormalizeQuaternion(instance.quaternion);
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float rotation[3][3] = {
+        {1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)},
+        {2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)},
+        {2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)}};
+    replaybounds::Bounds result;
+    for (unsigned row = 0; row < 3; ++row)
+    {
+        result.midpoint[row] = instance.origin[row];
+        result.halfSize[row] = 0;
+        for (unsigned column = 0; column < 3; ++column)
+        {
+            result.midpoint[row] +=
+                rotation[row][column] * bounds.midpoint[column] * instance.scale;
+            result.halfSize[row] +=
+                std::abs(rotation[row][column]) * bounds.halfSize[column] * instance.scale;
+        }
+    }
+    return result;
+}
+
+uint16_t PackQuaternionComponent(const float value)
+{
+    return static_cast<uint16_t>(
+        std::lround((std::clamp(value, -1.0f, 1.0f) * 0.5f + 0.5f) * 65535.0f));
+}
+} // namespace
+
+void StampStaticModels(std::vector<uint8_t> &world, const StaticModels &models)
+{
+    const auto layout = BuildStaticModelLayout(models);
+    if (models.models.empty())
+    {
+        if (!models.instances.empty())
+            throw std::runtime_error("Static-model instances have no definitions");
+        return;
+    }
+    if (world.size() < kStaticModelsOffset + 0x4F8)
+        throw std::runtime_error("GfxWorld is too small for Replay static models");
+
+    auto *staticWorld = world.data() + kStaticModelsOffset;
+    put(staticWorld, 0x00, static_cast<uint32_t>(layout.surfaces.size()));
+    put(staticWorld, 0x04, static_cast<uint32_t>(models.models.size()));
+    put(staticWorld, 0x08, static_cast<uint32_t>(models.instances.size()));
+    put(staticWorld, 0x10, static_cast<uint32_t>(models.instances.size()));
+    put(staticWorld, 0x1C, static_cast<uint32_t>(layout.materials.size()));
+    put(staticWorld, 0x38, PTR_FOLLOWS);  // GfxStaticModelSurface[]
+    put(staticWorld, 0x40, PTR_FOLLOWS);  // GfxStaticModel[]
+    put(staticWorld, 0x50, PTR_FOLLOWS);  // GfxStaticModelCollection[]
+    put(staticWorld, 0x60, PTR_FOLLOWS);  // instanceFlags[]
+    put(staticWorld, 0x68, PTR_FOLLOWS);  // collectionBounds[]
+    put(staticWorld, 0x70, PTR_FOLLOWS);  // MaterialHandle[]
+    put(staticWorld, 0x78, PTR_FOLLOWS);  // modelStaticIndirection[]
+    put(staticWorld, 0x108, PTR_FOLLOWS); // smodelSurfData[]
+    put(staticWorld, 0x150, PTR_FOLLOWS); // smodelInstanceData[]
+    put(staticWorld, 0x288, PTR_FOLLOWS); // smodelExpansionData[]
+    put(staticWorld, 0x2D0, PTR_FOLLOWS); // smodelSurfMatIndirection[]
+    put(staticWorld, 0x398, PTR_FOLLOWS); // smodelSurfUGBIndirection[]
+
+    auto *dpvs = world.data() + 0x3F98;
+    const auto visibilityWordCount = static_cast<uint32_t>((models.instances.size() + 31) >> 5);
+    put(dpvs, 0x00, visibilityWordCount);
+    constexpr std::array<size_t, 24> serializedViews = {
+        0, 1, 2, 3, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+    for (const size_t index : serializedViews)
+        put(dpvs, 0x18 + index * 8, PTR_FOLLOWS);
+    put(dpvs, 0x258, PTR_FOLLOWS);
+}
+
+void EmitStaticModels(ZoneWriter &writer, const StaticModels &models)
+{
+    const auto layout = BuildStaticModelLayout(models);
+    if (models.models.empty())
+        return;
+
+    writer.align(1);
+    for (const auto &surface : layout.surfaces)
+    {
+        writer.writeT(surface.model);
+        writer.writeT(surface.lod);
+        writer.writeT(surface.index);
+    }
+
+    writer.align(7);
+    for (size_t index = 0; index < models.models.size(); ++index)
+    {
+        uint8_t model[16]{};
+        put(model, 0x00, writer.assetAlias(ASSET_TYPE_XMODEL, models.models[index].name));
+        model[0x08] = 1; // STATIC_MODEL_FLAG_LIGHTPROBE_LIGHTING
+        put(model, 0x0A, layout.firstSurface[index]);
+        writer.write(model, sizeof(model));
+    }
+
+    writer.align(3);
+    for (size_t index = 0; index < models.instances.size(); ++index)
+    {
+        const auto &instance = models.instances[index];
+        uint8_t collection[16]{};
+        put(collection, 0x00, static_cast<uint32_t>(index));
+        put(collection, 0x04, uint32_t{1});
+        put(collection, 0x08, static_cast<uint16_t>(instance.model));
+        collection[0x0E] = 3; // enabled and casts sun shadows
+        writer.write(collection, sizeof(collection));
+    }
+    for (size_t index = 0; index < models.instances.size(); ++index)
+        writer.writeT<uint8_t>(6);
+
+    writer.align(3);
+    for (const auto &instance : models.instances)
+    {
+        const auto bounds = TransformBounds(models.models[instance.model].bounds, instance);
+        uint8_t value[24]{};
+        bounds.Write(value);
+        writer.write(value, sizeof(value));
+    }
+
+    writer.align(7);
+    for (const auto &material : layout.materials)
+        writer.writeT(writer.assetAlias(ASSET_TYPE_MATERIAL, material));
+
+    writer.align(3);
+    for (size_t index = 0; index < models.instances.size(); ++index)
+    {
+        writer.writeT(static_cast<uint32_t>(index));
+        writer.writeT<uint16_t>(0);
+        writer.writeT<uint16_t>(0);
+    }
+    writer.align(15);
+    for (const auto &surface : layout.surfaces)
+    {
+        uint8_t data[32]{};
+        std::memcpy(data, surface.bounds.midpoint.data(), 3 * sizeof(float));
+        put(data, 0x0C,
+            *std::max_element(surface.bounds.halfSize.begin(), surface.bounds.halfSize.end()));
+        std::memcpy(data + 0x10, surface.bounds.halfSize.data(), 3 * sizeof(float));
+        put(data, 0x1C, surface.drawDistance);
+        writer.write(data, sizeof(data));
+    }
+    writer.align(15);
+    for (const auto &instance : models.instances)
+    {
+        const auto quaternion = NormalizeQuaternion(instance.quaternion);
+        uint8_t data[24]{};
+        for (unsigned axis = 0; axis < 3; ++axis)
+            put(data, axis * 4,
+                static_cast<int32_t>(std::lround(double(instance.origin[axis]) * 4096.0)));
+        for (unsigned component = 0; component < 4; ++component)
+            put(data, 0x0C + component * 2, PackQuaternionComponent(quaternion[component]));
+        put(data, 0x14, instance.scale);
+        writer.write(data, sizeof(data));
+    }
+    writer.align(3);
+    for (size_t modelIndex = 0; modelIndex < models.models.size(); ++modelIndex)
+    {
+        const auto &model = models.models[modelIndex];
+        uint8_t expansion[64]{};
+        const size_t first = layout.firstSurface[modelIndex];
+        size_t surfaceOffset = 0;
+        put(expansion, 0x00, static_cast<uint16_t>(first));
+        expansion[0x02] = static_cast<uint8_t>(std::accumulate(
+            model.lods.begin(), model.lods.end(), size_t{},
+            [](size_t total, const StaticModelLod &lod) { return total + lod.surfaces.size(); }));
+        expansion[0x03] = static_cast<uint8_t>(model.lods.size());
+        model.bounds.Write(expansion + 0x04);
+        for (size_t lodIndex = 0; lodIndex < model.lods.size(); ++lodIndex)
+        {
+            expansion[0x1C + lodIndex * 2] = static_cast<uint8_t>(surfaceOffset);
+            expansion[0x1D + lodIndex * 2] =
+                static_cast<uint8_t>(model.lods[lodIndex].surfaces.size());
+            put(expansion, 0x28 + lodIndex * 4, model.lods[lodIndex].distance);
+            surfaceOffset += model.lods[lodIndex].surfaces.size();
+        }
+        writer.write(expansion, sizeof(expansion));
+    }
+    writer.align(1);
+    for (const auto &surface : layout.surfaces)
+    {
+        writer.writeT(surface.material);
+        writer.writeT<uint8_t>(0xEF);
+        writer.writeT<uint8_t>(0x0F);
+    }
+    writer.align(3);
+    for (size_t index = 0; index < layout.surfaces.size(); ++index)
+        writer.writeT<uint32_t>(0);
+}
+
 void EmitMaterial(ZoneWriter &w, const Material &m, bool definition)
 {
     w.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
@@ -942,9 +1487,7 @@ void RegisterImageDefinition(ZoneWriter &w, const Image &image,
         uint8_t h[0xE8]{};
         put(h, 0, PTR_FOLLOWS);
         put(h, 0x14, uint32_t(image.format));
-        put(h, 0x18,
-            image.flags ? image.flags
-                        : uint32_t(image.mipCount > 1 ? 1 : 3));
+        put(h, 0x18, image.flags ? image.flags : uint32_t(image.mipCount > 1 ? 1 : 3));
         put(h, 0x1C, uint32_t(image.pixels.size()));
         put(h, 0x24, image.width);
         put(h, 0x26, image.height);
@@ -1007,20 +1550,22 @@ void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
                 out.reserveCalc(40);
                 out.popStream();
             });
-    if (!m.techniques.empty())
-        w.add(ASSET_TYPE_TECHSET, m.techset, [m](ZoneWriter &out) {
+    if (!m.techniques.empty() && registered.emplace(ASSET_TYPE_TECHSET, m.techset).second)
+        w.add(ASSET_TYPE_TECHSET, m.techset,
+              [name = m.techset, header = m.techsetHeader,
+               techniques = m.techniques](ZoneWriter &out) {
             out.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
             out.align(7);
-            auto h = m.techsetHeader;
+            auto h = header;
             put(h.data(), 0, PTR_FOLLOWS);
             put(h.data(), 56, PTR_FOLLOWS);
             out.write(h.data(), h.size());
             out.pushStream(XFILE_BLOCK_VIRTUAL);
-            out.writeStr(m.techset.c_str());
+            out.writeStr(name.c_str());
             out.align(7);
-            for (size_t index = 0; index < m.techniques.size(); ++index)
+            for (size_t index = 0; index < techniques.size(); ++index)
                 out.writeT<uint64_t>(PTR_FOLLOWS);
-            for (const auto &t : m.techniques)
+            for (const auto &t : techniques)
             {
                 auto b = t.header;
                 put(b.data(), 0, PTR_FOLLOWS);
@@ -1057,7 +1602,7 @@ void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
             out.pushStream(XFILE_BLOCK_TEMP_POSTLOAD);
             out.align(7);
             out.reserveCalc(64);
-            for (const auto &t : m.techniques)
+            for (const auto &t : techniques)
                 for (const auto &s : t.shaders)
                     if (!s.empty())
                     {
@@ -1066,14 +1611,29 @@ void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
                     }
             out.popStream();
         });
-    w.add(ASSET_TYPE_MATERIAL, m.material, [m](ZoneWriter &out) {
-        EmitMaterial(out, m, true);
+    if (!registered.emplace(ASSET_TYPE_MATERIAL, m.material).second)
+        return;
+    // Images and shaders already own their payload in separate asset entries.
+    // Keep only the fields consumed by EmitMaterial; retaining the entire input
+    // here duplicates every resident image for each material and techset.
+    Material definition;
+    definition.material = m.material;
+    definition.materialInfo = m.materialInfo;
+    definition.constants = m.constants;
+    definition.bufferIndices = m.bufferIndices;
+    definition.textureHeaders = m.textureHeaders;
+    definition.techset = m.techset;
+    definition.images = m.images;
+    definition.buffers = m.buffers;
+    w.add(ASSET_TYPE_MATERIAL, m.material,
+          [definition = std::move(definition)](ZoneWriter &out) {
+        EmitMaterial(out, definition, true);
         out.pushStream(XFILE_BLOCK_TEMP_POSTLOAD);
         out.align(7);
         out.reserveCalc(120);
         out.align(7);
         out.reserveCalc(64);
-        for (size_t index = 0; index < m.images.size(); ++index)
+        for (size_t index = 0; index < definition.images.size(); ++index)
         {
             out.align(15);
             out.reserveCalc(0xE8);
@@ -1088,6 +1648,8 @@ void RegisterMaterial(ZoneWriter &w, const std::string &path)
     RegisterMaterialDefinition(w, m, registered);
     for (const auto &material : m.additionalMaterials)
         RegisterMaterialDefinition(w, material, registered);
+    for (const auto &material : m.assetMaterials)
+        RegisterMaterialDefinition(w, material, registered);
 }
 void EmitSurfaces(ZoneWriter &w, const Mesh &m)
 {
@@ -1098,7 +1660,6 @@ void EmitSurfaces(ZoneWriter &w, const Mesh &m)
     for (unsigned i = 0; i < m.count; ++i)
     {
         // Native comma references resolve an existing material and its techset.
-        // The stub is not installed as a replacement material.
         const unsigned material = m.surfaceMaterials[i];
         EmitMaterial(
             w, material ? m.additionalMaterials[material - 1] : static_cast<const Material &>(m),
@@ -1134,11 +1695,14 @@ void EmitVertices(ZoneWriter &w, const Mesh &m)
     w.write(m.indices.data(), m.indices.size());
 }
 
-std::vector<uint8_t> BuildUmbraTome(const Mesh &m)
+std::vector<uint8_t> BuildUmbraTome(const Mesh &m, const StaticModels &staticModels)
 {
-    const uint32_t objectCount = m.worldSurfaceCount();
+    BuildStaticModelLayout(staticModels);
+    const uint32_t worldSurfaceCount = m.worldSurfaceCount();
+    const uint32_t staticModelCount = static_cast<uint32_t>(staticModels.instances.size());
+    const uint32_t objectCount = worldSurfaceCount + staticModelCount;
     if (!objectCount || objectCount > 0x01000000 ||
-        uint64_t(objectCount) * 56 > m.bounds.size())
+        uint64_t(worldSurfaceCount) * 56 > m.bounds.size())
         throw std::runtime_error("Replay world surfaces cannot be represented by Umbra object IDs");
 
     const unsigned indexWidth = objectIndexWidth(objectCount);
@@ -1162,6 +1726,15 @@ std::vector<uint8_t> BuildUmbraTome(const Mesh &m)
             minimum[axis] >= maximum[axis])
             throw std::runtime_error("Replay world has invalid Umbra bounds");
     }
+    for (const auto &instance : staticModels.instances)
+    {
+        const auto bounds = TransformBounds(staticModels.models[instance.model].bounds, instance);
+        for (unsigned axis = 0; axis < 3; ++axis)
+        {
+            minimum[axis] = std::min(minimum[axis], bounds.midpoint[axis] - bounds.halfSize[axis]);
+            maximum[axis] = std::max(maximum[axis], bounds.midpoint[axis] + bounds.halfSize[axis]);
+        }
+    }
     std::memcpy(tome.data() + 0x14, minimum, sizeof(minimum));
     std::memcpy(tome.data() + 0x20, maximum, sizeof(maximum));
     std::memcpy(tome.data() + 0x150, minimum, sizeof(minimum));
@@ -1179,10 +1752,21 @@ std::vector<uint8_t> BuildUmbraTome(const Mesh &m)
     const uint32_t objectDistances = allocate16(tome, uint64_t(objectCount) * 32);
     for (uint32_t object = 0; object < objectCount; ++object)
     {
-        const auto *bounds = m.bounds.data() + uint64_t(object) * 56;
         float midpoint[3], halfSize[3];
-        std::memcpy(midpoint, bounds, sizeof(midpoint));
-        std::memcpy(halfSize, bounds + 12, sizeof(halfSize));
+        if (object < worldSurfaceCount)
+        {
+            const auto *bounds = m.bounds.data() + uint64_t(object) * 56;
+            std::memcpy(midpoint, bounds, sizeof(midpoint));
+            std::memcpy(halfSize, bounds + 12, sizeof(halfSize));
+        }
+        else
+        {
+            const auto &instance = staticModels.instances[object - worldSurfaceCount];
+            const auto bounds =
+                TransformBounds(staticModels.models[instance.model].bounds, instance);
+            std::memcpy(midpoint, bounds.midpoint.data(), sizeof(midpoint));
+            std::memcpy(halfSize, bounds.halfSize.data(), sizeof(halfSize));
+        }
         float objectMinimum[3], objectMaximum[3];
         for (unsigned axis = 0; axis < 3; ++axis)
         {
@@ -1206,7 +1790,11 @@ std::vector<uint8_t> BuildUmbraTome(const Mesh &m)
 
     const uint32_t userIDs = allocate16(tome, uint64_t(objectCount) * 4);
     for (uint32_t object = 0; object < objectCount; ++object)
-        put(tome.data(), userIDs + uint64_t(object) * 4, object);
+    {
+        const uint32_t userID =
+            object < worldSurfaceCount ? object : 0x10000000u + object - worldSurfaceCount;
+        put(tome.data(), userIDs + uint64_t(object) * 4, userID);
+    }
     put(tome.data(), 0x50, userIDs);
 
     const uint32_t objectLists = allocate16(tome, packedObjects.size());
@@ -1254,32 +1842,50 @@ std::vector<uint8_t> BuildUmbraTome(const Mesh &m)
     put(tome.data(), cell + 0x20, UINT32_MAX);
     put(tome.data(), tile + 0x38, cell - tile);
     align16(tome);
-    put(tome.data(), tile + 0x2C,
-        (static_cast<uint32_t>(tome.size()) - tile) << 8 | uint32_t(3));
+    put(tome.data(), tile + 0x2C, (static_cast<uint32_t>(tome.size()) - tile) << 8 | uint32_t(3));
     put(tome.data(), tileOffsets, tile);
 
     put(tome.data(), 0x08, static_cast<uint32_t>(tome.size()));
     put(tome.data(), 0x04, crc32c(tome.data() + 8, tome.size() - 8));
-    validateUmbraTome(tome, objectCount, indexWidth);
+    validateUmbraTome(tome, objectCount, worldSurfaceCount, indexWidth);
     return tome;
 }
 
-void EmitSortedSurfaces(ZoneWriter &w, const Mesh &m)
+void EmitSortedSurfaces(ZoneWriter &w, const Mesh &m, const StaticModels &staticModels)
 {
-    if (!m.count)
-        return;
-    w.align(3);
-    for (unsigned i = 0; i < m.words() * 32; ++i)
-        w.writeT<uint32_t>(i < m.count ? i : 0);
-    w.pushStream(XFILE_BLOCK_TEMP_POSTLOAD);
-    for (unsigned i = 0; i < m.count; ++i)
+    if (m.count)
     {
-        w.align(7);
-        w.reserveCalc(0x78);
+        w.align(3);
+        for (unsigned i = 0; i < m.words() * 32; ++i)
+            w.writeT<uint32_t>(i < m.count ? i : 0);
     }
-    w.popStream();
-    w.pushStream(XFILE_BLOCK_SHARED_STREAM);
-    w.reserveCalc(0x4000);
-    w.popStream();
+
+    if (!staticModels.instances.empty())
+    {
+        std::vector<uint16_t> indices(staticModels.instances.size());
+        std::iota(indices.begin(), indices.end(), uint16_t{});
+        std::stable_sort(
+            indices.begin(), indices.end(), [&](const uint16_t left, const uint16_t right) {
+                return staticModels.instances[left].model < staticModels.instances[right].model;
+            });
+        w.align(1);
+        const size_t paddedCount = ((staticModels.instances.size() + 31) & ~size_t(31)) + 1;
+        for (size_t index = 0; index < paddedCount; ++index)
+            w.writeT(index < indices.size() ? indices[index] : uint16_t{});
+    }
+
+    if (m.count)
+    {
+        w.pushStream(XFILE_BLOCK_TEMP_POSTLOAD);
+        for (unsigned i = 0; i < m.count; ++i)
+        {
+            w.align(7);
+            w.reserveCalc(0x78);
+        }
+        w.popStream();
+        w.pushStream(XFILE_BLOCK_SHARED_STREAM);
+        w.reserveCalc(0x4000);
+        w.popStream();
+    }
 }
 } // namespace replayrender

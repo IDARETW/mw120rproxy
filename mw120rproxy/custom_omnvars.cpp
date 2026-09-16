@@ -20,7 +20,7 @@ unsigned Count(uintptr_t rva) {
     return result;
 }
 uintptr_t ClearTables() {
-
+    // Track the native lifecycle as well as our narrow recovery call.
     g_customTables.store(false, std::memory_order_release);
     return g_clear.load(std::memory_order_acquire)();
 }

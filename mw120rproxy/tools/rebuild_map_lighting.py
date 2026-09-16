@@ -162,7 +162,12 @@ def build_candidate(
     with mesh_path.open("w") as stream:
         json.dump(mesh, stream, separators=(",", ":"))
     del mesh
-    converter = REPO / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
+    from native_lightgrid import convert as convert_lightgrid
+
+    if report.get("source"):
+        convert_lightgrid(Path(report["source"]), mapid, folder / (stem + ".gpulightgrid.bin"),
+                          2 ** indirect_ev)
+    converter = REPO.parent / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
     destination = out / "package"
     run(
         [
@@ -200,6 +205,8 @@ def build_candidate(
     manifest["lighting_profile"] = converted_manifest["lighting_profile"]
     manifest["sun_intensity_scale"] = converted_manifest["sun_intensity_scale"]
     manifest["lighting_runtime_override"] = False
+    if "light_grid" in converted_manifest:
+        manifest["light_grid"] = converted_manifest["light_grid"]
     manifest.pop("ambient", None)
     manifest.pop("ambient_grid", None)
     if not preserve_lighting:
@@ -211,7 +218,7 @@ def build_candidate(
     )
     manifest["depth_coverage"] = "atlas-prepass-v1"
     write_json(destination / "manifest.json", manifest)
-    run([converter, "validate-output", destination, mapid], REPO, out / "validate.log")
+    run([converter, "validate-package", destination, mapid], REPO, out / "validate.log")
     run(
         [
             sys.executable,
@@ -228,7 +235,7 @@ def build_candidate(
         REPO,
         out / "layout.log",
     )
-    acts = REPO / "external/atian-cod-tools/build/bin/Release/acts.exe"
+    acts = REPO.parent / "atian-cod-tools/build/bin/Release/acts.exe"
     if acts.is_file():
         from validate_replay_package_acts import validate
 
@@ -262,7 +269,7 @@ def build_candidate(
         lighting_limits=[
             "Live sun-shadow reception is enabled for opaque surfaces; indirect occlusion comes from source lightmaps.",
             "Masked surfaces have matching depth/normal coverage; translucent glass does not write opaque depth.",
-            "Native per-object light grids are not generated; no runtime ambient probe override is used.",
+            "Native spatial diffuse grids are emitted when an IW3 grid is available; higher SH bands and reflection probes are not converted.",
         ],
     )
     write_json(out / "build_report.json", report)

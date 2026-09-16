@@ -1,22 +1,16 @@
 # IW8 ZoneTool for Replay 1.20
 
-> **Untested proof of concept.** The tool has offline package validation for the maintained `mp_test` fixture, but it is still under active reconstruction and must be tested on a separate Replay installation before use on a map you care about.
-
 This source builds custom multiplayer map zones for the 1.20.4 Replay executable used by
 mw120rproxy. It keeps the usual ZoneTool split between common file code, source dump readers,
 conversion code, and game-specific IW8 asset writers.
 
 The compiler writes native Replay 1.20 fastfiles. Collision, footsteps, render geometry,
-materials, lightgrid data, sun settings, bullet-impact effects, and an optional HUD minimap are
-serialized into the zones. It does not create a manifest, loose collision file, report, preview,
-or other output file. The only exception is an optional `map.json` when `--metadata` is supplied.
+materials, authored vertex occlusion, lightgrid data, sun settings, bullet-impact effects, and an optional HUD minimap are
+serialized into the zones. Direct conversion does not create a manifest, loose collision file,
+report, preview, or other generated sidecar. It writes the five fastfiles and one `map.json`.
 
-The project has no Python scripts or Python dependency. It builds as a single Windows x64 C++
+The converter has no Python runtime or Python package dependency. It builds as a single Windows x64 C++
 executable with XMake and Visual Studio Build Tools.
-
-The writer currently omits authored reflection-probe tables. The IW3 reader retains probe data for
-continued ABI work, but the final Replay `GfxWorldReflectionProbeData` layout is not emitted until
-its nested load-stream order is verified against Replay 1.20.
 
 ## Build
 
@@ -42,7 +36,7 @@ bake, and IW8 zone build in one command:
 
 ```powershell
 $map = 'C:\Maps\mp_example'
-$replay = 'D:\Games\iw8\1.20.4.7623265-replay\Call of Duty Modern Warfare (1.20.4.7623265)\game_dx12_ship_replay.exe'
+$replay = 'E:\IW8\Builds\1.20-replay\game_dx12_ship_replay.exe'
 $unlinker = '.\mw120rproxy\tools\_vendor\OpenAssetTools\build\bin\Release_x86\Unlinker.exe'
 $zoneTool = '.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
 
@@ -50,7 +44,7 @@ $zoneTool = '.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
     -o "$map\converted" `
     --replay $replay `
     --unlinker $unlinker `
-    --search-path $map
+    --iw3-root 'E:\CoD4\game_build\Call of Duty 4 Modern Warfare'
 ```
 
 The example above is PowerShell. For Command Prompt syntax, including its required double quotes,
@@ -64,27 +58,55 @@ fastfile and writes the five zones there; use `-o` only when you want another de
 sibling `mp_example_load.ff` is read automatically. Repeat `--search-path` for CoD4 directories or
 IWD locations needed by the source zone.
 
+The fastfile's directory is searched automatically. If the CoD4 installation is elsewhere, pass
+`--iw3-root 'C:\Games\Call of Duty 4 Modern Warfare'`; the tool adds its root, `main`, and `raw`
+directories automatically. You can also set `IW3_GAME_ROOT` (or `COD4_ROOT`) once for repeated
+conversions. Additional `--search-path` values are still accepted for custom asset packs.
+
+For a normal CoD4 install, the shortest complete command is:
+
+```powershell
+& $zoneTool build-iw3 "$map\mp_example.ff" mp_example `
+    -o "$map\converted" --replay $replay --iw3-root 'C:\Games\Call of Duty 4 Modern Warfare'
+```
+
 This command uses the native OpenAssetTools Unlinker with the supplied IW3 Replay map exporters.
-It keeps extracted files in a private temporary directory and removes them after the five fastfiles
-are written. No Python runtime, manual export, `.bin`, report, preview, or extra directory layout
+It keeps extracted files in a private temporary directory beside the output destination and
+removes them after the package is written. Choose an output drive with enough free space for
+the source extraction; `-o` also chooses the drive used for temporary work. No Python runtime,
+manual export, report, preview, or extra directory layout
 is required.
 
-`map.json` is optional. Pass it with `--metadata` when the lobby should use a title or description:
+Direct conversion creates `map.json` with the map id as its default title. Pass `--metadata` when
+the lobby should use a friendly name/title or description. `name` and `title` are accepted aliases
+and must match if both are present:
 
 ```json
 {
-  "title": "Example Map",
+  "name": "Example Map",
   "description": "Converted from CoD4"
 }
 ```
 
-It is the only loose file the output accepts. It may also contain an `id` that matches the map id.
+The supplied values replace the defaults in the output `map.json`. It is the only loose file the
+output accepts. It may also contain an `id` that matches the map id.
 
-Direct fastfile conversion preserves world geometry, placed static-model LOD0 geometry, collision,
-entities, source sun settings, vertex colors, and an available `compass_map_<map>` image. It uses
-Replay's stock material for the 3D world because IW3 technique sets cannot be serialized as IW8
-technique sets. Use the prepared-dump route below when the map needs converted materials, textures,
-baked light data, doors, glass, ladders, or other authored sidecars.
+Direct fastfile conversion preserves world geometry, every resolved static-model placement and
+available source LOD, native model physics, dynamic model definitions, collision, source sun
+settings, authored vertex color and occlusion, and an available
+`compass_map_<map>` image. It also
+derives native walkable-surface triangles from upward-facing IW3 world faces and bakes their
+surface types into the Replay Havok shape tags. Unclassified faces use Replay's concrete fallback.
+All IW3 multiplayer spawn classes are retained with their source origin and angles, including DM,
+Domination, Sabotage, Search and Destroy, CTF, and TDM markers. Script origins, brush models, and
+brush-backed triggers are retained as Replay `MapEnts` records. Trigger hulls and non-axis slabs
+reference the same native Havok entity shapes as their source brush models.
+
+The material adapter converts IW3 color, normal, specular, glass, foliage, and sky inputs into the
+matching Replay material and technique-set layouts. It does not copy IW3 technique-set bytes into an
+incompatible IW8 structure. The generated footstep, collision, and light-grid files exist only in the
+private conversion directory and are embedded in the fastfiles before that directory is removed.
+No loose gameplay sidecar is emitted.
 
 The patched Unlinker setup and complete command are documented in
 [`docs/IW3_FASTFILE.md`](docs/IW3_FASTFILE.md).
@@ -98,7 +120,7 @@ The output folder is created beside the dump unless `-o` selects another destina
 iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example
 ```
 
-The output contains these five fastfiles:
+The output contains exactly these five fastfiles and `map.json`:
 
 ```text
 mp_example.ff
@@ -108,18 +130,18 @@ ww_mp_example.ff
 techsets_mp_example.ff
 ```
 
-`map.json` is optional and is the only loose file accepted beside the fastfiles. The source dump
+`map.json` is required and is the only loose file accepted beside the fastfiles. The source dump
 layout is documented in [docs/INPUT_FORMAT.md](docs/INPUT_FORMAT.md). Existing
 serialized Replay collision can be placed at
-`maps/mp/mp_example.d3dbsp.havok`. To bake `collision.bin` directly into the server fastfile, pass
+`maps/mp/mp_example.d3dbsp.havok`. To bake native collision data directly into the server fastfile, pass
 the matching Replay executable and optional footstep data:
 
 ```bat
 iw8-zonetool.exe build-map C:\maps\mp_example\dump mp_example ^
   -o C:\maps\mp_example\output ^
   --replay "C:\Games\Modern Warfare\game_dx12_ship_replay.exe" ^
-  --collision C:\maps\mp_example\collision.bin ^
-  --footsteps C:\maps\mp_example\footsteps.bin
+  --collision C:\maps\mp_example\collision.native ^
+  --footsteps C:\maps\mp_example\footsteps.native
 ```
 
 `--replay` accepts only the supported 1.20.4 Replay executable. The compiler checks its SHA-256
@@ -140,13 +162,13 @@ iw8-zonetool.exe validate-output C:\maps\mp_example\output mp_example
 iw8-zonetool.exe inspect C:\maps\mp_example\output\mp_example.ff
 ```
 
-Validation accepts exactly five fastfiles and an optional `map.json`. It checks the Replay header,
+Validation accepts exactly five fastfiles and `map.json`. It checks the Replay header,
 resident framing, and stream sizes of every zone. Normal installation runs this validation
 automatically; the command is useful when diagnosing a failed build.
 
 ## Install
 
-Copy the five fastfiles, and `map.json` if you created it, to:
+Copy the five fastfiles and `map.json` to:
 
 ```text
 <game>\mods\mw120r\maps\mp_example\
@@ -154,6 +176,17 @@ Copy the five fastfiles, and `map.json` if you created it, to:
 
 Use a current mw120rproxy build with fastfile-only package support. The folder name and map id must
 match exactly.
+
+From the repository root, the companion deployment helper can install a validated package into the
+configured Replay directory:
+
+```powershell
+& .\mw120rproxy\tools\deploy_custom_map.ps1 `
+    'C:\Maps\mp_example\output' mp_example
+```
+
+Close Replay before running it. The helper stages and hash-checks the five zones, preserves a
+rollback copy, and accepts only those zones plus `map.json`.
 
 This project currently has no project license. The bundled third-party component is listed in
 [THIRD_PARTY.md](THIRD_PARTY.md).

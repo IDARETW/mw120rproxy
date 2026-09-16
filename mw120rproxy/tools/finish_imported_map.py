@@ -29,7 +29,7 @@ def finish(out, mapid, title, credit, source, dump=None):
         title=title,
         description="Imported CoD4 map: static world and props, TDM. " + credit,
         collision="convex-v3" if data[:8] == b"MWCOLL03" else "convex-v2",
-        visibility="all-visible-v1",
+        visibility="native-umbra-v1",
         world="replay-1.20-native-v1",
     )
     if (out / "ladders.bin").exists():
@@ -53,8 +53,8 @@ def finish(out, mapid, title, credit, source, dump=None):
     from map_presentation import preview
 
     preview(package, mapid, source)
-    converter = REPO / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
-    run([converter, "validate-output", package, mapid], REPO, out / "validate.log")
+    converter = REPO.parent / "iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe"
+    run([converter, "validate-package", package, mapid], REPO, out / "validate.log")
     run(
         [
             sys.executable,
@@ -71,7 +71,7 @@ def finish(out, mapid, title, credit, source, dump=None):
         REPO,
         out / "layout.log",
     )
-    acts = REPO / "external/atian-cod-tools/build/bin/Release/acts.exe"
+    acts = REPO.parent / "atian-cod-tools/build/bin/Release/acts.exe"
     acts_report = out / "acts-validation.json"
     if acts.is_file():
         run(

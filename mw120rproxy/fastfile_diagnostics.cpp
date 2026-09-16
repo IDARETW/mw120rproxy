@@ -9,7 +9,7 @@
 #include <intrin.h>
 
 namespace {
-
+// Verified against Replay DB_File_OpenDBFile at RVA 0xD8CA30.
 struct DBFileHandle {
     uint32_t fileStreamIndex;
     uint32_t padding;

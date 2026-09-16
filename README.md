@@ -1,103 +1,147 @@
 # MW120R Custom Maps
 
-> **This repository is purely a proof of concept.** This is a source-only snapshot for people who want to inspect, build, and help improve IW3-to-IW8 map conversion and any future iterations. It is not a finished mod release and has no public gameplay compatibility guarantee, the 1.20 base mod is meant purely for map testing, it is not a full-fletched mod base.
+> **Proof of concept.** This repository is a source-only development snapshot for inspecting and
+> improving native map conversion and the MW120R local-play proxy. It is not a finished mod release
+> and does not promise that an arbitrary converted map will load or play correctly in Replay.
 
-The repository contains the current native Replay 1.20 package writer and the accompanying local-play proxy source. It does not include game executables, stock assets, converted maps, prebuilt DLLs, local research output, or test evidence. Build and test maps on a separate installation of Replay before relying on them.
+The repository contains two cooperating parts:
 
-The included converter builds five Replay fastfiles from an IW3 map fastfile. The current `mp_test` conversion passed structural and offline Replay-parser checks; that is package validation, not proof that every converted map works in-game. Reflection-probe table emission is deliberately held back while its exact Replay 1.20 stream layout is still being reconstructed.
+- `mw120rproxy` is the Replay 1.20 XInput proxy and local custom-map support.
+- `iw8-zonetool` is the native C++ compiler that writes the five Replay map fastfiles.
 
-Feature descriptions elsewhere in this repository document the intended conversion path and older experiments. Treat them as implementation notes for this POC, not as a statement that the listed gameplay features are currently supported on every converted map.
+No game executable, stock asset, converted map, prebuilt DLL, or private test capture is included.
+Keep conversion and gameplay testing on a separate Replay installation.
 
 ## Requirements
 
-- Windows x64 and a complete Replay installation.
-- Executable: `game_dx12_ship_replay.exe`, MD5 `1c238fe327f2ecc3b0db924c5b425439`.
-- Visual Studio C++ build tools with a Windows SDK, and XMake 2.8 or newer.
-- A converted MW120R map output folder to play a custom map. CoD4 `.ff` files can be passed directly to the converter, but they cannot be installed in Replay unchanged.
+- Windows x64.
+- MW2019 Replay 1.20.4.7623265 with
+  `game_dx12_ship_replay.exe` MD5 `1c238fe327f2ecc3b0db924c5b425439`.
+- Visual Studio 2022 Build Tools with the Desktop development with C++ workload, a Windows SDK,
+  and XMake 2.8 or newer.
+- A lawful copy of any IW3 map and its asset archives when using the direct IW3 conversion route.
+- A matching OpenAssetTools `Unlinker.exe` for direct IW3 conversion. The executable is not bundled;
+  the pinned setup is documented in [Direct IW3 conversion](iw8-zonetool/docs/IW3_FASTFILE.md).
 
-The repository contains source and tools. Game executables, stock fastfiles, shaders, and prebuilt DLLs are not bundled in the source checkout. The older [Nuketown example map](docs/NUKETOWN_EXAMPLE.md) is retained as a historical package and is not validation for this source snapshot.
+## Build and install the proxy
 
-## Build and install
-
-Open PowerShell in this repository, then build:
+From the repository root, build the proxy, compiler, and native custom-map tests:
 
 ```powershell
 .\build.ps1 -Tests
 ```
 
-Outputs:
+Release outputs are written to:
 
-- `mw120rproxy/xmake-out/x64/Release/XInput9_1_0.dll`
-- `iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe`
+```text
+mw120rproxy/xmake-out/x64/Release/XInput9_1_0.dll
+iw8-zonetool/xmake-out/x64/Release/iw8-zonetool.exe
+```
 
-Close Replay, then install into your game directory. Replace the example path below:
+Close Replay and install the proxy beside the game executable. Replace the example path with the
+directory containing `game_dx12_ship_replay.exe`:
 
 ```powershell
 .\install.ps1 -GameRoot 'D:\Games\Replay' -SkipBuild
 ```
 
-The installer checks the game version, backs up any existing proxy and configuration, and copies `XInput9_1_0.dll` and `mw120rproxy.ini` beside the game executable. Replay must be closed during installation. Use `-PreserveConfig` when updating to keep your settings.
+The installer verifies the Replay executable, stages and hashes the DLL, backs up the previous
+proxy/configuration under `.proxy\backups`, and never starts or stops the game. Omit `-SkipBuild`
+when the proxy should be rebuilt first. Use `-PreserveConfig` to keep the existing
+`mw120rproxy.ini`.
 
-Start the game and enter **Multiplayer → Local Play**. Stock maps still require their original fastfiles to be installed.
+## Convert a map
 
-## Install and play custom maps
+The native compiler has two input routes.
 
-Install the converter's five-fastfile output folder:
+### Direct IW3 fastfile conversion
+
+`build-iw3` accepts a generated CoD4 multiplayer `.ff`, uses OpenAssetTools for extraction, bakes
+Replay collision, and writes the native package. A complete example is in
+[IW3 to IW8](docs/IW3_TO_IW8.md):
 
 ```powershell
-.\mw120rproxy\tools\deploy_custom_map.ps1 `
-    -GameRoot 'D:\Games\Replay' `
-    -MapOutput 'D:\CoD4\zone\english\mp_4doffice_iw8'
+$zoneTool = '.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe'
+& $zoneTool build-iw3 'D:\CoD4\zone\english\mp_example.ff' mp_example `
+    -o 'D:\Maps\mp_example_iw8' `
+    --replay 'D:\Games\Replay\game_dx12_ship_replay.exe' `
+    --unlinker 'D:\Tools\OpenAssetTools\build\bin\Release_x86\Unlinker.exe' `
+    --search-path 'D:\CoD4\main'
 ```
 
-Maps are installed under `mods/mw120r/maps/<map_id>/` in the game directory. The installer reads the map ID from the generated primary fastfile, validates all five Replay fastfiles, verifies the copied hashes, and backs up the previous map folder in `.proxy/backups`.
+The map ID must be lower-case, begin with `mp_`, and fit the 15-character Replay field. A sibling
+`<map>_load.ff` and additional `--search-path` directories are used when available. The direct
+route carries over the source world geometry, resolved static-model placements and available LODs,
+native model physics, supported entities, collision, source sun data, vertex colors, and an
+available `compass_map_<map>` image.
+It uses a Replay stock material for the 3D world; IW3 technique sets are not serialized verbatim
+as IW8 technique sets. Scripts, bot navigation, objectives, and arbitrary scripted movers are not
+converted automatically.
 
-1. Start Replay and open **Multiplayer → Local Play → Game Setup → Map**.
-2. Select your custom map. Its title and artwork should appear in the lobby and loading screen. A packaged `compass_map_<map_id>` asset also appears on the in-game HUD minimap.
-3. Start **Team Deathmatch with zero bots** for the first test, select a loadout, and spawn.
-4. Return to Local Play before switching maps. Stock maps can be selected from the same menu.
+### Prepared map dump
 
-- [Convert an IW3 fastfile](docs/IW3_TO_IW8.md) — pass a generated CoD4 map `.ff` directly to the native converter with no manual export or Python dependency.
-- [Build Replay fastfiles](iw8-zonetool/README.md) — convert an IW3 fastfile or compile a prepared map dump. The output contains the five map fastfiles and, when requested, `map.json` metadata.
-- [Map dump format](iw8-zonetool/docs/INPUT_FORMAT.md) — required geometry, materials, collision, lighting, entities, and the optional HUD minimap asset.
-- [Imported doors](docs/DOORS.md) — open, close, and bash compatible brush doors.
-- [Custom-map lighting](docs/LIGHTING.md) — rebuild a map with native sun shadows and adjust baked-light exposure.
+`build-map` consumes a prepared dump when the map needs authored IW8 materials, textures, doors,
+glass, ladders, or other explicit source data:
 
-## Controls and configuration
+```powershell
+& .\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map `
+    'D:\Maps\mp_example\dump' mp_example `
+    -o 'D:\Maps\mp_example\output'
+```
 
-| Control | Action |
-| --- | --- |
-| `~` / grave or **F7** | Open/close the native game console |
-| **F6** | Open the alternate custom-map browser |
-| Up/Down, Enter | Browse/select in the F6 browser |
-| R / Backspace in F6 | Refresh the map list / clear the custom-map selection |
-| `noclip` or `mw_noclip` in console | Toggle local-player noclip in Local Play |
+The required files and optional assets are defined in [Map dump input](iw8-zonetool/docs/INPUT_FORMAT.md).
+Prepared native collision can be supplied as `<map>.d3dbsp.havok`, or generated in memory with
+`--replay`, `--collision`, and optional `--footsteps`. Both routes write exactly these five zones and
+`map.json`:
 
-The console accepts supported dvars by their readable names. `lui_dev_features_enabled` is enabled at startup. Settings for the console, custom maps, local authentication, and logging are in `mw120rproxy.ini`.
+```text
+mp_example.ff
+srv_mp_example.ff
+eng_mp_example.ff
+ww_mp_example.ff
+techsets_mp_example.ff
+map.json
+```
 
-Stale safe-mode markers are cleared at startup to prevent the safe-mode prompt after a crash.
+`map.json` is always generated and is the only loose file accepted beside the five fastfiles. It can
+set a matching `id`, a lobby `title` (or `name`), and a `description`.
 
-## Supported features and limits
+## Install a current map package
 
-- CoD4 world geometry, static models, TDM spawns, and loadout selection. World collision is serialized into `srv_<map>.ff` as native Replay Havok data, including floor-material and contents tags. Replay registers it through its normal world-collision path for movement, footsteps, and bullet traces.
-- Source sun direction and color, adjustable sunlight intensity, directional baked lightmaps, and native sun-shadow reception. Source static shadows remain visible beyond the nearby realtime shadow range. The skybox is visual and does not override scene lighting.
-- Transparent foliage and decals, normal/specular material channels, climbable ladders, ladder sounds, and footsteps matched to floor materials.
-- Breakable glass with sound when shot, hit with melee, or mantled through. Glass debris is still being investigated.
-- Imported brush doors with Use to open/close, melee and sprint bashing, moving collision, and the game's interaction popup. Existing packages need to be rebuilt to include door data.
-- Custom map names, menu previews, loading-screen images, and native HUD minimap materials.
+After building a package, validate and install it with the portable helper. `-Map` is explicit in
+this example so the package folder does not need a particular name:
 
-CoD4 scripts, general destructible objects, and bot navigation are not supported. Model physics is not imported automatically; use clip brushes for solid props. Test converted maps in-game, especially maps with unusual materials or scripted objects.
+```powershell
+& .\mw120rproxy\tools\deploy_custom_map.ps1 `
+    -GameRoot 'D:\Games\Replay' `
+    -PackageDir 'D:\Maps\mp_example_iw8' `
+    -Map mp_example
+```
 
-Door conversion reads a limited set of authored brush-mover definitions; it does not run CoD4 scripts or add native door hand animations. Door behavior and glass debris both need fresh testing against this POC.
+The helper requires the supported Replay executable and the built ZoneTool, validates the package,
+stages the five zones plus `map.json`, compares SHA-256 hashes, and keeps a rollback copy
+under `<GameRoot>\.proxy\backups`. Replay must be closed. The helper never starts or stops the
+game and does not write deployment evidence into this repository. `-MapOutput` is accepted as an
+alias for `-PackageDir` for older command lines. When the package folder is named `mp_example` or
+contains one unambiguous `mp_example.ff`, `-Map` can be omitted.
 
-## Troubleshooting
+The older twelve-file Nuketown archive uses a legacy manifest and sidecars. It is not the output of
+the current compiler and is intentionally installed by the manual layout in
+[Nuketown example](docs/NUKETOWN_EXAMPLE.md), not by the five-fastfile helper.
 
-- **No custom entry:** install all five fastfiles together, check the folder ID and optional `map.json`, then restart or refresh F6. Read the log for rejected maps.
-- **Missing `.ff`:** distinguish missing stock game data from an incomplete custom package. Keep all generated companion fastfiles together.
-- **Crash or loading loop:** check `mw120rproxy.log`, `mw120rproxy.engine.log`, `mw120rproxy.trace.log`, and `mw120rproxy.exceptions.log`. For a bug report, include the map name, steps to reproduce, and the first error and stack trace.
-- **No tilde console:** try F7; keyboard layouts differ.
-- **Updating:** close Replay before replacing the DLL or packages. Do not mix files from different map builds.
+## Documentation
 
-To uninstall, close Replay and remove this mod's `XInput9_1_0.dll` and `mw120rproxy.ini`, or restore the backed-up proxy if you had one previously. Custom packages live in `mods/mw120r/maps`; identity and logs are local files next to the executable.
+- [Development](docs/DEVELOPMENT.md) — build, test, and contribution boundaries.
+- [IW3 to IW8](docs/IW3_TO_IW8.md) — direct CoD4 fastfile conversion.
+- [Map building](docs/MAP_BUILDING.md) — prepared dumps and package validation.
+- [Map dump input](iw8-zonetool/docs/INPUT_FORMAT.md) — geometry, materials, lighting, collision,
+  entities, and the optional HUD minimap.
+- [Direct IW3 fastfile details](iw8-zonetool/docs/IW3_FASTFILE.md) — OpenAssetTools setup and
+  command-line behavior.
+- [Imported doors](docs/DOORS.md) — legacy authored brush-door data and current limits.
+- [Custom-map lighting](docs/LIGHTING.md) — source sun and prepared native lightgrid data.
+- [Nuketown example](docs/NUKETOWN_EXAMPLE.md) — historical ready-to-install package.
 
-See [development and tests](docs/DEVELOPMENT.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+The code and documentation describe an experimental native conversion path. Offline parsing,
+serialization, and unit-test success are useful development evidence, but only an owner-run test
+on the target Replay installation can establish live map behavior.

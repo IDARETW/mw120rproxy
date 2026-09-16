@@ -3,7 +3,9 @@
 #include "iw8_zonebuffer.h"
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace iw8
@@ -83,33 +85,12 @@ class ZoneWriter
         uint64_t v = PTR_SHARED;
         zb_.write(&v, 8);
     } // -1
-    // packed cross-reference offset (positive). value+stream packing matches the loader's
-    // DB_ResolvePackedOffsetAddress; not used by the stub writers but exposed for cross-refs.
+    // Write a packed cross-reference offset (positive value).
     void writePacked(uint32_t streamIdx, uint32_t value)
     {
         uint64_t v = (static_cast<uint64_t>(streamIdx & 0xF) << 32) | (value + 1);
         zb_.write(&v, 8);
     }
-    // writeXString — emit an inline XString to the CURRENT stream: the 8-byte PTR_FOLLOWS(-2) tag
-    // word THEN the NUL-terminated chars. REQUIRED for every const char* loaded via Load_XString
-    // (asset name/baseName): Load_XString RE-READS its own 8-byte tag from the current stream (not
-    // the struct body) and switches on it (0/-1/-2/packed). Writing only the raw chars (writeStr)
-    // makes the loader read the first 8 chars (e.g. "maps/mp/") AS the tag -> packed-resolve ->
-    // garbage ptr / field aliases to chars+8 ("mp_test.") -> AV in DB_MarkAsset. The struct-body -2
-    // stamp is dead (overwritten by the re-read). NON-XString pointer fields (nodes/cells/etc.) do
-    // NOT use this — they read the struct value
-    // + inline data.
-    void writeXString(const char *s)
-    {
-        writeFollows();
-        zb_.writeStr(s);
-    }
-    void writeXString(const std::string &s)
-    {
-        writeFollows();
-        zb_.writeStr(s.c_str());
-    }
-
     // ---- emit
     // ------------------------------------------------------------------------------------- Frame
     // the registered assets in load-read order and invoke each body. After build(), call
@@ -146,9 +127,21 @@ class ZoneWriter
         return zb_;
     }
 
+    // Return the packed pointer to a top-level asset whose body has already been emitted.
+    // Replay resolves this to the slot reserved by DB_InsertPointer for that XAsset entry.
+    uint64_t assetAlias(IW8_XAssetType type, const std::string &name) const;
+
+    // Register before build(). Zero is the null handle; empty text has its own index.
+    uint32_t internScriptString(const std::string &text);
+
   private:
+    static std::string assetKey(IW8_XAssetType type, const std::string &name);
+
     ZoneBuffer zb_;
     std::vector<Entry> entries_;
+    std::unordered_map<std::string, uint64_t> assetAliases_;
+    std::vector<std::string> scriptStrings_;
+    bool scriptStringsWritten_ = false;
 };
 
 // Convenience: build a valid-EMPTY zone (XAssetList assetCount=0). Used for eng/ww companions.

@@ -1,6 +1,7 @@
 #pragma once
 #include "iw8_zone.h"
 #include "replay_map_layout.h"
+#include "replay_render.h"
 #include <cstdint>
 #include <string>
 
@@ -9,6 +10,8 @@ namespace iw8maps
 
 static constexpr size_t kSizeGlass = replaymap::GlassWorldSize;
 static constexpr size_t kSizeGfxWorld = replaymap::GfxWorldSize;
+static constexpr char kGlassPhysicsName[] = "mw120r_glasschunkdummydefault";
+static_assert(kSizeGfxWorld == iw8sz::GFX_MAP, "Replay GfxWorld size tables drifted");
 
 // GlassWorld
 static constexpr size_t kGL_name = 0x00, kGL_glassData = 0x08;
@@ -28,11 +31,14 @@ static constexpr size_t kGW_cellVisBits = replaymap::CellVisBits;
 // GfxCell (0x28): bounds@0x00 (24B midPoint+halfSize), portalCount u32@0x18, portals@0x20
 static constexpr size_t kSizeGfxCell = 0x28, kGC_portalCount = 0x18, kGC_portals = 0x20;
 
-// Emit a GlassWorld with initialized empty glass data.
-void emitGlassMapBody(iw8::ZoneWriter &zw, const char *assetName);
+// Emit native client glass geometry and matching server-side damage state.
+void emitFxMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath);
+void emitGlassMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath);
 
 // Emit the converted GfxWorld.
 void emitGfxMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::string &meshPath,
-                    uint32_t primaryLightCount, uint32_t sunPrimaryLightIndex);
+                    uint32_t primaryLightCount, uint32_t sunPrimaryLightIndex,
+                    const replayrender::StaticModels &staticModels,
+                    uint32_t dynamicModelCount, uint32_t dynamicBrushCount);
 
 } // namespace iw8maps

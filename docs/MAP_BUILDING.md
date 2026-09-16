@@ -1,29 +1,29 @@
 # Build a custom map
 
-> **POC status:** this pipeline is for experimental conversion. Validate the five generated
-> fastfiles and test the map in a separate Replay install before using it for gameplay.
+> **Proof-of-concept status:** this pipeline is for experimental conversion. A package can pass
+> structural validation and still require map-specific live testing in Replay.
 
-The supported compiler is the native C++ source in `iw8-zonetool`. It accepts a generated IW3
-fastfile directly or consumes a prepared map dump and produces the five fastfiles read by MW120R,
-plus optional `map.json` metadata.
+The native C++ compiler in 'iw8-zonetool' accepts a prepared dump and writes the five fastfiles
+expected by MW120R plus 'map.json' metadata. Use [IW3 to IW8](IW3_TO_IW8.md) when the
+starting point is a generated CoD4 map fastfile.
 
 ## Build the tools
 
-```powershell
+From the repository root:
+
+~~~powershell
 .\build.ps1 -Tests
-```
+~~~
 
-No Python installation is required.
-
-To start directly from a generated CoD4 `.ff`, follow [Convert an IW3 fastfile](IW3_TO_IW8.md).
-That path needs no manually prepared directory or JSON files. The prepared layout below remains
-available for finished maps that supply converted materials and authored gameplay sidecars.
+The compiler itself does not require Python. The preparation scripts under
+'mw120rproxy/tools' are separate helpers and may have additional input or asset requirements.
 
 ## Prepare the dump
 
-Use a lowercase ID beginning with `mp_`. A minimum useful dump for `mp_example` contains:
+Use a lower-case map ID beginning with 'mp_' and no longer than 15 characters. A minimum useful
+dump for 'mp_example' contains:
 
-```text
+~~~text
 dump/
   mp_example_iw8_ents.txt
   maps/mp/
@@ -33,43 +33,65 @@ dump/
     mp_example.d3dbsp.lighting.json
     mp_example.d3dbsp.havok
     mp_example_atlas_0.rgba
-```
+~~~
 
-Models, images, extra materials, and GPU lightgrid data can be placed in the same dump. See [Map dump input](../iw8-zonetool/docs/INPUT_FORMAT.md) for the complete layout.
-
-For the HUD minimap, add `dump/images/compass_map_mp_example.iwi`. It must be an IW3 IWI version 6 image with one resident DXT1, DXT3, or DXT5 surface.
+The render, material, techset, lighting, collision, entity, model, image, and optional native
+lightgrid inputs are described in [Map dump input](../iw8-zonetool/docs/INPUT_FORMAT.md). Add the
+HUD minimap at 'dump/images/compass_map_mp_example.iwi' when one is available. It must be an IW3
+IWI version 6 image with one resident DXT1, DXT3, or DXT5 surface.
 
 ## Compile
 
-```powershell
+Build a prepared dump with the native compiler:
+
+~~~powershell
 .\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\output'
-```
+~~~
 
-To bake MWCOLL02 or MWCOLL03 collision in memory, add the supported Replay executable, collision input, and optional footstep data:
+The compiler can read a pre-serialized native Havok blob at
+'maps/mp/mp_example.d3dbsp.havok'. To bake collision in memory instead, provide the supported
+Replay executable, an MWCOLL02 or MWCOLL03 collision input, and optional MWRSTEP1 footstep data:
 
-```powershell
---replay 'D:\Games\Replay\game_dx12_ship_replay.exe' --collision 'D:\Maps\Example\collision.bin' --footsteps 'D:\Maps\Example\footsteps.bin'
-```
+~~~powershell
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\output' --replay 'D:\Games\Replay\game_dx12_ship_replay.exe' --collision 'D:\Maps\Example\collision.native' --footsteps 'D:\Maps\Example\footsteps.native'
+~~~
+
+Use '—sun-intensity-scale' with a positive multiplier when the prepared lighting profile needs an
+exposure adjustment. Rebuild the complete package after changing lighting or lightgrid data.
 
 The output contains exactly:
 
-```text
+~~~text
 mp_example.ff
 srv_mp_example.ff
 eng_mp_example.ff
 ww_mp_example.ff
 techsets_mp_example.ff
-```
+map.json
+~~~
 
-`map.json` is optional and is the only loose output file accepted. It can set the lobby `title`,
-`description`, and a matching `id`.
+'map.json' is always generated and is the only loose output file accepted beside those fastfiles. It may
+contain a matching 'id', a lobby 'title' or 'name', and a 'description'. The compiler rejects
+unrelated files in an existing output directory.
 
-## Install
+## Validate and install
 
-```powershell
-.\mw120rproxy\tools\deploy_custom_map.ps1 -GameRoot 'D:\Games\Replay' -MapOutput 'D:\Maps\Example\output'
-```
+Validate the package explicitly before handing it to the proxy:
 
-The installer derives the map ID from the output and validates it before installation.
+~~~powershell
+.\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe validate-output 'D:\Maps\Example\output' mp_example
+~~~
 
-Test geometry, movement and bullet collision, materials, sunlight, interiors, footsteps, glass, ladders, spawns, and the HUD minimap before sharing a conversion.
+Close Replay, then install the package with the portable deployment helper:
+
+~~~powershell
+.\mw120rproxy\tools\deploy_custom_map.ps1 -GameRoot 'D:\Games\Replay' -PackageDir 'D:\Maps\Example\output' -Map mp_example
+~~~
+
+The helper validates again, copies only the five fastfiles plus 'map.json', verifies
+SHA-256 hashes, and preserves the previous map folder under the game's '.proxy/backups' directory.
+It does not launch the game.
+
+Before sharing a conversion, test the geometry, movement, bullet collision, materials, sunlight,
+interiors, footsteps, glass, ladders, spawns, and HUD minimap on the target Replay installation.
+Those live checks are separate from this repository's offline validation.

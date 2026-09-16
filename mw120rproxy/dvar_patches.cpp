@@ -11,6 +11,15 @@
 #include <cstdio>
 #include <cstring>
 
+// Lean port of mw164proxy/dvar_patches.cpp for retail 1.20.4.7623265-replay. Overrides the
+// registered default of the offline bool dvars at Dvar_RegisterBool time, and (optionally) traces
+// every dvar via Dvar_RegisterVariant. The detour rewrites the bool *argument* (a clean
+// register arg), so it needs no dvar_t layout knowledge -- safe even if 1.20's dvar_t
+// differs structurally from the other builds.
+//
+// NOTE on tokens: kDefaults below carry the 1.24/1.64/1.69 runtime tokens. If 1.20 re-encodes
+// them they simply won't match (a safe no-op) -- run with hook_variant=1 and read
+// mw120rproxy.trace.log to see the live 1.20 tokens, then update kDefaults.
 namespace dvars {
 namespace {
 constexpr size_t kCapacity = 128;
@@ -30,6 +39,28 @@ SRWLOCK g_addLock = SRWLOCK_INIT;
 
 std::atomic<game::Dvar_RegisterBool_t> g_original{nullptr};
 std::atomic<game::Dvar_RegisterVariant_t> g_variantOriginal{nullptr};
+std::atomic<bool> g_traceVariant{false};
+
+// Numeric dvars pass through Dvar_RegisterVariant rather than Dvar_RegisterBool.
+// The core only reads pValue during this call, so VariantDetour supplies the override
+// from its stack without changing the game's registration storage.
+struct IntDefault {
+    const char* token;
+    const char* name;
+    int32_t value;
+};
+constexpr IntDefault kBootIntDefaults[] = {
+    {"MKQQKMRORQ", "ui_serverFrameDuration", 16},
+};
+
+const IntDefault* FindBootIntDefault(const char* name) {
+    if (!name || !*name)
+        return nullptr;
+    for (const auto& d : kBootIntDefaults)
+        if (std::strcmp(d.token, name) == 0 || std::strcmp(d.name, name) == 0)
+            return &d;
+    return nullptr;
+}
 
 // token -> readable name (binary search over the generated table).
 const char* ResolveToken(const char* token) {
@@ -123,6 +154,8 @@ void FormatValue(int type, void* pValue, char* out, size_t n) {
         _snprintf_s(out, n, _TRUNCATE, "?");
 }
 
+// ---- detours ---------------------------------------------------------
+// Override the bool default (a clean register arg) for our offline targets.
 void* __fastcall Detour(const char* name, bool value, unsigned int flags, const char* desc) {
     state::boolDvarsSeen.fetch_add(1, std::memory_order_relaxed);
     char nm[96];
@@ -159,17 +192,30 @@ void* __fastcall VariantDetour(const char* name,
     safemem::ReadString(name, nm, sizeof(nm));
     const char* human = ResolveToken(nm);
 
-    char val[96];
-    FormatValue(type, pValue, val, sizeof(val));
+    const auto* intDefault = FindBootIntDefault(nm);
+    int32_t forcedInt = 0;
+    if (intDefault) {
+        forcedInt = intDefault->value;
+        pValue = &forcedInt;
+    }
 
-    const char* tn = game::DvarTypeName(type);
-    const char* shown = human ? human : (nm[0] ? nm : "(?)");
-    if (tn)
-        logger::Trace("dvar", "%-46s %-6s = %-22s  tok=%-12s  0x%08X", shown, tn, val, nm,
-                      checksum);
-    else
-        logger::Trace("dvar", "%-46s type%-2d= %-22s  tok=%-12s  0x%08X", shown, type, val, nm,
-                      checksum);
+    if (g_traceVariant.load(std::memory_order_relaxed)) {
+        char val[96];
+        FormatValue(type, pValue, val, sizeof(val));
+
+        const char* tn = game::DvarTypeName(type);
+        const char* shown = human ? human : (nm[0] ? nm : "(?)");
+        if (tn)
+            logger::Trace("dvar", "%-46s %-6s = %-22s  tok=%-12s  0x%08X", shown, tn, val,
+                          nm, checksum);
+        else
+            logger::Trace("dvar", "%-46s type%-2d= %-22s  tok=%-12s  0x%08X", shown, type,
+                          val, nm, checksum);
+    }
+
+    if (intDefault)
+        LOG_INFO("Patches/Dvar_RegisterVariant", "Patched '%s' -> %d", intDefault->name,
+                 intDefault->value);
 
     return g_variantOriginal.load(std::memory_order_acquire)(name, checksum, type, flags, pValue,
                                                              pDomain, desc);
@@ -226,10 +272,15 @@ constexpr Default kDefaults[] = {
     {"LSPQSSPSOL", "force_unlock_all_attachment_lines", true},
     {"NQRLNKMTSL", "force_unlock_all_killstreaks", true},
 };
+
 } // namespace
 
 const char* ResolveName(const char* token) {
     return ResolveToken(token);
+}
+
+bool HasVariantBootOverrides() {
+    return sizeof(kBootIntDefaults) != 0;
 }
 
 void InitDefaults(bool onlineMpRoute, bool luiForceOnline) {
@@ -237,7 +288,14 @@ void InitDefaults(bool onlineMpRoute, bool luiForceOnline) {
         Allocate(d.token, d.name, d.value, /*enabled*/ true);
 
     if (onlineMpRoute) {
-
+        // ⭐ ONLINE-MP ROUTE (A/B via config online_mp_route). Make the UI BELIEVE it's online so the
+        // natural Multiplayer -> Custom Games (PrivateMatchLobby) menu flow initializes/renders, but keep
+        // DIRECT online services off. Pairs with the online_fences Lua feature (force-passes the fence groups).
+        // -- UI-online ON (so the online main menu + MP menus show) --
+        // force_offline_menus=false is THE switch that shows the online menus. lui_force_online_menus pushes
+        // the menu into full-online-client mode -> it can load online data that hangs offline (~18s
+        // black-screen dev-error), so it's an ini toggle (route_lui_online, default ON per owner). Flip to 0
+        // if the main menu black-screens.
         SetForced("LMMRONPQMO", "lui_force_online_menus", luiForceOnline);
         SetForced("LSTQOKLTRN", "force_offline_menus", false);
         SetForced("LPSPMQSNPQ", "systemlink", false);
@@ -286,7 +344,8 @@ hook::Status InstallHook(uintptr_t moduleBase, bool hookBool, bool hookVariant) 
                      "Dvar_RegisterBool installed at RVA 0x%llX (original published before enable)",
                      (unsigned long long)game::kDvarRegisterBoolRVA);
     }
-    if (hookVariant) {
+    if (hookVariant || HasVariantBootOverrides()) {
+        g_traceVariant.store(hookVariant, std::memory_order_relaxed);
         const bool already = g_variantOriginal.load(std::memory_order_acquire) != nullptr;
         auto* target = reinterpret_cast<void*>(moduleBase + game::kDvarRegisterVariantRVA);
         const auto status =
@@ -295,9 +354,14 @@ hook::Status InstallHook(uintptr_t moduleBase, bool hookBool, bool hookVariant) 
         if (status != hook::Status::Installed)
             return status;
         state::variantHooked.store(true);
-        if (!already)
-            LOG_INFO("Patches", "Dvar_RegisterVariant trace installed at RVA 0x%llX",
-                     (unsigned long long)game::kDvarRegisterVariantRVA);
+        if (!already) {
+            if (hookVariant)
+                LOG_INFO("Patches", "Dvar_RegisterVariant override + trace installed at RVA 0x%llX",
+                         (unsigned long long)game::kDvarRegisterVariantRVA);
+            else
+                LOG_INFO("Patches", "Dvar_RegisterVariant boot override installed at RVA 0x%llX",
+                         (unsigned long long)game::kDvarRegisterVariantRVA);
+        }
     }
     return hook::Status::Installed;
 }

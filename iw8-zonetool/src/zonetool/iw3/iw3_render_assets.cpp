@@ -22,6 +22,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 
 namespace iw3
@@ -56,6 +57,7 @@ struct SourceMaterial
     std::array<float, 4> environment{0.8f, 4.0f, 2.5f, 0.625f};
     SurfaceKind kind{SurfaceKind::opaque};
     unsigned flags{};
+    unsigned cullMode{1}; // Replay: none=0, back=1, front=2.
 };
 
 std::vector<std::uint8_t> ReadBytes(const std::filesystem::path &path)
@@ -150,15 +152,18 @@ void DecodeColorBlock(Image &image, const unsigned blockX, const unsigned blockY
     {
         for (unsigned channel = 0; channel < 3; ++channel)
         {
-            colors[2][channel] = static_cast<std::uint8_t>((2 * colors[0][channel] + colors[1][channel]) / 3);
-            colors[3][channel] = static_cast<std::uint8_t>((colors[0][channel] + 2 * colors[1][channel]) / 3);
+            colors[2][channel] =
+                static_cast<std::uint8_t>((2 * colors[0][channel] + colors[1][channel]) / 3);
+            colors[3][channel] =
+                static_cast<std::uint8_t>((colors[0][channel] + 2 * colors[1][channel]) / 3);
         }
         colors[2][3] = colors[3][3] = 255;
     }
     else
     {
         for (unsigned channel = 0; channel < 3; ++channel)
-            colors[2][channel] = static_cast<std::uint8_t>((colors[0][channel] + colors[1][channel]) / 2);
+            colors[2][channel] =
+                static_cast<std::uint8_t>((colors[0][channel] + colors[1][channel]) / 2);
         colors[2][3] = 255;
         colors[3] = {0, 0, 0, 0};
     }
@@ -176,11 +181,13 @@ std::array<std::uint8_t, 16> DecodeDxt5Alpha(const std::uint8_t *block)
     table[1] = block[1];
     if (table[0] > table[1])
         for (unsigned index = 1; index <= 6; ++index)
-            table[index + 1] = static_cast<std::uint8_t>(((7 - index) * table[0] + index * table[1]) / 7);
+            table[index + 1] =
+                static_cast<std::uint8_t>(((7 - index) * table[0] + index * table[1]) / 7);
     else
     {
         for (unsigned index = 1; index <= 4; ++index)
-            table[index + 1] = static_cast<std::uint8_t>(((5 - index) * table[0] + index * table[1]) / 5);
+            table[index + 1] =
+                static_cast<std::uint8_t>(((5 - index) * table[0] + index * table[1]) / 5);
         table[6] = 0;
         table[7] = 255;
     }
@@ -226,6 +233,33 @@ std::uint8_t ExtractChannel(const std::uint32_t value, const std::uint32_t mask,
     return static_cast<std::uint8_t>((sample * 255u + maximum / 2u) / maximum);
 }
 
+void DecodeUncompressed(Image &image, const std::uint8_t *source, const unsigned bits,
+                        const std::array<std::uint32_t, 4> &masks)
+{
+    if (bits != 8 && bits != 16 && bits != 24 && bits != 32)
+        throw std::runtime_error("unsupported uncompressed DDS pixels");
+
+    const unsigned stride = bits / 8;
+    const bool luminance = !masks[1] && !masks[2] && (masks[0] || bits == 8);
+    for (std::size_t index = 0; index < static_cast<std::size_t>(image.width) * image.height;
+         ++index)
+    {
+        std::uint32_t value = 0;
+        std::memcpy(&value, source + index * stride, stride);
+        auto *pixel = image.rgba.data() + index * 4;
+        if (luminance)
+        {
+            const std::uint8_t sample =
+                masks[0] ? ExtractChannel(value, masks[0], 0) : static_cast<std::uint8_t>(value);
+            pixel[0] = pixel[1] = pixel[2] = sample;
+            pixel[3] = ExtractChannel(value, masks[3], 255);
+            continue;
+        }
+        for (unsigned channel = 0; channel < 4; ++channel)
+            pixel[channel] = ExtractChannel(value, masks[channel], channel == 3 ? 255 : 0);
+    }
+}
+
 std::size_t DdsLevelSize(const unsigned width, const unsigned height, const std::uint32_t fourCC,
                          const unsigned bits)
 {
@@ -240,15 +274,17 @@ std::vector<Image> DecodeDds(const std::filesystem::path &path)
 {
     const auto bytes = ReadBytes(path);
     const std::span<const std::uint8_t> data(bytes);
-    if (bytes.size() < 128 || std::memcmp(bytes.data(), "DDS ", 4) != 0 || Read<std::uint32_t>(data, 4) != 124)
+    if (bytes.size() < 128 || std::memcmp(bytes.data(), "DDS ", 4) != 0 ||
+        Read<std::uint32_t>(data, 4) != 124)
         throw std::runtime_error("invalid DDS image " + path.string());
     const unsigned height = Read<std::uint32_t>(data, 12);
     const unsigned width = Read<std::uint32_t>(data, 16);
     const unsigned mipCount = std::max(1u, Read<std::uint32_t>(data, 28));
     const std::uint32_t fourCC = Read<std::uint32_t>(data, 84);
     const unsigned bits = Read<std::uint32_t>(data, 88);
-    const std::array<std::uint32_t, 4> masks{Read<std::uint32_t>(data, 92), Read<std::uint32_t>(data, 96),
-                                             Read<std::uint32_t>(data, 100), Read<std::uint32_t>(data, 104)};
+    const std::array<std::uint32_t, 4> masks{
+        Read<std::uint32_t>(data, 92), Read<std::uint32_t>(data, 96),
+        Read<std::uint32_t>(data, 100), Read<std::uint32_t>(data, 104)};
     const std::uint32_t caps2 = Read<std::uint32_t>(data, 112);
     if (!width || !height || width > 8192 || height > 8192 || mipCount > 14 ||
         (fourCC && fourCC != 0x31545844u && fourCC != 0x33545844u && fourCC != 0x35545844u))
@@ -265,7 +301,8 @@ std::vector<Image> DecodeDds(const std::filesystem::path &path)
         const std::size_t topSize = DdsLevelSize(width, height, fourCC, bits);
         if (offset > bytes.size() || topSize > bytes.size() - offset)
             throw std::runtime_error("truncated DDS pixels " + path.string());
-        Image image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
+        Image image{width, height,
+                    std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
         const std::uint8_t *source = bytes.data() + offset;
         if (fourCC)
         {
@@ -273,7 +310,9 @@ std::vector<Image> DecodeDds(const std::filesystem::path &path)
             for (unsigned by = 0; by < (height + 3) / 4; ++by)
                 for (unsigned bx = 0; bx < (width + 3) / 4; ++bx)
                 {
-                    const std::uint8_t *block = source + (static_cast<std::size_t>(by) * ((width + 3) / 4) + bx) * blockSize;
+                    const std::uint8_t *block =
+                        source +
+                        (static_cast<std::size_t>(by) * ((width + 3) / 4) + bx) * blockSize;
                     DecodeColorBlock(image, bx, by, block + (blockSize - 8), fourCC == 0x31545844u);
                     if (fourCC == 0x33545844u)
                     {
@@ -293,30 +332,23 @@ std::vector<Image> DecodeDds(const std::filesystem::path &path)
                         {
                             const unsigned x = bx * 4 + index % 4, y = by * 4 + index / 4;
                             if (x < width && y < height)
-                                image.rgba[(static_cast<std::size_t>(y) * width + x) * 4 + 3] = alpha[index];
+                                image.rgba[(static_cast<std::size_t>(y) * width + x) * 4 + 3] =
+                                    alpha[index];
                         }
                     }
                 }
         }
-        else if (bits == 8)
+        else
         {
-            for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index)
-                image.rgba[index * 4 + 0] = image.rgba[index * 4 + 1] = image.rgba[index * 4 + 2] = source[index],
-                image.rgba[index * 4 + 3] = 255;
-        }
-        else if (bits == 24 || bits == 32)
-        {
-            const unsigned stride = bits / 8;
-            for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index)
+            try
             {
-                std::uint32_t value = 0;
-                std::memcpy(&value, source + index * stride, stride);
-                for (unsigned channel = 0; channel < 4; ++channel)
-                    image.rgba[index * 4 + channel] = ExtractChannel(value, masks[channel], channel == 3 ? 255 : 0);
+                DecodeUncompressed(image, source, bits, masks);
+            }
+            catch (const std::runtime_error &)
+            {
+                throw std::runtime_error("unsupported uncompressed DDS image " + path.string());
             }
         }
-        else
-            throw std::runtime_error("unsupported uncompressed DDS image " + path.string());
         result.push_back(std::move(image));
         for (unsigned level = 0, w = width, h = height; level < mipCount; ++level)
         {
@@ -343,16 +375,14 @@ Image DecodeDdsLevel(const std::span<const std::uint8_t> source, const unsigned 
         for (unsigned blockY = 0; blockY < (height + 3) / 4; ++blockY)
             for (unsigned blockX = 0; blockX < (width + 3) / 4; ++blockX)
             {
-                const auto *block = source.data() +
-                                    (static_cast<std::size_t>(blockY) * ((width + 3) / 4) +
-                                     blockX) *
-                                        blockSize;
+                const auto *block =
+                    source.data() +
+                    (static_cast<std::size_t>(blockY) * ((width + 3) / 4) + blockX) * blockSize;
                 DecodeColorBlock(image, blockX, blockY, block + (blockSize - 8),
                                  fourCC == 0x31545844u);
                 if (fourCC == 0x33545844u)
                 {
-                    const std::uint64_t alpha =
-                        Read<std::uint64_t>(std::span(block, blockSize), 0);
+                    const std::uint64_t alpha = Read<std::uint64_t>(std::span(block, blockSize), 0);
                     for (unsigned index = 0; index < 16; ++index)
                     {
                         const unsigned x = blockX * 4 + index % 4;
@@ -376,31 +406,9 @@ Image DecodeDdsLevel(const std::span<const std::uint8_t> source, const unsigned 
                 }
             }
     }
-    else if (bits == 8)
-    {
-        for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index)
-        {
-            image.rgba[index * 4 + 0] = source[index];
-            image.rgba[index * 4 + 1] = source[index];
-            image.rgba[index * 4 + 2] = source[index];
-            image.rgba[index * 4 + 3] = 255;
-        }
-    }
-    else if (bits == 24 || bits == 32)
-    {
-        const unsigned stride = bits / 8;
-        for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index)
-        {
-            std::uint32_t value = 0;
-            std::memcpy(&value, source.data() + index * stride, stride);
-            for (unsigned channel = 0; channel < 4; ++channel)
-                image.rgba[index * 4 + channel] =
-                    ExtractChannel(value, masks[channel], channel == 3 ? 255 : 0);
-        }
-    }
     else
     {
-        throw std::runtime_error("unsupported uncompressed DDS mip");
+        DecodeUncompressed(image, source.data(), bits, masks);
     }
     return image;
 }
@@ -423,8 +431,7 @@ Cubemap DecodeDdsCubemap(const std::filesystem::path &path)
     const std::uint32_t caps2 = Read<std::uint32_t>(data, 112);
     if (!width || width != height || width > 4096 || mipCount > 13 ||
         (caps2 & 0xFE00u) != 0xFE00u ||
-        (fourCC && fourCC != 0x31545844u && fourCC != 0x33545844u &&
-         fourCC != 0x35545844u))
+        (fourCC && fourCC != 0x31545844u && fourCC != 0x33545844u && fourCC != 0x35545844u))
         throw std::runtime_error("unsupported reflection-probe DDS " + path.string());
     unsigned terminalWidth = width;
     unsigned terminalHeight = height;
@@ -449,9 +456,8 @@ Cubemap DecodeDdsCubemap(const std::filesystem::path &path)
             const std::size_t size = DdsLevelSize(mipWidth, mipHeight, fourCC, bits);
             if (offset > bytes.size() || size > bytes.size() - offset)
                 throw std::runtime_error("truncated reflection-probe DDS " + path.string());
-            result.faces[face].push_back(
-                DecodeDdsLevel(data.subspan(offset, size), mipWidth, mipHeight, fourCC, bits,
-                               masks));
+            result.faces[face].push_back(DecodeDdsLevel(data.subspan(offset, size), mipWidth,
+                                                        mipHeight, fourCC, bits, masks));
             offset += size;
             mipWidth = std::max(1u, mipWidth / 2);
             mipHeight = std::max(1u, mipHeight / 2);
@@ -461,9 +467,12 @@ Cubemap DecodeDdsCubemap(const std::filesystem::path &path)
         throw std::runtime_error("reflection-probe DDS contains trailing data " + path.string());
     for (unsigned level = 0; level < mipCount; ++level)
         for (unsigned face = 0; face < 6; ++face)
+        {
             result.residentPixels.insert(result.residentPixels.end(),
                                          result.faces[face][level].rgba.begin(),
                                          result.faces[face][level].rgba.end());
+            result.residentPixels.resize((result.residentPixels.size() + 15) & ~std::size_t{15});
+        }
     return result;
 }
 
@@ -481,9 +490,10 @@ std::vector<Image> DecodeIwi(const std::filesystem::path &path)
         throw std::runtime_error("unsupported IW3 IWI image " + path.string());
     const unsigned faces = flags & 4 ? 6u : 1u;
     const unsigned bytesPerPixel = format == 1 ? 4u : format == 2 ? 3u : format == 3 ? 2u : 1u;
-    const std::uint32_t fourCC = format == 11 ? 0x31545844u
+    const std::uint32_t fourCC = format == 11   ? 0x31545844u
                                  : format == 12 ? 0x33545844u
-                                                : format == 13 ? 0x35545844u : 0u;
+                                 : format == 13 ? 0x35545844u
+                                                : 0u;
     const std::size_t faceSize = fourCC ? DdsLevelSize(width, height, fourCC, 0)
                                         : static_cast<std::size_t>(width) * height * bytesPerPixel;
     if (faceSize > bytes.size() || faceSize * faces > bytes.size() - 28 ||
@@ -495,14 +505,17 @@ std::vector<Image> DecodeIwi(const std::filesystem::path &path)
     for (unsigned face = 0; face < faces; ++face)
     {
         const std::uint8_t *source = bytes.data() + start + face * faceSize;
-        Image image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
+        Image image{width, height,
+                    std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
         if (fourCC)
         {
             const unsigned blockSize = fourCC == 0x31545844u ? 8u : 16u;
             for (unsigned by = 0; by < (height + 3) / 4; ++by)
                 for (unsigned bx = 0; bx < (width + 3) / 4; ++bx)
                 {
-                    const std::uint8_t *block = source + (static_cast<std::size_t>(by) * ((width + 3) / 4) + bx) * blockSize;
+                    const std::uint8_t *block =
+                        source +
+                        (static_cast<std::size_t>(by) * ((width + 3) / 4) + bx) * blockSize;
                     DecodeColorBlock(image, bx, by, block + (blockSize - 8), fourCC == 0x31545844u);
                     if (fourCC == 0x33545844u)
                     {
@@ -522,7 +535,8 @@ std::vector<Image> DecodeIwi(const std::filesystem::path &path)
                         {
                             const unsigned x = bx * 4 + index % 4, y = by * 4 + index / 4;
                             if (x < width && y < height)
-                                image.rgba[(static_cast<std::size_t>(y) * width + x) * 4 + 3] = alpha[index];
+                                image.rgba[(static_cast<std::size_t>(y) * width + x) * 4 + 3] =
+                                    alpha[index];
                         }
                     }
                 }
@@ -534,9 +548,11 @@ std::vector<Image> DecodeIwi(const std::filesystem::path &path)
                 const std::uint8_t *pixel = source + index * bytesPerPixel;
                 auto *target = image.rgba.data() + index * 4;
                 if (format == 1)
-                    target[0] = pixel[2], target[1] = pixel[1], target[2] = pixel[0], target[3] = pixel[3];
+                    target[0] = pixel[2], target[1] = pixel[1], target[2] = pixel[0],
+                    target[3] = pixel[3];
                 else if (format == 2)
-                    target[0] = pixel[2], target[1] = pixel[1], target[2] = pixel[0], target[3] = 255;
+                    target[0] = pixel[2], target[1] = pixel[1], target[2] = pixel[0],
+                    target[3] = 255;
                 else if (format == 3)
                     target[0] = target[1] = target[2] = pixel[0], target[3] = pixel[1];
                 else if (format == 4)
@@ -570,10 +586,16 @@ std::vector<Image> LoadImage(const std::filesystem::path &root,
     if (std::filesystem::is_regular_file(path, error))
         return DecodeDds(path);
     for (const auto &source : sourcePaths)
-        for (const auto &candidate : {source / "images" / (name + ".iwi"),
-                                      source / "raw" / "images" / (name + ".iwi")})
+    {
+        for (const auto &candidate :
+             {source / "images" / (name + ".dds"), source / "raw" / "images" / (name + ".dds")})
+            if (std::filesystem::is_regular_file(candidate, error))
+                return DecodeDds(candidate);
+        for (const auto &candidate :
+             {source / "images" / (name + ".iwi"), source / "raw" / "images" / (name + ".iwi")})
             if (std::filesystem::is_regular_file(candidate, error))
                 return DecodeIwi(candidate);
+    }
     throw std::runtime_error("missing IW3 image '" + name +
                              "'; add the matching IW3 main and raw directories with --search-path");
 }
@@ -626,30 +648,27 @@ std::array<std::array<float, 9>, 4> ProjectReflectionSh(const Cubemap &cubemap)
                     direction = {-u, -v, -1.0};
                     break;
                 }
-                const double length = std::sqrt(direction[0] * direction[0] +
-                                                direction[1] * direction[1] +
-                                                direction[2] * direction[2]);
+                const double length =
+                    std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] +
+                              direction[2] * direction[2]);
                 for (double &component : direction)
                     component /= length;
                 const double dx = direction[0], dy = direction[1], dz = direction[2];
-                const std::array<double, 9> basis{
-                    0.282095,
-                    0.488603 * dy,
-                    0.488603 * dz,
-                    0.488603 * dx,
-                    1.092548 * dx * dy,
-                    1.092548 * dy * dz,
-                    0.315392 * (3.0 * dz * dz - 1.0),
-                    1.092548 * dx * dz,
-                    0.546274 * (dx * dx - dy * dy)};
+                const std::array<double, 9> basis{0.282095,
+                                                  0.488603 * dy,
+                                                  0.488603 * dz,
+                                                  0.488603 * dx,
+                                                  1.092548 * dx * dy,
+                                                  1.092548 * dy * dz,
+                                                  0.315392 * (3.0 * dz * dz - 1.0),
+                                                  1.092548 * dx * dz,
+                                                  0.546274 * (dx * dx - dy * dy)};
                 const double weight = 1.0 / std::pow(1.0 + u * u + v * v, 1.5);
-                const std::size_t offset =
-                    (static_cast<std::size_t>(y) * image.width + x) * 4;
-                const std::array<double, 4> sample{
-                    Linear(image.rgba[offset + 0] / 255.0f),
-                    Linear(image.rgba[offset + 1] / 255.0f),
-                    Linear(image.rgba[offset + 2] / 255.0f),
-                    image.rgba[offset + 3] / 255.0};
+                const std::size_t offset = (static_cast<std::size_t>(y) * image.width + x) * 4;
+                const std::array<double, 4> sample{Linear(image.rgba[offset + 0] / 255.0f),
+                                                   Linear(image.rgba[offset + 1] / 255.0f),
+                                                   Linear(image.rgba[offset + 2] / 255.0f),
+                                                   image.rgba[offset + 3] / 255.0};
                 for (unsigned channel = 0; channel < 4; ++channel)
                     for (unsigned coefficient = 0; coefficient < 9; ++coefficient)
                         accumulated[channel][coefficient] +=
@@ -672,20 +691,23 @@ std::array<std::array<float, 9>, 4> ProjectReflectionSh(const Cubemap &cubemap)
     return result;
 }
 
-Image Resize(const Image &source, const unsigned width, const unsigned height,
-             const bool color, const std::array<float, 4> &tint = {1, 1, 1, 1})
+Image Resize(const Image &source, const unsigned width, const unsigned height, const bool color,
+             const std::array<float, 4> &tint = {1, 1, 1, 1})
 {
-    Image output{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
+    Image output{width, height,
+                 std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
     for (unsigned y = 0; y < height; ++y)
     {
         const float sy = (static_cast<float>(y) + 0.5f) * source.height / height - 0.5f;
-        const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, static_cast<int>(source.height) - 1);
+        const int y0 =
+            std::clamp(static_cast<int>(std::floor(sy)), 0, static_cast<int>(source.height) - 1);
         const int y1 = std::min(y0 + 1, static_cast<int>(source.height) - 1);
         const float fy = std::clamp(sy - std::floor(sy), 0.0f, 1.0f);
         for (unsigned x = 0; x < width; ++x)
         {
             const float sx = (static_cast<float>(x) + 0.5f) * source.width / width - 0.5f;
-            const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, static_cast<int>(source.width) - 1);
+            const int x0 =
+                std::clamp(static_cast<int>(std::floor(sx)), 0, static_cast<int>(source.width) - 1);
             const int x1 = std::min(x0 + 1, static_cast<int>(source.width) - 1);
             const float fx = std::clamp(sx - std::floor(sx), 0.0f, 1.0f);
             float sample[4]{};
@@ -693,8 +715,10 @@ Image Resize(const Image &source, const unsigned width, const unsigned height,
                 for (unsigned ix = 0; ix < 2; ++ix)
                 {
                     const float weight = (ix ? fx : 1 - fx) * (iy ? fy : 1 - fy);
-                    const std::size_t offset = (static_cast<std::size_t>(iy ? y1 : y0) * source.width +
-                                                static_cast<unsigned>(ix ? x1 : x0)) * 4;
+                    const std::size_t offset =
+                        (static_cast<std::size_t>(iy ? y1 : y0) * source.width +
+                         static_cast<unsigned>(ix ? x1 : x0)) *
+                        4;
                     const float alpha = source.rgba[offset + 3] / 255.0f;
                     for (unsigned channel = 0; channel < 4; ++channel)
                     {
@@ -709,7 +733,9 @@ Image Resize(const Image &source, const unsigned width, const unsigned height,
             {
                 float value = sample[channel];
                 if (color && channel < 3)
-                    value = Srgb(std::clamp((sample[3] > 1.0e-6f ? value / sample[3] : 0.0f) * tint[channel], 0.0f, 1.0f));
+                    value = Srgb(
+                        std::clamp((sample[3] > 1.0e-6f ? value / sample[3] : 0.0f) * tint[channel],
+                                   0.0f, 1.0f));
                 else if (channel == 3)
                     value = alpha;
                 output.rgba[(static_cast<std::size_t>(y) * width + x) * 4 + channel] =
@@ -746,29 +772,72 @@ std::array<float, Size> Literal(const Json &value, const std::array<float, Size>
     return result;
 }
 
-SourceMaterial ReadMaterial(const std::filesystem::path &root, const std::string &name)
+SourceMaterial ReadMaterial(const std::filesystem::path &root,
+                            const std::vector<std::filesystem::path> &sourcePaths,
+                            const std::string &name)
 {
-    if (name.empty() || name.find("..") != std::string::npos || name.find(':') != std::string::npos ||
-        name.find('\\') != std::string::npos || name.front() == '/')
+    if (name.empty() || name.find("..") != std::string::npos ||
+        name.find(':') != std::string::npos || name.find('\\') != std::string::npos ||
+        name.front() == '/')
         throw std::runtime_error("invalid IW3 material name");
-    const auto path = root / "materials" / (name + ".json");
+    std::vector<std::filesystem::path> relativePaths{std::filesystem::path("materials") /
+                                                     (name + ".json")};
+    if (name.starts_with("mc/"))
+        relativePaths.push_back(std::filesystem::path("materials") / (name.substr(3) + ".json"));
+
     std::error_code error;
+    std::filesystem::path path;
+    std::vector<std::filesystem::path> roots{root};
+    roots.insert(roots.end(), sourcePaths.begin(), sourcePaths.end());
+    for (const auto &source : roots)
+    {
+        for (const auto &relative : relativePaths)
+        {
+            const auto candidate = source / relative;
+            if (std::filesystem::is_regular_file(candidate, error))
+            {
+                path = candidate;
+                break;
+            }
+            error.clear();
+        }
+        if (!path.empty())
+            break;
+    }
     if (!std::filesystem::is_regular_file(path, error))
-        throw std::runtime_error("missing IW3 material '" + name +
-                                 "'; add the matching IW3 main and raw directories with --search-path");
+    {
+        // CoD4's stock placeholders are not exported as material JSON. They
+        // are untextured lit surfaces, so the conversion can represent them
+        // without inventing a texture dependency.
+        if (name == "mc/lambert1" || name == "mc/gfx_missing_fx")
+        {
+            SourceMaterial material;
+            material.name = name;
+            material.color = "$white";
+            material.normal = "$identitynormalmap";
+            material.response = "$white";
+            return material;
+        }
+        throw std::runtime_error(
+            "missing IW3 material '" + name +
+            "'; add the matching IW3 main and raw directories with --search-path");
+    }
     const Json source = ReadJson(path);
     SourceMaterial material;
     material.name = name;
     const std::string techset = source.at("techniqueSet").get<std::string>();
-    if (techset == "shadowcaster" || std::regex_search(techset, std::regex("(^|_)sky($|_)", std::regex::icase)))
+    if (techset == "shadowcaster" ||
+        std::regex_search(techset, std::regex("(^|_)sky($|_)", std::regex::icase)))
     {
         material.kind = SurfaceKind::skipped;
         return material;
     }
-    bool authoredAlpha = std::regex_search(techset, std::regex("(^|_)[at][0-9]", std::regex::icase)) ||
-                         techset.find("alphatest") != std::string::npos;
+    bool authoredAlpha =
+        std::regex_search(techset, std::regex("(^|_)[at][0-9]", std::regex::icase)) ||
+        techset.find("alphatest") != std::string::npos;
     const bool blended = std::regex_search(techset, std::regex("(^|_)b[0-9]", std::regex::icase));
     std::string alphaMode = "ge128";
+    bool foundColorState = false;
     for (const auto &texture : source.value("textures", Json::array()))
     {
         const std::string semantic = texture.value("semantic", std::string{});
@@ -789,6 +858,15 @@ SourceMaterial ReadMaterial(const std::filesystem::path &root, const std::string
     }
     for (const auto &state : source.value("stateBits", Json::array()))
     {
+        if (!foundColorState && state.value("colorWriteRgb", false) &&
+            !state.value("polymodeLine", false))
+        {
+            const auto cull = state.value("cullFace", std::string("back"));
+            if (cull != "none" && cull != "back" && cull != "front")
+                throw std::runtime_error("Unsupported IW3 material culling: " + name);
+            material.cullMode = cull == "none" ? 0 : cull == "back" ? 1 : 2;
+            foundColorState = true;
+        }
         const std::string test = state.value("alphaTest", std::string{});
         if (test == "gt0" || test == "lt128" || test == "ge128")
         {
@@ -799,10 +877,15 @@ SourceMaterial ReadMaterial(const std::filesystem::path &root, const std::string
     }
     if (material.color.empty())
         throw std::runtime_error("IW3 material has no color map: " + name);
-    material.kind = blended ? SurfaceKind::glass : (authoredAlpha ? SurfaceKind::cutout : SurfaceKind::opaque);
+    material.kind =
+        blended ? SurfaceKind::glass : (authoredAlpha ? SurfaceKind::cutout : SurfaceKind::opaque);
     if (material.kind == SurfaceKind::cutout)
         material.flags = alphaMode == "gt0" ? 8u : (alphaMode == "lt128" ? 16u : 0u);
-    if (!material.normal.empty())
+    // `$identitynormalmap` is a stock flat-normal placeholder.  Its texture
+    // payload is retained for the native material contract, but setting the
+    // authored-normal flag would make SourceWorldNormal decode it as a
+    // slope-map (the shader's flag is the normal-map enable bit).
+    if (!material.normal.empty() && material.normal != "$identitynormalmap")
         material.flags |= 32u;
     if (!material.response.empty())
         material.flags |= 64u;
@@ -811,8 +894,9 @@ SourceMaterial ReadMaterial(const std::filesystem::path &root, const std::string
 
 bool FoliageName(const std::string &value)
 {
-    return std::regex_search(value, std::regex("leaf|leaves|foliage|tree|bush|branch|grass|fern|pine|hedge|palm",
-                                               std::regex::icase));
+    return std::regex_search(
+        value, std::regex("leaf|leaves|foliage|tree|bush|branch|grass|fern|pine|hedge|palm",
+                          std::regex::icase));
 }
 
 std::string TileKey(const SourceMaterial &material)
@@ -851,7 +935,8 @@ std::vector<std::uint8_t> Sha256(const std::span<const std::uint8_t> data)
         throw std::runtime_error("cannot initialize SHA-256");
     std::vector<std::uint8_t> object(objectLength), digest(digestLength);
     if (BCryptCreateHash(algorithm, &hash, object.data(), objectLength, nullptr, 0, 0) < 0 ||
-        BCryptHashData(hash, const_cast<PUCHAR>(data.data()), static_cast<ULONG>(data.size()), 0) < 0 ||
+        BCryptHashData(hash, const_cast<PUCHAR>(data.data()), static_cast<ULONG>(data.size()), 0) <
+            0 ||
         BCryptFinishHash(hash, digest.data(), digestLength, 0) < 0)
     {
         if (hash)
@@ -889,7 +974,8 @@ std::vector<std::uint8_t> Unhex(const std::string &text)
         throw std::runtime_error("invalid embedded technique hex digit");
     };
     for (std::size_t index = 0; index < output.size(); ++index)
-        output[index] = static_cast<std::uint8_t>((digit(text[index * 2]) << 4) | digit(text[index * 2 + 1]));
+        output[index] =
+            static_cast<std::uint8_t>((digit(text[index * 2]) << 4) | digit(text[index * 2 + 1]));
     return output;
 }
 
@@ -902,7 +988,8 @@ template <class T> T At(const std::vector<std::uint8_t> &data, const std::size_t
     return result;
 }
 
-template <class T> void Put(std::vector<std::uint8_t> &data, const std::size_t offset, const T value)
+template <class T>
+void Put(std::vector<std::uint8_t> &data, const std::size_t offset, const T value)
 {
     if (offset > data.size() || sizeof(T) > data.size() - offset)
         throw std::runtime_error("invalid technique template");
@@ -912,12 +999,13 @@ template <class T> void Put(std::vector<std::uint8_t> &data, const std::size_t o
 std::vector<std::uint8_t> Compile(const std::string &source, const char *target, const char *name)
 {
     ID3DBlob *program = nullptr, *errors = nullptr;
-    const HRESULT result = D3DCompile(source.data(), source.size(), name, nullptr, nullptr, "main", target,
-                                      D3DCOMPILE_ENABLE_STRICTNESS, 0, &program, &errors);
+    const HRESULT result = D3DCompile(source.data(), source.size(), name, nullptr, nullptr, "main",
+                                      target, D3DCOMPILE_ENABLE_STRICTNESS, 0, &program, &errors);
     std::string message;
     if (errors)
     {
-        message.assign(static_cast<const char *>(errors->GetBufferPointer()), errors->GetBufferSize());
+        message.assign(static_cast<const char *>(errors->GetBufferPointer()),
+                       errors->GetBufferSize());
         errors->Release();
     }
     if (FAILED(result) || !program)
@@ -941,8 +1029,11 @@ Json Shader(const unsigned type, const std::string &label, const std::string &de
     std::memcpy(&identity, digest.data(), sizeof(identity));
     std::memcpy(header.data() + 32, &length, sizeof(length));
     std::memcpy(header.data() + 36, &identity, sizeof(identity));
-    return {{"type", type}, {"name", name}, {"debugName", debugName},
-            {"header", Hex(header)}, {"program", Hex(program)}};
+    return {{"type", type},
+            {"name", name},
+            {"debugName", debugName},
+            {"header", Hex(header)},
+            {"program", Hex(program)}};
 }
 
 void PatchStateIdentity(Json &technique, const std::vector<std::uint8_t> &seed)
@@ -967,9 +1058,9 @@ std::string CoveragePrefix(const std::string &source, const std::string &signatu
     const std::size_t clip = source.find("clip(texel.a - .5);", start);
     if (start == std::string::npos || clip == std::string::npos)
         throw std::runtime_error("embedded IW3 shader is missing alpha coverage");
-    return source.substr(0, start) + signature + source.substr(start + original.size(),
-                                                               clip + std::strlen("clip(texel.a - .5);") -
-                                                                   (start + original.size()));
+    return source.substr(0, start) + signature +
+           source.substr(start + original.size(),
+                         clip + std::strlen("clip(texel.a - .5);") - (start + original.size()));
 }
 
 std::string PrepassSource(const std::string &source)
@@ -994,9 +1085,13 @@ std::string ShadowSource(const std::string &source)
     return output;
 }
 
-void AppendAtlasArgument(Json &technique)
+void AppendCoverageArgument(Json &technique, bool staticModel)
 {
-    technique["args"] = technique.at("args").get<std::string>() + "051001000000";
+    auto header = Unhex(technique.at("header").get<std::string>());
+    ++header[0x7A];
+    technique["header"] = Hex(header);
+    technique["args"] =
+        technique.at("args").get<std::string>() + (staticModel ? "051000000000" : "051001000000");
 }
 
 void KeepReferencedShaders(Json &techset)
@@ -1013,20 +1108,84 @@ void KeepReferencedShaders(Json &techset)
     techset["shaders"] = std::move(shaders);
 }
 
-Json BuildTechset(const std::string &map, const unsigned columns)
+void ApplyStaticModelTechniqueLayout(Json &techset)
+{
+    struct Layout
+    {
+        std::string_view header;
+        std::string_view states;
+        std::string_view args;
+    };
+    static constexpr std::array layouts{
+        Layout{"000000000000000000000000000001ffff00ffff0000ffffffffffffffffffffffffffffffffff00000"
+               "00000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+               "00000000000000000000000000000000000000000000000000000000000000000000000000000002000"
+               "00000006000020200000000000000000000000000000000000000000000000001000000010e00000000"
+               "0000000000000fffffff0000000000000000",
+               "e5d7c9c4c8440c1b0000000000000000c58419b67124f4440000000000000000",
+               "00020000a400000205000100"},
+        Layout{"00000000000000001b000000000001ffff00ffff0000ffffffffffffffffffffffffffffffffff00000"
+               "00000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+               "00000000000000000000000000000000000000000000000000000000000000000000000000000002000"
+               "00000006000000100000000000000000000000000000000000000000000000001000000210e00000000"
+               "000000000000ffffffff0000000000000000",
+               "29a55f10348ebbff0000000000000000", "00020000a400000205000100"},
+        Layout{"00000000000000001c000000000001ffff00ffff0000ffffffffffffffffffffffffffffffffff00000"
+               "00000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+               "00000000000000000000000000000000000000000000000000000000000000000000000000000002000"
+               "00000006000000100000000000000000000000000000000000000000000000001000000220e00000000"
+               "000000000000ffffffff0000000000000000",
+               "7cc9a43f6b5db46a0000000000000000", "00020000a400000205000100"},
+        Layout{"000000000000000022000000000001ffffffffff0000ffffffffffffffffffffffffffffffffff00000"
+               "00000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+               "0000000000000000000000000000000000000000000000000000000000000000000000000000000e040"
+               "00000008000020100000000000000000000000000000000000000000000000002000000010800000000"
+               "000000000000000000000000000000000000",
+               "9553be8776054af60000000000000000",
+               "00020000a400001204000000000205000100001006000400001007006700011003004f00030200001f0"
+               "0030201001d00030202001e00031004002c00051000000000051001000900051002003b000812070000"
+               "00091001000000091002000900091003003600091000004800"},
+    };
+    if (techset.at("techniques").size() != layouts.size())
+        throw std::runtime_error("embedded Replay technique set has the wrong pass count");
+    techset["header"] = "00000000000000002010000400000000140009000000000001000018040000000000000000"
+                        "000000000000000000000000000000000000000000000000000000";
+    for (std::size_t index = 0; index < layouts.size(); ++index)
+    {
+        Json &technique = techset.at("techniques").at(index);
+        technique["header"] = layouts[index].header;
+        technique["states"] = layouts[index].states;
+        technique["args"] = layouts[index].args;
+    }
+    techset["source"] =
+        "Exact Replay 1.20 static-model technique layout; process/GPU pointers removed.";
+}
+
+Json BuildTechset(const std::string &map, const unsigned columns, const bool staticModel)
 {
     Json techset = Json::parse(ResourceText(IDR_IW3_TECHSET_TEMPLATE));
-    std::string pixelSource = "#define MAP_SOURCE_SUN_MASK 1\n#define MAP_SOURCE_CHANNELS 1\n" +
-                              ResourceText(IDR_IW3_PIXEL_SHADER);
+    if (staticModel)
+        ApplyStaticModelTechniqueLayout(techset);
+    std::string pixelSource = "#define MAP_SOURCE_SUN_MASK 1\n#define MAP_SOURCE_CHANNELS 1\n";
+    if (staticModel)
+        pixelSource += "#define STATIC_MODEL 1\n";
+    pixelSource += ResourceText(IDR_IW3_PIXEL_SHADER);
     const std::string token = "ATLAS_COLUMNS";
     for (std::size_t at = pixelSource.find(token); at != std::string::npos;
          at = pixelSource.find(token, at + 1))
         pixelSource.replace(at, token.size(), std::to_string(columns));
     const auto pixel = Compile(pixelSource, "ps_5_0", "iw3_map_surface.hlsl");
-    const auto vertex = Compile(ResourceText(IDR_IW3_VERTEX_SHADER), "vs_5_0", "iw3_world_vertex.hlsl");
+    const char *vertexName = staticModel ? "iw3_model_vertex.hlsl" : "iw3_world_vertex.hlsl";
+    const auto vertex =
+        Compile(ResourceText(staticModel ? IDR_IW3_MODEL_VERTEX_SHADER : IDR_IW3_VERTEX_SHADER),
+                "vs_5_0", vertexName);
     Json pixelShader = Shader(17, "iw3_surface", "iw3_map_surface.hlsl", pixel);
-    Json vertexShader = Shader(14, "iw3_world", "iw3_world_vertex.hlsl", vertex);
+    Json vertexShader = Shader(14, staticModel ? "iw3_model" : "iw3_world", vertexName, vertex);
     Json &lit = techset.at("techniques").back();
+    auto litHeader = Unhex(lit.at("header").get<std::string>());
+    if (!staticModel)
+        litHeader[0x9C] = 35;
+    lit["header"] = Hex(litHeader);
     const std::string oldPixel = lit.at("shaders").at(3).get<std::string>();
     techset.at("shaders").erase("17:" + oldPixel);
     lit["shaders"][3] = pixelShader.at("name");
@@ -1034,26 +1193,33 @@ Json BuildTechset(const std::string &map, const unsigned columns)
     techset["shaders"]["17:" + pixelShader.at("name").get<std::string>()] = pixelShader;
     techset["shaders"]["14:" + vertexShader.at("name").get<std::string>()] = vertexShader;
     const auto techDigest = Sha256(pixel);
-    techset["name"] = "tw/mw120r_" + map + "_" + Hex(std::span(techDigest).first(6));
-    lit["name"] = "TECHNIQUE_LIT_FORWARDPLUS_BITMASK_" + techset.at("name").get<std::string>().substr(3);
+    techset["name"] =
+        "tw/mw120r_" + map + (staticModel ? "_model_" : "_") + Hex(std::span(techDigest).first(6));
+    lit["name"] =
+        "TECHNIQUE_LIT_FORWARDPLUS_BITMASK_" + techset.at("name").get<std::string>().substr(3);
     PatchStateIdentity(lit, pixel);
 
-    const auto depthProgram = Compile(PrepassSource(pixelSource), "ps_5_0", "iw3_depth_coverage.hlsl");
+    const auto depthProgram =
+        Compile(PrepassSource(pixelSource), "ps_5_0", "iw3_depth_coverage.hlsl");
     Json depthShader = Shader(17, "iw3_depth", "iw3_depth_coverage.hlsl", depthProgram);
     Json &depth = techset.at("techniques").front();
     auto depthHeader = Unhex(depth.at("header").get<std::string>());
     if (At<std::uint32_t>(depthHeader, 8) != 0)
         throw std::runtime_error("embedded technique set has no depth prepass");
-    depthHeader[0x9C] = 35;
-    depthHeader[0x7A] = 4;
+    if (!staticModel)
+    {
+        depthHeader[0x9C] = 35;
+    }
     depth["header"] = Hex(depthHeader);
-    depth["shaders"] = Json::array({vertexShader.at("name"), nullptr, nullptr, depthShader.at("name")});
+    depth["shaders"] =
+        Json::array({vertexShader.at("name"), nullptr, nullptr, depthShader.at("name")});
     depth["name"] = "TECHNIQUE_DEPTH_PREPASS_" + depthShader.at("name").get<std::string>();
-    AppendAtlasArgument(depth);
+    AppendCoverageArgument(depth, staticModel);
     PatchStateIdentity(depth, depthProgram);
     techset["shaders"]["17:" + depthShader.at("name").get<std::string>()] = depthShader;
 
-    const auto shadowProgram = Compile(ShadowSource(pixelSource), "ps_5_0", "iw3_shadow_coverage.hlsl");
+    const auto shadowProgram =
+        Compile(ShadowSource(pixelSource), "ps_5_0", "iw3_shadow_coverage.hlsl");
     Json shadowShader = Shader(17, "iw3_shadow", "iw3_shadow_coverage.hlsl", shadowProgram);
     std::vector<unsigned> shadowTypes;
     for (auto &technique : techset.at("techniques"))
@@ -1062,14 +1228,16 @@ Json BuildTechset(const std::string &map, const unsigned columns)
         const unsigned type = At<std::uint32_t>(header, 8);
         if (type != 27 && type != 28)
             continue;
-        header[0x9C] = 35;
-        header[0x7A] = 4;
+        if (!staticModel)
+        {
+            header[0x9C] = 35;
+        }
         technique["header"] = Hex(header);
-        technique["shaders"] = Json::array({vertexShader.at("name"), nullptr, nullptr,
-                                              shadowShader.at("name")});
+        technique["shaders"] =
+            Json::array({vertexShader.at("name"), nullptr, nullptr, shadowShader.at("name")});
         technique["name"] = "TECHNIQUE_SHADOW_" + std::to_string(type) + "_" +
                             shadowShader.at("name").get<std::string>();
-        AppendAtlasArgument(technique);
+        AppendCoverageArgument(technique, staticModel);
         PatchStateIdentity(technique, shadowProgram);
         shadowTypes.push_back(type);
     }
@@ -1078,6 +1246,11 @@ Json BuildTechset(const std::string &map, const unsigned columns)
         throw std::runtime_error("embedded technique set has incomplete shadow passes");
     techset["shaders"]["17:" + shadowShader.at("name").get<std::string>()] = shadowShader;
     auto header = Unhex(techset.at("header").get<std::string>());
+    if (staticModel)
+    {
+        Put<std::uint32_t>(header, 0x10, 589844u);
+        Put<std::uint64_t>(header, 8, At<std::uint64_t>(header, 8) & ~0x400000000ull);
+    }
     Put<std::uint32_t>(header, 8, At<std::uint32_t>(header, 8) & ~0x1000u);
     techset["header"] = Hex(header);
     techset["coveragePrepass"] = true;
@@ -1093,7 +1266,7 @@ Json CreateVariant(const Json &base, Json &material, const std::string &stem,
     Json lit = techset.at("techniques").back();
     auto header = Unhex(lit.at("header").get<std::string>());
     std::uint64_t other = At<std::uint64_t>(header, 0xA0);
-    const bool foliage = kind == "foliage", glass = kind == "glass";
+    const bool foliage = kind.ends_with("foliage"), glass = kind.ends_with("glass");
     other = (other & ~(0xE00ull | 3ull)) | (foliage ? 0x800ull : 0xC00ull);
     Put<std::uint64_t>(header, 0xA0, other);
     Put<std::uint64_t>(header, 0xA8, glass ? 0x28054ull : 0ull);
@@ -1149,14 +1322,17 @@ Json CreateVariant(const Json &base, Json &material, const std::string &stem,
     Json variant = material;
     variant["techset"] = techset.at("name");
     variant["techsetDefinition"] = techsetFile;
-    return {{"definition", materialFile}, {"techsetFile", techsetFile},
-            {"techset", std::move(techset)}, {"material", std::move(variant)}};
+    return {{"definition", materialFile},
+            {"techsetFile", techsetFile},
+            {"techset", std::move(techset)},
+            {"material", std::move(variant)}};
 }
 
 Image Downsample(const Image &source, const bool color)
 {
     const unsigned width = std::max(1u, source.width / 2), height = std::max(1u, source.height / 2);
-    Image output{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
+    Image output{width, height,
+                 std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
     for (unsigned y = 0; y < height; ++y)
         for (unsigned x = 0; x < width; ++x)
         {
@@ -1166,7 +1342,8 @@ Image Downsample(const Image &source, const bool color)
                 {
                     const unsigned sx = std::min(source.width - 1, x * 2 + ix);
                     const unsigned sy = std::min(source.height - 1, y * 2 + iy);
-                    const std::size_t offset = (static_cast<std::size_t>(sy) * source.width + sx) * 4;
+                    const std::size_t offset =
+                        (static_cast<std::size_t>(sy) * source.width + sx) * 4;
                     const float alpha = source.rgba[offset + 3] / 255.0f;
                     for (unsigned channel = 0; channel < 4; ++channel)
                     {
@@ -1194,6 +1371,7 @@ std::vector<std::uint8_t> MipChain(Image image, const unsigned levels, const boo
     for (unsigned level = 0; level < levels; ++level)
     {
         output.insert(output.end(), image.rgba.begin(), image.rgba.end());
+        output.resize((output.size() + 15) & ~std::size_t{15});
         if (level + 1 < levels)
             image = Downsample(image, color);
     }
@@ -1210,6 +1388,7 @@ std::string ImageName(const std::string &map, const unsigned channel,
 
 RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Json &world,
                                const std::vector<std::string> &surfaceMaterials,
+                               const std::vector<std::string> &modelMaterials,
                                const std::vector<std::filesystem::path> &sourcePaths,
                                const std::filesystem::path &mapDirectory, const std::string &map)
 {
@@ -1225,7 +1404,7 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     };
     for (const std::string &name : unique)
     {
-        SourceMaterial material = ReadMaterial(exportRoot, name);
+        SourceMaterial material = ReadMaterial(exportRoot, sourcePaths, name);
         if (material.kind != SurfaceKind::skipped)
         {
             const auto &color = image(material.color);
@@ -1253,7 +1432,8 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         const auto &sourceOrigin = source.at("origin");
         const std::string sourceName = source.at("image").get<std::string>();
         if (!sourceOrigin.is_array() || sourceOrigin.size() != 3 || sourceName.empty() ||
-            sourceName.find("..") != std::string::npos || sourceName.find(':') != std::string::npos ||
+            sourceName.find("..") != std::string::npos ||
+            sourceName.find(':') != std::string::npos ||
             sourceName.find('\\') != std::string::npos || sourceName.front() == '/')
             throw std::runtime_error("invalid IW3 reflection probe");
         ReflectionProbePlan probe;
@@ -1336,7 +1516,8 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
                 break;
             }
         }
-        const std::size_t freeCells = std::count(candidateOccupied.begin(), candidateOccupied.end(), false);
+        const std::size_t freeCells =
+            std::count(candidateOccupied.begin(), candidateOccupied.end(), false);
         if (fits && freeCells >= visibleCount + 6)
         {
             columns = candidate;
@@ -1355,10 +1536,9 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     nextTile = 0;
     for (auto &[key, number] : tileNumbers)
         number = freeTiles[nextTile++];
-    std::array<Image, 3> atlases{
-        Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)},
-        Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)},
-        Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)}};
+    std::array<Image, 3> atlases{Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)},
+                                 Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)},
+                                 Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)}};
 
     plan.columns = columns;
     std::set<std::size_t> writtenTiles;
@@ -1373,7 +1553,8 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             item.tile = tileNumbers.at(TileKey(material));
             if (writtenTiles.insert(item.tile).second)
             {
-                const Image color = Resize(image(material.color).front(), cell, cell, true, material.tint);
+                const Image color =
+                    Resize(image(material.color).front(), cell, cell, true, material.tint);
                 Paste(atlases[0], color, static_cast<unsigned>(item.tile % columns) * cell,
                       static_cast<unsigned>(item.tile / columns) * cell);
                 if (!material.normal.empty())
@@ -1409,7 +1590,8 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             pair.at(1).at("format") != 21)
             throw std::runtime_error("unsupported IW3 lightmap format");
         const auto &primary = pair.at(0), &secondary = pair.at(1);
-        const unsigned width = secondary.at("width"), fullHeight = secondary.at("height"), height = fullHeight / 2;
+        const unsigned width = secondary.at("width"), fullHeight = secondary.at("height"),
+                       height = fullHeight / 2;
         if (!width || !height || fullHeight % 2)
             throw std::runtime_error("invalid IW3 lightmap dimensions");
         const auto firstBytes = ReadBytes(exportRoot / primary.at("file").get<std::string>());
@@ -1420,13 +1602,16 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             throw std::runtime_error("invalid IW3 lightmap byte count");
         const auto &rectangle = plan.lightmaps.at(lightmapIndex++);
         Image primaryMask{primary.at("width"), primary.at("height"),
-                          std::vector<std::uint8_t>(static_cast<std::size_t>(primary.at("width").get<unsigned>()) *
-                                                    primary.at("height").get<unsigned>() * 4)};
+                          std::vector<std::uint8_t>(
+                              static_cast<std::size_t>(primary.at("width").get<unsigned>()) *
+                              primary.at("height").get<unsigned>() * 4)};
         for (std::size_t index = 0; index < firstBytes.size(); ++index)
             primaryMask.rgba[index * 4 + 0] = primaryMask.rgba[index * 4 + 1] =
-                primaryMask.rgba[index * 4 + 2] = primaryMask.rgba[index * 4 + 3] = firstBytes[index];
+                primaryMask.rgba[index * 4 + 2] = primaryMask.rgba[index * 4 + 3] =
+                    firstBytes[index];
         const Image mask = Resize(primaryMask, width, height, false);
-        Image color{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
+        Image color{width, height,
+                    std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
         Image normal = color, response = color;
         const std::size_t half = static_cast<std::size_t>(width) * height * 4;
         for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index)
@@ -1465,24 +1650,209 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         const std::string name = ImageName(map, channel, chain);
         WriteBytes(mapDirectory / filename, chain);
         material["textures"][channel]["image"] = name;
-        material["imageDefinitions"].push_back({{"name", name}, {"width", 4096}, {"height", 4096},
-                                                  {"rgba8", filename}, {"format", channel == 0 ? 7 : 6},
-                                                  {"mipCount", mipCount}});
+        material["imageDefinitions"].push_back({{"name", name},
+                                                {"width", 4096},
+                                                {"height", 4096},
+                                                {"rgba8", filename},
+                                                {"format", channel == 0 ? 7 : 6},
+                                                {"mipCount", mipCount}});
     }
-    Json techset = BuildTechset(map, columns);
+    Json techset = BuildTechset(map, columns, false);
     material["techset"] = techset.at("name");
     WriteJson(mapDirectory / plan.materialDefinition, material);
     WriteJson(mapDirectory / (stem + ".techset.json"), techset);
     for (const auto &[kind, enabled] : std::array<std::pair<const char *, bool>, 3>{
-             std::pair{"foliage", plan.hasCutout}, std::pair{"glass", plan.hasGlass}, std::pair{"sky", true}})
+             std::pair{"foliage", plan.hasCutout}, std::pair{"glass", plan.hasGlass},
+             std::pair{"sky", true}})
     {
         if (!enabled)
             continue;
         Json variant = CreateVariant(techset, material, stem, map, kind);
-        WriteJson(mapDirectory / variant.at("definition").get<std::string>(), variant.at("material"));
-        WriteJson(mapDirectory / variant.at("techsetFile").get<std::string>(), variant.at("techset"));
-        plan.additionalMaterials.push_back({{"schema", 1}, {"material", plan.material + "_" + kind},
-                                             {"materialDefinition", variant.at("definition")}});
+        WriteJson(mapDirectory / variant.at("definition").get<std::string>(),
+                  variant.at("material"));
+        WriteJson(mapDirectory / variant.at("techsetFile").get<std::string>(),
+                  variant.at("techset"));
+        plan.additionalMaterials.push_back({{"schema", 1},
+                                            {"material", plan.material + "_" + kind},
+                                            {"materialDefinition", variant.at("definition")}});
+    }
+
+    // FxGlassSystem supplies its own vertices. A BSP glass variant cannot be
+    // used here: Replay R_DrawGlassSurf (18F9F00) rejects layouts other than 31.
+    for (const std::string &sourceName : surfaceMaterials)
+    {
+        auto &entry = plan.materials.at(sourceName);
+        if (entry.kind != SurfaceKind::glass || !entry.glassMaterial.empty())
+            continue;
+        const std::string kind = "pane_" + std::to_string(entry.tile) + "_" +
+                                 std::to_string(entry.flags) + "_glass";
+        entry.glassMaterial = plan.material + "_" + kind;
+        if (std::any_of(plan.assetMaterials.begin(), plan.assetMaterials.end(),
+                        [&](const Json &existing) {
+                            return existing.at("material") == entry.glassMaterial;
+                        }))
+            continue;
+        Json variant = CreateVariant(techset, material, stem, map, kind);
+        Json &paneTechset = variant.at("techset");
+        const std::string vertexSource = "#define GLASS_PANE 1\n#define GLASS_TILE " +
+            std::to_string(entry.tile) + "\n#define GLASS_FLAGS " +
+            std::to_string(entry.flags | 2u) + "\n" + ResourceText(IDR_IW3_VERTEX_SHADER);
+        Json vertex = Shader(14, "iw3_glass", "iw3_glass_vertex.hlsl",
+                             Compile(vertexSource, "vs_5_0", "iw3_glass_vertex.hlsl"));
+        Json &lit = paneTechset.at("techniques").back();
+        auto header = Unhex(lit.at("header").get<std::string>());
+        header[0x9C] = 31;
+        // R_DrawGlassSurf selects vertex declaration 1 (RVA 18FA068).
+        // R_SetPipelineState indexes the map at +0x0F with that declaration;
+        // the inherited BSP entry is 0xFF and would read beyond the PSO array.
+        header[0x0F + 1] = 0;
+        lit["header"] = Hex(header);
+        lit["shaders"][0] = vertex.at("name");
+        paneTechset["shaders"]["14:" + vertex.at("name").get<std::string>()] = vertex;
+        auto args = Unhex(lit.at("args").get<std::string>());
+        bool glassBuffer = false;
+        for (std::size_t offset = 0; offset < args.size(); offset += 6)
+            if (args[offset] == 3 && args[offset + 1] == 2 &&
+                At<std::uint16_t>(args, offset + 2) == 13 &&
+                At<std::uint16_t>(args, offset + 4) == 45)
+            {
+                // Signed Replay glass: VS t2 = code buffer 47, stride 28.
+                Put<std::uint16_t>(args, offset + 2, 2);
+                Put<std::uint16_t>(args, offset + 4, 47);
+                glassBuffer = true;
+            }
+        if (!glassBuffer)
+            throw std::runtime_error("Glass technique has no native vertex-buffer binding");
+        lit["args"] = Hex(args);
+        PatchStateIdentity(lit, Unhex(vertex.at("program").get<std::string>()));
+        auto type = Unhex(paneTechset.at("header").get<std::string>());
+        Put<std::uint32_t>(type, 0x10, 0x100000u);
+        paneTechset["header"] = Hex(type);
+        KeepReferencedShaders(paneTechset);
+        auto info = Unhex(variant.at("material").at("info").get<std::string>());
+        Put<std::uint32_t>(info, 0xC, 0x100000u);
+        info[0x10] = 3;
+        info[0x11] = 26;
+        variant["material"]["info"] = Hex(info);
+        WriteJson(mapDirectory / variant.at("definition").get<std::string>(),
+                  variant.at("material"));
+        WriteJson(mapDirectory / variant.at("techsetFile").get<std::string>(), paneTechset);
+        plan.assetMaterials.push_back({{"schema", 1}, {"material", entry.glassMaterial},
+                                       {"materialDefinition", variant.at("definition")}});
+    }
+
+    Json modelMaterialTemplate = material;
+    auto modelInfo = Unhex(modelMaterialTemplate.at("info").get<std::string>());
+    Put<std::uint32_t>(modelInfo, 0xC, 589844u);
+    modelMaterialTemplate["info"] = Hex(modelInfo);
+    Json modelTechset = BuildTechset(map, columns, true);
+    std::array<Json, 5> modelTechsets{};
+    modelTechsets[static_cast<unsigned>(SurfaceKind::opaque)] = modelTechset;
+
+    for (const auto &[kind, enabled, surfaceKind] :
+         std::array<std::tuple<const char *, bool, SurfaceKind>, 2>{
+             std::tuple{"model_foliage", plan.hasCutout, SurfaceKind::cutout},
+             std::tuple{"model_glass", plan.hasGlass, SurfaceKind::glass}})
+    {
+        if (!enabled)
+            continue;
+        Json variant = CreateVariant(modelTechset, modelMaterialTemplate, stem, map, kind);
+        modelTechsets[static_cast<unsigned>(surfaceKind)] = std::move(variant.at("techset"));
+    }
+
+    std::set<std::string> neededModelMaterials(modelMaterials.begin(), modelMaterials.end());
+    std::map<std::pair<unsigned, unsigned>, std::pair<std::string, std::string>> modelTechsetFiles;
+    std::set<std::string> writtenModelImages;
+    const auto residentImage = [&](Json &definition, const unsigned channel, Image source,
+                                   const std::array<float, 4> &tint) {
+        if (channel == 0)
+            source = Resize(source, source.width, source.height, true, tint);
+        unsigned levels = 1, width = source.width, height = source.height;
+        while (width > 1 || height > 1)
+        {
+            width = std::max(1u, width / 2);
+            height = std::max(1u, height / 2);
+            ++levels;
+        }
+        const unsigned sourceWidth = source.width, sourceHeight = source.height;
+        auto pixels = MipChain(std::move(source), levels, channel == 0);
+        const auto digest = Sha256(pixels);
+        const std::string id = Hex(std::span(digest).first(8));
+        const std::string filename = map + "_model_" + std::to_string(channel) + "_" + id + ".rgba";
+        const std::string name = "mw120r/" + map + "_model_" + std::to_string(channel) + "_" + id;
+        if (writtenModelImages.insert(filename).second)
+            WriteBytes(mapDirectory / filename, pixels);
+        definition["textures"][channel]["image"] = name;
+        definition["imageDefinitions"].push_back({{"name", name},
+                                                  {"width", sourceWidth},
+                                                  {"height", sourceHeight},
+                                                  {"rgba8", filename},
+                                                  {"format", channel == 0 ? 7 : 6},
+                                                  {"mipCount", levels}});
+    };
+
+    for (const SourceMaterial &source : materials)
+    {
+        if (!neededModelMaterials.contains(source.name) || source.kind == SurfaceKind::skipped)
+            continue;
+        const unsigned kind = static_cast<unsigned>(source.kind);
+        if (kind >= modelTechsets.size() || modelTechsets[kind].empty())
+            throw std::runtime_error("IW3 render plan omitted a model technique variant");
+        auto [techsetEntry, inserted] = modelTechsetFiles.try_emplace({kind, source.cullMode});
+        if (inserted)
+        {
+            Json variant = modelTechsets[kind];
+            const std::string suffix = "_cull" + std::to_string(source.cullMode);
+            variant["name"] = variant.at("name").get<std::string>() + suffix;
+            for (auto &technique : variant.at("techniques"))
+            {
+                auto header = Unhex(technique.at("header").get<std::string>());
+                unsigned cull = source.cullMode;
+                if (At<std::uint32_t>(header, 8) == 28 && cull)
+                    cull = 3 - cull; // Native back-face shadow pass reverses authored culling.
+                Put<std::uint64_t>(header, 0xA0, (At<std::uint64_t>(header, 0xA0) & ~3ull) | cull);
+                technique["header"] = Hex(header);
+                technique["name"] = technique.at("name").get<std::string>() + suffix;
+                PatchStateIdentity(technique, header);
+            }
+            const std::string file =
+                stem + ".model_" + std::to_string(kind) + suffix + ".techset.json";
+            techsetEntry->second = {variant.at("name").get<std::string>(), file};
+            WriteJson(mapDirectory / file, variant);
+        }
+        const auto sourceBytes = std::span(
+            reinterpret_cast<const std::uint8_t *>(source.name.data()), source.name.size());
+        const auto nameDigest = Sha256(sourceBytes);
+        const std::string id = Hex(std::span(nameDigest).first(8));
+        const std::string materialName = "w/mw120r_" + map + "_model_" + id;
+        const std::string materialFile = stem + ".model." + id + ".material.json";
+        Json direct = modelMaterialTemplate;
+        direct["source"] = source.name;
+        if (source.kind == SurfaceKind::glass)
+        {
+            // Shipped Replay static-model glass is submitted after opaque surfaces.
+            auto info = Unhex(direct.at("info").get<std::string>());
+            info[0x10] = 3;
+            info[0x11] = 26;
+            direct["info"] = Hex(info);
+        }
+        direct["techset"] = techsetEntry->second.first;
+        direct["techsetDefinition"] = techsetEntry->second.second;
+        direct["imageDefinitions"] = Json::array();
+        residentImage(direct, 0, image(source.color).front(), source.tint);
+        residentImage(direct, 1,
+                      source.normal.empty()
+                          ? Image{1, 1, std::vector<std::uint8_t>{128, 128, 128, 128}}
+                          : image(source.normal).front(),
+                      {1, 1, 1, 1});
+        residentImage(direct, 2,
+                      source.response.empty() ? Image{1, 1, std::vector<std::uint8_t>{0, 0, 0, 0}}
+                                              : image(source.response).front(),
+                      {1, 1, 1, 1});
+        WriteJson(mapDirectory / materialFile, direct);
+        plan.assetMaterials.push_back(
+            {{"schema", 1}, {"material", materialName}, {"materialDefinition", materialFile}});
+        plan.materials.at(source.name).modelMaterial = materialName;
     }
     return plan;
 }

@@ -23,11 +23,21 @@ struct Input {
     nointerpolation float4 materialParameters : MATERIALPARMS0;
     float3 relativePosition : WORLDPOS0;
 };
+#ifdef STATIC_MODEL
+Texture2D<float4> sourceAtlas : register(t0);
+#else
 Texture2D<float4> sourceAtlas : register(t1);
+#endif
 SamplerState colorSampler : register(s3);
 Texture2D<float4> sunVisibility : register(t85);
 StructuredBuffer<uint2> lightingTiles : register(t5);
 SamplerState shadowSampler : register(s5);
+// TECHNIQUE_LIT_FORWARDPLUS_BITMASK binds code image 0 to the GTAO slot.
+// The native Replay static-model pixel shader consumes that image at t95
+// with the point sampler s8. Keep this as an engine code image: GTAO is a
+// per-frame render target and is not a converted map asset.
+Texture2D<float4> gtaoImage : register(t95);
+SamplerState gtaoSampler : register(s8);
 cbuffer ReplayView : register(b2) {
     float4 replayView[8];
 };
@@ -39,8 +49,13 @@ cbuffer ReplayLighting : register(b7) {
 #define MAP_SOURCE_CHANNELS 0
 #endif
 #if MAP_SOURCE_CHANNELS
+#ifdef STATIC_MODEL
+Texture2D<float4> sourceNormalAtlas : register(t1);
+Texture2D<float4> sourceResponseAtlas : register(t2);
+#else
 Texture2D<float4> sourceNormalAtlas : register(t2);
 Texture2D<float4> sourceResponseAtlas : register(t3);
+#endif
 float3 SourceData(float3 value) {
     return lerp(value * 12.92, 1.055 * pow(max(value, 0), 1.0 / 2.4) - .055, step(.0031308, value));
 }
@@ -48,7 +63,11 @@ float3
 SourceWorldNormal(Input input, uint flags, float2 atlasUV, float lod, out float3 tangentNormal) {
     tangentNormal = float3(0, 0, 1);
     if ((flags & 32) != 0) {
+#ifdef STATIC_MODEL
+        float4 raw = sourceNormalAtlas.SampleBias(colorSampler, atlasUV, replayView[7].y);
+#else
         float4 raw = sourceNormalAtlas.SampleLevel(colorSampler, atlasUV, lod);
+#endif
         float2 slope = float2(raw.a, raw.g) * float2(4.08, 4.06451607) - float2(2.08, 2.06451607);
         tangentNormal = normalize(float3(slope, 1));
     }
@@ -78,7 +97,11 @@ float3 SourceSunSpecular(Input input,
                          float visibility) {
     if ((flags & 64) == 0 || visibility <= 0)
         return 0;
+#ifdef STATIC_MODEL
+    float4 raw = sourceResponseAtlas.SampleBias(colorSampler, uv, replayView[7].y);
+#else
     float4 raw = sourceResponseAtlas.SampleLevel(colorSampler, uv, lod);
+#endif
     float3 view = normalize(-input.relativePosition);
     float3 reflected = reflect(-view, normal);
     float exponent = exp2(raw.a * 9.3775177) + 7;
@@ -95,6 +118,14 @@ float4 main(Input input) : SV_TARGET0 {
     uint kind = flags % 4;
     bool sky = kind == 1;
     float2 local = sky ? saturate(input.uv.xy) : frac(input.uv.xy);
+#ifdef STATIC_MODEL
+    // Replay's shipped static-model shaders use the material sampler, screen
+    // gradients and the view mip bias. Preserve the unwrapped model UV so the
+    // sampler can calculate gradients across repeating texture coordinates.
+    float lod = 0;
+    float2 sampleUV = input.uv.xy;
+    float4 texel = sourceAtlas.SampleBias(colorSampler, sampleUV, replayView[7].y);
+#else
     float2 cellSize = 4096.0 / ATLAS_COLUMNS;
     // Derivatives must use the continuous UV, before frac introduces tile seams.
     float footprint = max(length(ddx(input.uv.xy) * cellSize), length(ddy(input.uv.xy) * cellSize));
@@ -102,7 +133,9 @@ float4 main(Input input) : SV_TARGET0 {
     float border = .5 * exp2(ceil(lod));
     float2 pixel = float2(tile % ATLAS_COLUMNS, tile / ATLAS_COLUMNS) * cellSize +
                    clamp(.5 + local * (cellSize - 1), border, cellSize - border);
-    float4 texel = sourceAtlas.SampleLevel(colorSampler, pixel / 4096.0, lod);
+    float2 sampleUV = pixel / 4096.0;
+    float4 texel = sourceAtlas.SampleLevel(colorSampler, sampleUV, lod);
+#endif
     texel *= input.color;
     uint alphaTest = (flags >> 3) & 3;
     if (kind == 3 && alphaTest == 1)
@@ -115,7 +148,7 @@ float4 main(Input input) : SV_TARGET0 {
     float3 tangentNormal = float3(0, 0, 1);
     float3 shadingNormal = normalize(input.normal);
 #if MAP_SOURCE_CHANNELS
-    shadingNormal = SourceWorldNormal(input, flags, pixel / 4096.0, lod, tangentNormal);
+    shadingNormal = SourceWorldNormal(input, flags, sampleUV, lod, tangentNormal);
 #endif
     // The stock forward pass uses these same scaled screen coordinates, sun
     // direction, irradiance and sun visibility texture.
@@ -163,10 +196,18 @@ float4 main(Input input) : SV_TARGET0 {
         indirect =
             SourceIndirect(saturate(input.lightmapUV), baked, tangentNormal) * MAP_INDIRECT_GAIN;
 #else
-        indirect = baked * 2 * MAP_INDIRECT_GAIN;
+            indirect = baked * 2 * MAP_INDIRECT_GAIN;
 #endif
     }
-    float3 light = indirect + visibility * ndotl * sun;
+    // Native Replay applies GTAO after the direct-light accumulation. The
+    // transform is taken verbatim from the shipped static-model shader:
+    // saturate(sample.r * cb7[47].y), followed by a strength lerp controlled
+    // by cb7[47].x. With the engine's disabled/neutral GTAO state (strength
+    // zero), this evaluates to one and preserves the existing lighting.
+    float gtaoSample = saturate(gtaoImage.SampleLevel(gtaoSampler, screenUV, 0).x *
+                                replayLighting[47].y);
+    float gtao = lerp(1.0, gtaoSample, replayLighting[47].x);
+    float3 light = indirect + visibility * ndotl * sun * gtao;
     if (sky)
         light = 1;
     // Build-time diagnostics keep depth coverage and native postprocessing.
@@ -184,7 +225,7 @@ float4 main(Input input) : SV_TARGET0 {
     float3 specular = 0;
 #if MAP_SOURCE_CHANNELS && MAP_DEBUG_MODE == 0
     if (!sky && nativeSun)
-        specular = SourceSunSpecular(input, flags, pixel / 4096.0, lod, shadingNormal, direction,
+        specular = SourceSunSpecular(input, flags, sampleUV, lod, shadingNormal, direction,
                                      sun, visibility);
 #endif
     return float4(min((texel.rgb * light + specular) * replayLighting[42].x, 32255.0),

@@ -174,8 +174,19 @@ void DvarHookTest() {
     bool value = true;
     Check(registerVariant("test_variant", 123, 0, 456, &value, nullptr, description) == description,
           "variant forwards all seven arguments");
+    // Swap the synthetic original to return its fifth argument's int value. This proves the boot
+    // override's stack-backed pValue reaches the original registration call intact.
+    const unsigned char intVariantBody[] = {0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5F, 0x5E,
+                                            0x5D, 0x48, 0x8B, 0x44, 0x24, 0x28, 0x8B, 0x00, 0xC3};
+    std::memcpy(v + game::kDvarRegisterVariantStolen, intVariantBody, sizeof(intVariantBody));
+    FlushInstructionCache(GetCurrentProcess(), v + game::kDvarRegisterVariantStolen,
+                          sizeof(intVariantBody));
+    int32_t duration = 33;
+    Check(registerVariant("MKQQKMRORQ", 456, 5, 0, &duration, nullptr, description) ==
+              reinterpret_cast<void*>(16),
+          "ui_serverFrameDuration boot override is 16");
     std::puts(
-        "PASS: real 1.20 prologue trampolines, offline switches, stock bools, partial retry, seven-argument ABI");
+        "PASS: real 1.20 prologue trampolines, offline switches, stock bools, integer boot override, partial retry, seven-argument ABI");
 }
 }
 

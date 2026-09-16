@@ -1,4 +1,16 @@
 // Replay 1.20 static BSP layout 35: 88-byte surface records and raw vertex streams.
+#ifdef GLASS_PANE
+// Replay's native glass vertex buffer (code buffer 47), 28 bytes per vertex.
+// The signed glass shader reads UV at +12 and tangent frame at +16.
+struct GlassVertex {
+    float3 position;
+    uint texcoord;
+    uint tangentFrame;
+    uint color;
+    uint lightingHandle;
+};
+StructuredBuffer<GlassVertex> glassVertices : register(t2);
+#else
 struct SurfaceData {
     uint transientZone;
     uint layerCount;
@@ -12,6 +24,7 @@ struct SurfaceData {
 StructuredBuffer<SurfaceData> surfaces : register(t13);
 ByteAddressBuffer positions : register(t14);
 ByteAddressBuffer attributes : register(t15);
+#endif
 cbuffer ReplayView : register(b2) {
     float4 replayView[6];
 };
@@ -30,9 +43,15 @@ struct Output {
     float3 relativePosition : WORLDPOS0;
 };
 Output main(uint id : SV_VertexID) {
+#ifdef GLASS_PANE
+    GlassVertex vertex = glassVertices[id];
+    precise float3 p = vertex.position;
+    precise float3 offset = -replayView[4].xyz;
+#else
     SurfaceData s = surfaces[surfaceIndex.x];
     precise float3 p = asfloat(positions.Load3(s.positionOffset + id * 12));
     precise float3 offset = (float3)(-asint(replayView[5].xyz)) / 4096.0;
+#endif
     precise float4 relative;
     relative.x = dot(float4(p, offset.x), float4(1, 0, 0, 1));
     relative.y = dot(float4(p, offset.y), float4(0, 1, 0, 1));
@@ -44,6 +63,13 @@ Output main(uint id : SV_VertexID) {
     o.position.y = dot(relative, replayView[1]);
     o.position.z = dot(relative, replayView[2]);
     o.position.w = dot(relative, replayView[3]);
+#ifdef GLASS_PANE
+    o.uv = float4(f16tof32(vertex.texcoord & 0xffff), f16tof32(vertex.texcoord >> 16), 0, 0);
+    o.metadata = float2(GLASS_TILE, GLASS_FLAGS);
+    o.materialParameters = float4(.8, 4, 2.5, .625);
+    o.lightmapUV = 0;
+    uint packed = vertex.tangentFrame;
+#else
     o.uv = float4(asfloat(attributes.Load2(s.textureOffset + id * s.layerCount * 8)), 0, 0);
     if (s.layerCount >= 2)
         o.uv.zw = asfloat(attributes.Load2(s.textureOffset + id * s.layerCount * 8 + 8));
@@ -53,6 +79,7 @@ Output main(uint id : SV_VertexID) {
                           : float4(.8, 4, 2.5, .625);
     o.lightmapUV = s.lightmapOffset ? asfloat(attributes.Load2(s.lightmapOffset + id * 8)) : 0;
     uint packed = attributes.Load(s.tangentOffset + id * 4);
+#endif
     float3 xyz = (float3(packed & 1023, (packed >> 10) & 1023, (packed >> 20) & 511) *
                       float3(2.0 / 1023, 2.0 / 1023, 2.0 / 511) -
                   1) *
@@ -67,7 +94,11 @@ Output main(uint id : SV_VertexID) {
                       1 - 2 * (q.x * q.x + q.y * q.y));
     o.tangent = float4(1 - 2 * (q.y * q.y + q.z * q.z), 2 * (q.x * q.y + q.w * q.z),
                        2 * (q.x * q.z - q.w * q.y), (packed & (1u << 29)) ? -1 : 1);
+#ifdef GLASS_PANE
+    uint color = vertex.color;
+#else
     uint color = s.colorOffset ? attributes.Load(s.colorOffset + id * 4) : 0xffffffff;
+#endif
     o.color = float4(color & 255, (color >> 8) & 255, (color >> 16) & 255, color >> 24) / 255.0;
     return o;
 }

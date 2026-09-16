@@ -211,9 +211,17 @@ ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameO
     if (extension == ".dds")
     {
         constexpr size_t headerSize = 128;
+        constexpr size_t dx10HeaderSize = 20;
         constexpr uint32_t fourCcDxt1 = 0x31545844;
         constexpr uint32_t fourCcDxt3 = 0x33545844;
         constexpr uint32_t fourCcDxt5 = 0x35545844;
+        constexpr uint32_t fourCcDx10 = 0x30315844;
+        constexpr uint32_t dxgiBc1Unorm = 71;
+        constexpr uint32_t dxgiBc1Srgb = 72;
+        constexpr uint32_t dxgiBc2Unorm = 74;
+        constexpr uint32_t dxgiBc2Srgb = 75;
+        constexpr uint32_t dxgiBc3Unorm = 77;
+        constexpr uint32_t dxgiBc3Srgb = 78;
         if (buf.size() < headerSize || std::memcmp(buf.data(), "DDS ", 4) != 0)
         {
             warn("dumpimg: '%s' has an invalid DDS header", path.c_str());
@@ -234,45 +242,102 @@ ImageDumpFile readImageDump(const std::string &dumpDir, const std::string &nameO
         const uint32_t mipLevels = std::max(1u, u32(28));
         const uint32_t format = u32(84);
         const uint32_t caps2 = u32(112);
-        const uint32_t elements = (caps2 & 0x200u) ? 6u : 1u;
-        if (!width || !height || width > 8192 || height > 8192 || mipLevels > 14 ||
-            (format != fourCcDxt1 && format != fourCcDxt3 && format != fourCcDxt5) ||
-            (elements == 6 && (caps2 & 0xFC00u) != 0xFC00u))
+        const bool dx10 = format == fourCcDx10;
+        uint32_t dataOffset = static_cast<uint32_t>(headerSize);
+        uint32_t depth = 1;
+        uint32_t arraySize = 1;
+        uint32_t sourceSlices = 1;
+        uint8_t mapType = IW5_MAPTYPE_2D;
+        bool supported = format == fourCcDxt1 || format == fourCcDxt3 || format == fourCcDxt5;
+        if (dx10)
         {
-            warn("dumpimg: '%s' needs a complete DXT1, DXT3, or DXT5 DDS", path.c_str());
+            if (buf.size() < headerSize + dx10HeaderSize)
+                supported = false;
+            else
+            {
+                const uint32_t dxgi = u32(headerSize);
+                const uint32_t resourceDimension = u32(headerSize + 4);
+                const uint32_t miscFlag = u32(headerSize + 8);
+                arraySize = u32(headerSize + 12);
+                const bool cube = (miscFlag & 0x4u) != 0;
+                const bool volume = resourceDimension == 4;
+                const bool texture2D = resourceDimension == 3;
+                supported = (dxgi == dxgiBc1Unorm || dxgi == dxgiBc1Srgb ||
+                             dxgi == dxgiBc2Unorm || dxgi == dxgiBc2Srgb ||
+                             dxgi == dxgiBc3Unorm || dxgi == dxgiBc3Srgb) &&
+                            (texture2D || volume) && arraySize && arraySize <= 2048 &&
+                            (!cube || (texture2D && width == height)) &&
+                            (!volume || (!cube && arraySize == 1 && u32(24)));
+                if (supported)
+                {
+                    depth = volume ? u32(24) : 1;
+                    sourceSlices = cube ? arraySize * 6u : arraySize;
+                    mapType = cube ? IW5_MAPTYPE_CUBE : (volume ? IW5_MAPTYPE_3D : IW5_MAPTYPE_2D);
+                    dataOffset = static_cast<uint32_t>(headerSize + dx10HeaderSize);
+                }
+            }
+        }
+        else
+        {
+            const bool cube = (caps2 & 0x200u) != 0;
+            const bool volume = (caps2 & 0x200000u) != 0;
+            supported = supported && !volume && (!cube || (caps2 & 0xFC00u) == 0xFC00u) &&
+                        (!cube || width == height);
+            if (supported)
+            {
+                sourceSlices = cube ? 6u : 1u;
+                mapType = cube ? IW5_MAPTYPE_CUBE : IW5_MAPTYPE_2D;
+            }
+        }
+        if (!width || !height || width > 8192 || height > 8192 || depth > 8192 || mipLevels > 14 ||
+            !supported || dataOffset > buf.size())
+        {
+            warn("dumpimg: '%s' needs a complete supported BC1/BC2/BC3 DDS", path.c_str());
             return d;
         }
-        const uint64_t blockBytes = format == fourCcDxt1 ? 8 : 16;
+        const uint32_t sourceFormat = dx10 ? u32(headerSize) : format;
+        const uint64_t blockBytes = sourceFormat == dxgiBc1Unorm || sourceFormat == dxgiBc1Srgb ||
+                                             sourceFormat == fourCcDxt1
+                                         ? 8
+                                         : 16;
         uint64_t expected = 0;
         for (uint32_t level = 0; level < mipLevels; ++level)
         {
             const uint64_t levelWidth = std::max(1u, width >> level);
             const uint64_t levelHeight = std::max(1u, height >> level);
-            expected += ((levelWidth + 3) / 4) * ((levelHeight + 3) / 4) * blockBytes;
+            const uint64_t levelDepth = mapType == IW5_MAPTYPE_3D ? std::max(1u, depth >> level) : 1;
+            const uint64_t levelBytes = ((levelWidth + 3) / 4) * ((levelHeight + 3) / 4) * levelDepth *
+                                        blockBytes;
+            if (levelBytes > UINT64_MAX / sourceSlices || expected > UINT64_MAX - levelBytes * sourceSlices)
+            {
+                expected = UINT64_MAX;
+                break;
+            }
+            expected += levelBytes * sourceSlices;
         }
-        expected *= elements;
-        if (expected > std::numeric_limits<int32_t>::max() ||
-            expected != buf.size() - headerSize)
+        if (expected > std::numeric_limits<int32_t>::max() || expected != buf.size() - dataOffset)
         {
             warn("dumpimg: '%s' has an inconsistent DDS mip payload", path.c_str());
             return d;
         }
 
-        d.mapType = elements == 6 ? IW5_MAPTYPE_CUBE : IW5_MAPTYPE_2D;
+        d.mapType = mapType;
         d.width = static_cast<int32_t>(width);
         d.height = static_cast<int32_t>(height);
-        d.depth = 1;
+        d.depth = static_cast<int32_t>(depth);
+        d.numElements = static_cast<uint16_t>(arraySize);
         d.mipLevels = static_cast<uint8_t>(mipLevels);
         d.dimensions[0] = d.width;
         d.dimensions[1] = d.height;
         d.dimensions[2] = d.depth;
-        d.format = static_cast<int32_t>(format);
+        d.format = static_cast<int32_t>(sourceFormat);
         d.dataSize = static_cast<int32_t>(expected);
         d.name = stem;
-        d.pixels.assign(buf.begin() + headerSize, buf.end());
+        d.ddsPayload = true;
+        d.pixels.assign(buf.begin() + dataOffset, buf.end());
         d.loaded = true;
-        info("dumpimg: read DDS '%s' %ux%u elements=%u mips=%u resident px=%zu",
-             d.name.c_str(), width, height, elements, mipLevels, d.pixels.size());
+        info("dumpimg: read DDS '%s' %ux%u slices=%u array=%u mips=%u resident px=%zu",
+             d.name.c_str(), width, height, sourceSlices, arraySize, mipLevels, d.pixels.size());
         return d;
     }
 

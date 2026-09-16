@@ -26,6 +26,8 @@ struct MaterialPlan
     SurfaceKind kind{SurfaceKind::opaque};
     unsigned flags{};
     std::array<float, 4> environment{0.8f, 4.0f, 2.5f, 0.625f};
+    std::string modelMaterial;
+    std::string glassMaterial;
 };
 
 struct LightmapRectangle
@@ -54,12 +56,14 @@ struct RenderPlan
     std::string material;
     std::string materialDefinition;
     std::vector<nlohmann::json> additionalMaterials;
+    std::vector<nlohmann::json> assetMaterials;
     std::vector<ReflectionProbePlan> reflectionProbes;
 };
 
 RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot,
                                const nlohmann::json &world,
                                const std::vector<std::string> &surfaceMaterials,
+                               const std::vector<std::string> &modelMaterials,
                                const std::vector<std::filesystem::path> &sourcePaths,
                                const std::filesystem::path &mapDirectory,
                                const std::string &map);

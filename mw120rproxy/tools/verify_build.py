@@ -67,7 +67,7 @@ for rva, hex_bytes in checks.items():
     if target.get_data(rva, len(value)) != value:
         raise SystemExit(f"Target bytes differ at RVA 0x{rva:X}")
 # Bindings for the native console, package browser and disk-open route.
-bindings = Path(__file__).resolve().parents[1] / "data" / "replay_bindings.json"
+bindings = Path(__file__).resolve().parents[2] / "evidence" / "replay_bindings.json"
 binding_records = json.loads(bindings.read_text(encoding="utf-8"))
 source_root = Path(__file__).resolve().parents[1]
 compiled_bindings = {}

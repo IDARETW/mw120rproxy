@@ -1,5 +1,3 @@
-from local_paths import UNLINKER
-
 """Extract a downloaded CoD4 FF/IWD into a fresh offline Replay import directory."""
 
 import argparse
@@ -99,6 +97,6 @@ if __name__ == "__main__":
     p.add_argument(
         "--unlinker",
         type=Path,
-        default=UNLINKER,
+        default=TOOLS / "_vendor/OpenAssetTools/build/bin/Release_x86/Unlinker.exe",
     )
     extract(p.parse_args())

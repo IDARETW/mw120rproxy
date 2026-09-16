@@ -1,10 +1,27 @@
 #include "proxy.h"
 #include "log.h"
 #include "logger.h"
+#include "imports.h" // imp::* — resolve LoadLibraryW/GetProcAddress/GetSystemDirectoryW off the IAT
 
 #include <windows.h>
 #include <mutex>
 #include <cstdint>
+
+// Transparent forwarder for the *entire* XInput9_1_0.dll export surface. Every
+// module in the process that resolves an XInput9_1_0 import (the game, overlays,
+// SDKs) binds against us, so we export all 5 of the real DLL's names (and their
+// ordinals, via the .def), not just the ones the main exe uses.
+//
+// We avoid per-function prototypes by forwarding through a uniform 8-register-
+// argument thunk. x64 has a single calling convention: args 1-4 arrive in
+// RCX/RDX/R8/R9 and 5-8 on the stack. Every XInput9_1_0 function takes <= 8 args
+// (in fact <= 3), so passing all eight straight through reproduces the original
+// call exactly; the real callee ignores any args it does not declare. The 32-bit
+// DWORD results live in EAX, which the uintptr_t return preserves.
+//
+// Real DLL export set (System32\XInput9_1_0.dll, ordinal base 1):
+//   1 DllMain   2 XInputGetCapabilities   3 XInputGetDSoundAudioDeviceGuids
+//   4 XInputGetState   5 XInputSetState
 
 namespace {
 using GenericFn = uintptr_t(WINAPI*)(
@@ -25,19 +42,19 @@ std::once_flag g_once;
 void Load() {
     std::call_once(g_once, [] {
         wchar_t path[MAX_PATH]{};
-        UINT n = GetSystemDirectoryW(path, MAX_PATH);
+        UINT n = imp::GetSystemDir(path, MAX_PATH);
         if (n == 0 || n >= MAX_PATH)
             return;
         wcsncat_s(path, MAX_PATH, L"\\XInput9_1_0.dll", _TRUNCATE);
 
-        g_real.mod = LoadLibraryW(path); // full path -> the genuine system DLL
+        g_real.mod = imp::LoadLib(path); // full path -> the genuine system DLL
         if (!g_real.mod) {
             LOG_ERR("Proxy", "failed to load real XInput9_1_0.dll (%lu)", GetLastError());
             return;
         }
 
         auto get = [](const char* nm) {
-            return (GenericFn)GetProcAddress(g_real.mod, nm);
+            return (GenericFn)imp::GetProc(g_real.mod, nm);
         };
         int ok = 0;
 #define RESOLVE(fn)                                                                                \

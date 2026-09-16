@@ -1,8 +1,4 @@
-# Prepared map-dump input
-
-This format is for the advanced `build-map` route. Direct `build-iw3` conversion accepts a
-generated IW3 fastfile and does not require a manually prepared dump, JSON input, or `.bin`
-sidecar. See [Direct IW3 fastfile conversion](IW3_FASTFILE.md) for that path.
+# Map dump input
 
 `build-map` reads one prepared dump directory. All map-specific files use the same asset name:
 
@@ -91,7 +87,10 @@ Use either of these inputs:
 - Pass `--replay`, `--collision`, and optionally `--footsteps` to build it in memory.
 
 The second form accepts the MWCOLL02/MWCOLL03 collision format and MWRSTEP1 footstep data used by
-the existing conversion pipeline. No intermediate `.havok` file is written.
+the existing conversion pipeline. `build-iw3` generates MWRSTEP1 data from upward-facing world
+triangles automatically; a prepared dump may provide it explicitly when authored surface metadata
+is available. Footstep input is consumed by the Havok baker and is never copied to the output. No
+intermediate `.havok` file is written.
 
 ### Entities and bounds
 
@@ -104,11 +103,10 @@ clip-map bounds are used.
 
 ## Optional GPU lightgrid
 
-Place `<asset>.gpulightgrid.bin` and `<asset>.gpulightgrid.json` beside the render file. The metadata
-describes the native Replay lightgrid layout and the binary file contains its arrays. Both files
-are consumed during compilation and embedded in the main fastfile.
+Place `<asset>.gpulightgrid.native` beside the render file when supplying a prepared native lightgrid. The file contains the validated native Replay arrays and is consumed during compilation, then embedded in the main fastfile. The direct `build-iw3` path creates this staging file itself and removes it with the rest of its temporary extraction directory.
 
 ## Output rule
 
-The output directory must be empty or already contain only the same map's five fastfiles and an
-optional `map.json`. The compiler rejects unrelated entries instead of silently deleting them.
+The output directory must be empty or already contain only the same map's five fastfiles and
+`map.json`. The
+compiler rejects unrelated entries instead of silently deleting them.

@@ -36,7 +36,7 @@ def read_material(root, name):
     if not path.exists():
         from cod4_assets import material_image, BlendedMaterial, ShadowOnlyMaterial
 
-        raw = (COD4 / "raw")
+        raw = COD4 / "raw"
         base = name.removeprefix("mc/").removeprefix("wc/")
         try:
             image, alpha = material_image(raw, base)
@@ -106,10 +106,10 @@ def read_obj(root, name):
     """Reverse OAT OBJ's Z-up -> Y-up and flipped V transformations."""
     if name.startswith(","):
         # CoD4 fastfiles can reference stock models supplied by common zones.
-        # Recover those from matching Mod Tools raw assets.
+        # Recover those from the owner's matching Mod Tools raw assets.
         from cod4_assets import load_model, transformed
 
-        raw = (COD4 / "raw")
+        raw = COD4 / "raw"
         return [transformed(s, [0, 0, 0], [0, 0, 0], 1) for s in load_model(raw, name[1:])]
     path = safe_asset(root, "model_export", name, "_lod0.obj")
     positions = []

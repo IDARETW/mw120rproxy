@@ -1,0 +1,143 @@
+#include "replay_script.h"
+
+#include "iw8_zonebuffer.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <vector>
+
+namespace iw8::replay_script
+{
+namespace
+{
+// Signed Replay 1.20 Backlot map-main stack/export evidence:
+// first export id ref_0254, common helper path ref_0726::ref_b487.
+constexpr uint32_t kStartupExport = 0x254;
+constexpr uint32_t kCompassHelperPath = 0x726;
+constexpr uint32_t kCompassHelperFunction = 0xB487;
+
+void appendU32(std::vector<uint8_t> &out, const uint32_t value)
+{
+    const size_t offset = out.size();
+    out.resize(offset + sizeof(value));
+    std::memcpy(out.data() + offset, &value, sizeof(value));
+}
+
+void appendString(std::vector<uint8_t> &out, const std::string &value)
+{
+    if (value.find('\0') != std::string::npos)
+        throw std::invalid_argument("Replay startup script string contains a NUL");
+    out.insert(out.end(), value.begin(), value.end());
+    out.push_back(0);
+}
+
+// The native ScriptFile stores a zlib-wrapped DEFLATE stack.  Stored blocks
+// keep this converter self-contained and preserve the exact decompressed stack
+// bytes; the signed linker accepts the same zlib representation.
+std::vector<uint8_t> zlibStored(const std::vector<uint8_t> &input)
+{
+    if (input.size() > std::numeric_limits<uint32_t>::max())
+        throw std::length_error("Replay startup script stack is too large");
+
+    std::vector<uint8_t> output{0x78, 0x01};
+    uint32_t adlerA = 1;
+    uint32_t adlerB = 0;
+    size_t cursor = 0;
+    do
+    {
+        const size_t remaining = input.size() - cursor;
+        const uint16_t count = static_cast<uint16_t>((remaining > 0xFFFF) ? 0xFFFF : remaining);
+        const bool final = cursor + count == input.size();
+        output.push_back(final ? 0x01 : 0x00);
+        output.push_back(static_cast<uint8_t>(count));
+        output.push_back(static_cast<uint8_t>(count >> 8));
+        const uint16_t inverse = static_cast<uint16_t>(~count);
+        output.push_back(static_cast<uint8_t>(inverse));
+        output.push_back(static_cast<uint8_t>(inverse >> 8));
+        output.insert(output.end(), input.begin() + static_cast<std::ptrdiff_t>(cursor),
+                      input.begin() + static_cast<std::ptrdiff_t>(cursor + count));
+        for (size_t i = 0; i < count; ++i)
+        {
+            adlerA = (adlerA + input[cursor + i]) % 65521;
+            adlerB = (adlerB + adlerA) % 65521;
+        }
+        cursor += count;
+    } while (cursor != input.size());
+
+    const uint32_t adler = (adlerB << 16) | adlerA;
+    output.push_back(static_cast<uint8_t>(adler >> 24));
+    output.push_back(static_cast<uint8_t>(adler >> 16));
+    output.push_back(static_cast<uint8_t>(adler >> 8));
+    output.push_back(static_cast<uint8_t>(adler));
+    return output;
+}
+
+void writeScriptHeader(ZoneWriter &writer, const uint32_t compressedLength,
+                       const uint32_t stackLength, const uint32_t bytecodeLength)
+{
+    uint8_t header[0x28]{};
+    std::memcpy(header + 0x00, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
+    std::memcpy(header + 0x08, &compressedLength, sizeof(compressedLength));
+    std::memcpy(header + 0x0C, &stackLength, sizeof(stackLength));
+    std::memcpy(header + 0x10, &bytecodeLength, sizeof(bytecodeLength));
+    std::memcpy(header + 0x18, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
+    std::memcpy(header + 0x20, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
+
+    writer.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
+    writer.align(7);
+    writer.write(header, sizeof(header));
+    writer.popStream();
+}
+} // namespace
+
+void emitCompassStartup(ZoneWriter &writer, const std::string &assetName,
+                        const std::string &mapName)
+{
+    if (assetName.empty() || mapName.empty())
+        throw std::invalid_argument("Replay startup script asset and map names are required");
+
+    const std::string compass = "compass_map_" + mapName;
+
+    // IW8 PC opcodes, from the signed map-main disassembly:
+    // End(separator), CheckClearParams, PreScriptCall, GetString x2,
+    // ScriptFarFunctionCall, DecTop, End. The far-call token operands live
+    // in the stack immediately after the two GetString payloads. The three
+    // OP0x60 bytes are native linker relocation placeholders.
+    const std::vector<uint8_t> bytecode{
+        0x3B, 0x4B, 0x15, 0x7A, 0x00, 0x00, 0x00, 0x00, 0x7A, 0x00,
+        0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x58, 0x3B};
+    const uint32_t functionSize = static_cast<uint32_t>(bytecode.size() - 1);
+
+    std::vector<uint8_t> stack;
+    stack.reserve(18 + compass.size() * 2);
+    appendU32(stack, functionSize);
+    appendU32(stack, kStartupExport);
+    // IW3 supplies one compass image. Use it for both native views instead of
+    // referencing an absent codcaster_compass_map asset.
+    appendString(stack, compass);
+    appendString(stack, compass);
+    appendU32(stack, kCompassHelperPath);
+    appendU32(stack, kCompassHelperFunction);
+
+    const auto compressed = zlibStored(stack);
+    if (compressed.size() > std::numeric_limits<uint32_t>::max() ||
+        stack.size() > std::numeric_limits<uint32_t>::max())
+        throw std::length_error("Replay startup script payload is too large");
+
+    writeScriptHeader(writer, static_cast<uint32_t>(compressed.size()),
+                      static_cast<uint32_t>(stack.size()),
+                      static_cast<uint32_t>(bytecode.size()));
+
+    writer.pushStream(XFILE_BLOCK_VIRTUAL);
+    writer.writeStr(assetName);
+    writer.popStream();
+
+    writer.pushStream(XFILE_BLOCK_RUNTIME);
+    writer.write(compressed.data(), compressed.size());
+    writer.write(bytecode.data(), bytecode.size());
+    writer.popStream();
+}
+} // namespace iw8::replay_script

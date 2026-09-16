@@ -80,16 +80,57 @@ struct ReflectionProbe
     Image image;
     std::array<std::array<float, 9>, 4> sh{};
 };
+struct GlassPane
+{
+    std::string material;
+    std::array<float, 3> origin{};
+    std::array<float, 4> quaternion{};
+    std::array<float, 4> texVecs{};
+    std::array<float, 2> texCoordOrigin{};
+    float halfWidth{};
+    float halfHeight{};
+    float halfThickness{};
+};
+struct StaticModelSurface
+{
+    replaybounds::Bounds bounds{};
+    std::string material;
+};
+struct StaticModelLod
+{
+    float distance{};
+    std::vector<StaticModelSurface> surfaces;
+};
+struct StaticModel
+{
+    std::string name;
+    replaybounds::Bounds bounds{};
+    std::vector<StaticModelLod> lods;
+};
+struct StaticModelInstance
+{
+    unsigned model{};
+    std::array<float, 3> origin{};
+    std::array<float, 4> quaternion{0, 0, 0, 1};
+    float scale{1};
+};
+struct StaticModels
+{
+    std::vector<StaticModel> models;
+    std::vector<StaticModelInstance> instances;
+};
 struct Mesh : Material
 {
     replaybounds::Bounds sceneBounds{{0, 0, 0}, {100000, 100000, 100000}};
     replaybounds::Bounds drawBounds{{0, 0, 0}, {100000, 100000, 100000}};
     std::vector<Material> additionalMaterials;
+    std::vector<Material> assetMaterials;
     std::vector<BrushModel> brushModels;
     std::vector<DpvsPlane> planes;
     std::vector<uint16_t> nodes;
     std::vector<Cell> cells;
     std::vector<ReflectionProbe> reflectionProbes;
+    std::vector<GlassPane> glassPanes;
     std::vector<unsigned> surfaceMaterials;
     unsigned opaqueCount = 0;
     std::vector<uint8_t> surfaces, bounds, drawSurfs, surfData, positions, aux, indices;
@@ -109,6 +150,9 @@ void StampWorld(std::vector<uint8_t> &world, const Mesh &mesh);
 void EmitSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh);
 void StampTransient(uint8_t *transient, const Mesh &mesh);
 void EmitVertices(iw8::ZoneWriter &writer, const Mesh &mesh);
-void EmitSortedSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh);
-std::vector<uint8_t> BuildUmbraTome(const Mesh &mesh);
+void EmitSortedSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh,
+                        const StaticModels &staticModels);
+void StampStaticModels(std::vector<uint8_t> &world, const StaticModels &models);
+void EmitStaticModels(iw8::ZoneWriter &writer, const StaticModels &models);
+std::vector<uint8_t> BuildUmbraTome(const Mesh &mesh, const StaticModels &staticModels);
 } // namespace replayrender

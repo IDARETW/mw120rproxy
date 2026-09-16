@@ -199,7 +199,8 @@ DWORD WINAPI InitThread(LPVOID) {
                 "local identity preparation failed or hook_bool=0; check mw120rproxy.identity.ini (must contain a nonzero decimal xuid)");
             return 0;
         }
-        if (g_config.hookBool || g_config.hookVariant || g_config.offlineAuth ||
+        if (g_config.hookBool || g_config.hookVariant || dvars::HasVariantBootOverrides() ||
+            g_config.offlineAuth ||
             g_config.fastfileDiagnostics || g_config.customMapFileMonitor || g_config.developerUI ||
             g_config.customMapLoader || g_config.engineDiagnostics) {
             dvars::InitDefaults(false);

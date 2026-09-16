@@ -392,7 +392,7 @@ std::vector<Probe> BuildProbes(const std::vector<std::uint8_t> &palette)
     return probes;
 }
 
-std::array<std::uint8_t, 32> PackProbe(const Probe &probe)
+std::array<std::uint8_t, 32> PackProbe(const Probe &probe, const std::uint8_t traceMask)
 {
     for (const auto &channel : probe)
         for (const float value : channel)
@@ -423,6 +423,11 @@ std::array<std::uint8_t, 32> PackProbe(const Probe &probe)
                 static_cast<std::uint8_t>(normalized * 127.0f + 127.5f);
         }
     }
+    // Replay keeps a per-probe 8-bit visibility/trace value in byte 28 of the
+    // otherwise compressed SH record.  IW3 stores the corresponding mask on
+    // each light-grid entry, so preserve it byte-for-byte; its bit ordering is
+    // already authored and must not be inferred from the primary-light index.
+    packed[28] = traceMask;
     packed[29] = 255;
     return packed;
 }
@@ -460,17 +465,42 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
             high[axis] = std::max(high[axis], position[axis]);
         }
     }
+    auto alignDown = [](const std::int32_t value, const std::int32_t alignment) {
+        std::int32_t quotient = value / alignment;
+        if (value < 0 && value % alignment)
+            --quotient;
+        return quotient * alignment;
+    };
+    auto alignUp = [&](const std::int32_t value, const std::int32_t alignment) {
+        return -alignDown(-value, alignment);
+    };
+
+    std::array<std::int32_t, 3> gridLow{};
+    std::array<std::int32_t, 3> gridHigh{};
     std::array<std::uint32_t, 3> dimensions{};
-    std::uint64_t voxelCount = 1;
-    for (unsigned axis = 0; axis < 3; ++axis)
+    std::uint64_t voxelCount = 0;
+    std::uint64_t rootCount64 = 0;
+    unsigned rootShift = 5;
+    for (; rootShift <= 20; ++rootShift)
     {
-        dimensions[axis] = static_cast<std::uint32_t>((high[axis] - low[axis]) / 32);
-        if (!dimensions[axis])
-            throw std::runtime_error("unsupported IW3 light-grid extent");
-        voxelCount *= dimensions[axis];
+        const std::int32_t voxelSize = 1 << rootShift;
+        voxelCount = 1;
+        for (unsigned axis = 0; axis < 3; ++axis)
+        {
+            gridLow[axis] = alignDown(low[axis], voxelSize);
+            gridHigh[axis] = alignUp(high[axis], voxelSize);
+            dimensions[axis] =
+                static_cast<std::uint32_t>((gridHigh[axis] - gridLow[axis]) / voxelSize);
+            if (!dimensions[axis])
+                throw std::runtime_error("unsupported IW3 light-grid extent");
+            voxelCount *= dimensions[axis];
+        }
+        rootCount64 = static_cast<std::uint64_t>(dimensions[0]) * dimensions[1];
+        if (rootCount64 <= 1'000'000 && voxelCount <= 8'000'000)
+            break;
     }
-    if (voxelCount > 8'000'000)
-        throw std::runtime_error("IW3 light-grid voxel count exceeds Replay limits");
+    if (rootShift > 20)
+        throw std::runtime_error("IW3 light-grid extent exceeds Replay voxel-tree limits");
 
     std::vector<std::uint32_t> voxels(static_cast<std::size_t>(voxelCount), UINT32_MAX);
     std::vector<std::array<std::uint32_t, 4>> tetrahedra;
@@ -510,15 +540,32 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
             }
             tetrahedra.push_back(tetrahedron);
         }
-        const std::uint32_t x = static_cast<std::uint32_t>((cell.position[0] - low[0]) / 32);
-        const std::uint32_t y = static_cast<std::uint32_t>((cell.position[1] - low[1]) / 32);
-        const std::uint32_t z = static_cast<std::uint32_t>((cell.position[2] - low[2]) / 32);
-        if (x >= dimensions[0] || y >= dimensions[1] || z + 1 >= dimensions[2])
-            throw std::runtime_error("complete IW3 light-grid cell exceeds its voxel extent");
-        const std::size_t voxel =
-            (static_cast<std::size_t>(y) * dimensions[0] + x) * dimensions[2] + z;
-        voxels[voxel] = first;
-        voxels[voxel + 1] = first;
+        const std::int32_t voxelSize = 1 << rootShift;
+        std::array<std::uint32_t, 3> firstVoxel{};
+        std::array<std::uint32_t, 3> lastVoxel{};
+        constexpr std::array<std::int32_t, 3> sourceCellSize{32, 32, 64};
+        for (unsigned axis = 0; axis < 3; ++axis)
+        {
+            firstVoxel[axis] =
+                static_cast<std::uint32_t>((cell.position[axis] - gridLow[axis]) / voxelSize);
+            lastVoxel[axis] = static_cast<std::uint32_t>(
+                (cell.position[axis] + sourceCellSize[axis] - 1 - gridLow[axis]) / voxelSize);
+            if (lastVoxel[axis] >= dimensions[axis])
+                throw std::runtime_error("complete IW3 light-grid cell exceeds its voxel extent");
+        }
+        for (std::uint32_t y = firstVoxel[1]; y <= lastVoxel[1]; ++y)
+        {
+            for (std::uint32_t x = firstVoxel[0]; x <= lastVoxel[0]; ++x)
+            {
+                for (std::uint32_t z = firstVoxel[2]; z <= lastVoxel[2]; ++z)
+                {
+                    const std::size_t voxel =
+                        (static_cast<std::size_t>(y) * dimensions[0] + x) * dimensions[2] + z;
+                    if (voxels[voxel] == UINT32_MAX)
+                        voxels[voxel] = first;
+                }
+            }
+        }
     }
     if (tetrahedra.empty())
         throw std::runtime_error("IW3 light-grid has no complete source cells");
@@ -570,7 +617,7 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
     std::vector<std::uint8_t> output;
     const std::uint32_t probeCount = static_cast<std::uint32_t>(cells.size());
     const std::uint32_t tetrahedronCount = static_cast<std::uint32_t>(tetrahedra.size());
-    const std::uint32_t rootCount = dimensions[0] * dimensions[1];
+    const std::uint32_t rootCount = static_cast<std::uint32_t>(rootCount64);
     output.reserve(264ull + probeCount * 44ull + tetrahedronCount * 32ull +
                    rootCount * 12ull + voxelCount * 4ull);
     AppendBytes(output, Magic.data(), Magic.size());
@@ -603,18 +650,20 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
 
     for (const auto dimension : dimensions)
         Append(output, static_cast<std::int32_t>(dimension));
-    for (const std::int32_t value : {0, 5, 3, 1, 0})
+    for (const std::int32_t value : {0, static_cast<std::int32_t>(rootShift),
+                                     std::max(0, static_cast<std::int32_t>(rootShift) - 2),
+                                     std::max(0, static_cast<std::int32_t>(rootShift) - 4), 0})
         Append(output, value);
-    for (const auto value : low)
+    for (const auto value : gridLow)
         Append(output, static_cast<float>(value));
     Append(output, 0.0f);
-    for (const auto value : high)
+    for (const auto value : gridHigh)
         Append(output, static_cast<float>(value));
     Append(output, 0.0f);
 
     for (const Cell &cell : cells)
     {
-        const auto packed = PackProbe(probes[cell.entry.color]);
+        const auto packed = PackProbe(probes[cell.entry.color], cell.entry.traceMask);
         AppendBytes(output, packed.data(), packed.size());
     }
     for (const Cell &cell : cells)
@@ -636,8 +685,10 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
     AppendBytes(output, voxels.data(), voxels.size() * sizeof(voxels.front()));
     if (output.size() > 512ull * 1024 * 1024)
         throw std::runtime_error("native Replay light-grid exceeds the supported size");
-    zt::info("iw3: converted %u authored light probes into %u native tetrahedra (%ux%ux%u)",
-             probeCount, tetrahedronCount, dimensions[0], dimensions[1], dimensions[2]);
+    zt::info("iw3: converted %u authored light probes into %u native tetrahedra "
+             "(%ux%ux%u, %u-unit voxels)",
+             probeCount, tetrahedronCount, dimensions[0], dimensions[1], dimensions[2],
+             1u << rootShift);
     return output;
 }
 } // namespace

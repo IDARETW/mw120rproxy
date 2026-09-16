@@ -41,6 +41,108 @@ def validate_world_model_bounds(world, model):
         raise ValueError("World-model radius does not enclose its bounds")
 
 
+def validate_umbra_tome(data, object_count):
+    """Validate the conservative Replay 1.20 tome emitted by iw8-zonetool."""
+    def word(offset):
+        if offset < 0 or offset + 4 > len(data):
+            raise ValueError("Umbra field exceeds its payload")
+        return struct.unpack_from("<I", data, offset)[0]
+
+    def span(offset, size, label):
+        if not offset or offset & 15 or offset + size > len(data):
+            raise ValueError(f"Invalid Umbra {label} range")
+
+    crc = 0xFFFFFFFF
+    for value in data[8:]:
+        crc ^= value
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82F63B78 & -(crc & 1))
+    crc = (~crc) & 0xFFFFFFFF
+    width = max(1, (object_count - 1).bit_length())
+    if (
+        len(data) < 0x170
+        or word(0) != 0xD6000014
+        or word(4) != crc
+        or word(8) != len(data)
+        or word(0x2C) != 33
+        or word(0x38) != 0
+        or word(0x40) != object_count
+        or word(0x4C) != 0
+        or word(0x54) != width
+        or word(0x5C) != object_count
+        or word(0x7C) != 0
+        or word(0x8C) != 1
+        or word(0x90) != 1
+        or word(0x94) != 0
+    ):
+        raise ValueError("Invalid conservative Umbra header or topology")
+    list_bytes = ((object_count * width + 31) // 32) * 4
+    for offset, size, label in (
+        (word(0x30), 4, "top-level tree"),
+        (word(0x34), 4, "top-level map"),
+        (word(0x44), object_count * 24, "object bounds"),
+        (word(0x48), object_count * 32, "object distances"),
+        (word(0x50), object_count * 4, "user IDs"),
+        (word(0x58), list_bytes, "object list"),
+        (word(0x88), 8, "cell starts"),
+        (word(0x9C), 4, "tile LOD"),
+        (word(0xA0), 4, "tile table"),
+        (word(0x14C), 4, "tile portal expansion"),
+    ):
+        span(offset, size, label)
+    if (
+        word(word(0x30)) != 3
+        or word(word(0x34)) != 0
+        or struct.unpack_from("<2I", data, word(0x88)) != (0, 1)
+        or struct.unpack_from("<f", data, word(0x9C))[0] != 1.0
+        or struct.unpack_from("<f", data, word(0x14C))[0] != 0.0
+    ):
+        raise ValueError("Invalid conservative Umbra metadata")
+    user_ids = word(0x50)
+    object_list = word(0x58)
+    for object_id in range(object_count):
+        if word(user_ids + object_id * 4) != object_id:
+            raise ValueError("Umbra user IDs do not map to world surfaces")
+        bit_offset = object_id * width
+        packed = 0
+        for bit in range(width):
+            packed |= ((data[object_list + (bit_offset + bit) // 8] >> ((bit_offset + bit) & 7)) & 1) << bit
+        if packed != object_id:
+            raise ValueError("Umbra object list does not map to world surfaces")
+    tile = word(word(0xA0))
+    span(tile, 0x60, "tile")
+    size_and_flags = word(tile + 0x2C)
+    tile_size = size_and_flags >> 8
+    if (
+        size_and_flags & 0xFF != 3
+        or tile_size < 0x60
+        or tile + tile_size > len(data)
+        or word(tile + 0x18) != 33
+        or word(tile + 0x34) != 1
+    ):
+        raise ValueError("Invalid conservative Umbra tile")
+    tree = tile + word(tile + 0x1C)
+    mapping = tile + word(tile + 0x20)
+    cell = tile + word(tile + 0x38)
+    span(tree, 4, "tile tree")
+    span(mapping, 4, "tile map")
+    span(cell, 36, "tile cell")
+    if word(tree) != 3 or word(mapping) != 0:
+        raise ValueError("Invalid conservative Umbra tile traversal")
+    if struct.unpack_from("<9I", data, cell) != (
+        0,
+        0,
+        0,
+        object_count,
+        0xFFFFFFFF,
+        0x80000000,
+        0,
+        0x0000FFFF,
+        0xFFFFFFFF,
+    ):
+        raise ValueError("Invalid conservative Umbra cell")
+
+
 def validate_render_asset_order(types):
     """Dependencies precede users; unused shader pruning may change the counts."""
     cursor = 0
@@ -186,8 +288,8 @@ def verify(game, package, map_id):
         )
 
     manifest = json.loads((package / "manifest.json").read_text())
-    if manifest.get("visibility") != "all-visible-v1":
-        raise ValueError("Package must declare the generated no-tome visibility contract")
+    if manifest.get("visibility") != "native-umbra-v1":
+        raise ValueError("Package must declare the generated native Umbra visibility contract")
     if manifest.get("world") != "replay-1.20-native-v1":
         raise ValueError("Package must declare the Replay 1.20 native world format")
     if manifest.get("ladders") or (package / "ladders.bin").exists():
@@ -747,14 +849,15 @@ def verify(game, package, map_id):
                     light_count
                 ] * 4 or any(u(asset, offset) for offset in (0x20, 0x28, 0x30, 0x38)):
                     raise ValueError("GfxWorld primary-light ranges are inconsistent")
+                tome_size = u(asset, 0x4450)
                 if (
                     u(asset, 0x4440) != 0
                     or q(asset, 0x4448) != 0
-                    or u(asset, 0x4450) != 0
-                    or q(asset, 0x4458) != 0
+                    or not tome_size
+                    or q(asset, 0x4458) != 2**64 - 2
                     or q(asset, 0x4460) != 0
                 ):
-                    raise ValueError("Generated GfxWorld must use the all-visible no-tome contract")
+                    raise ValueError("Generated GfxWorld must contain a native Umbra tome")
                 if q(asset, 0xB0) != 2**64 - 2 or blocks[4] < 2204:
                     raise ValueError("Missing scene entity cell visibility storage")
                 if (
@@ -924,6 +1027,7 @@ def verify(game, package, map_id):
                     sorted_surfaces = struct.unpack(f"<{words*32}I", vtake(words * 32 * 4, 3))
                     if sorted_surfaces != tuple(i if i < count else 0 for i in range(words * 32)):
                         raise ValueError("Invalid sorted surface table")
+                validate_umbra_tome(vtake(tome_size, 15), count)
                 if blocks[1] < sizes[31] or blocks[2] < preload_size or blocks[4] < 4:
                     raise ValueError("Missing Load/Preload/Postload or visibility reservation")
         if pos != len(body):
