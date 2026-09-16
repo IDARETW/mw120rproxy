@@ -176,7 +176,10 @@ Arbitrary IW3 gameplay scripts, scripted doors/movers, destructible systems, and
 graphs are not translated by this path yet. The Unlinker collects map-local and shared FX source
 graphs and their typed dependencies. `build-iw3` validates that typed graph data against the IW3
 multiplayer ABI and embeds supported single-image `effect_zfeather` and `effect_zfeather_add`
-materials as native Replay effect-quad materials and images. Unsupported material families and
-partially translated graphs are not emitted. The current output still uses the fixed Replay impact
-table. Successful structural validation checks the generated package; it is not a gameplay or visual
-acceptance test for every converted feature.
+materials as native Replay effect-quad materials and images. It also translates the stock
+`impacts/small_glass` graph into a native Replay `ParticleSystemDef`: sprite, tail, cloud, model, and
+decal elements retain their source materials or shard models plus spawn, lifetime, velocity,
+gravity, rotation, size, color, and atlas data. All small-glass entries in the map's native impact
+table reference that converted effect. Other unsupported material families and partially translated
+graphs are not emitted. Successful structural validation checks the generated package; it is not a
+gameplay or visual acceptance test for every converted feature.

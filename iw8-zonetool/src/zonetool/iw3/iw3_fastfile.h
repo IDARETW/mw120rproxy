@@ -5,12 +5,14 @@
 #include "../iw8/replay_dynentity.h"
 #include "../iw8/replay_havok.h"
 #include "../iw8/replay_render.h"
+#include "../iw8/replay_vfx.h"
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace iw3
@@ -195,6 +197,9 @@ struct PreparedMap
     std::filesystem::path scratch;
     std::vector<PreparedXModel> xmodels;
     std::vector<PreparedFx> fxEffects;
+    std::unordered_map<std::string, std::string> fxMaterialAliases;
+    std::vector<iw8::vfx::Effect> vfxEffects;
+    std::string smallGlassEffect;
     replayrender::StaticModels staticModels;
     std::vector<iw8::DynamicEntity> dynamicEntities;
 

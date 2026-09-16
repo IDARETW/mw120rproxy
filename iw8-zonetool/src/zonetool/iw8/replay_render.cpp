@@ -50,7 +50,14 @@ bool nativeEffectTechset(const std::string_view name)
     return name ==
                "elcq/unlit_6_effect_bad_ta0_802_1004_0_1_0_0_0_100000023_0_0_2_0_0" ||
            name ==
-               "elcq/unlit_6_effect_bad_tca_802_10a4_0_1_0_0_0_100060023_0_0_3_0_0";
+               "elcq/unlit_6_effect_bad_tca_802_10a4_0_1_0_0_0_100060023_0_0_3_0_0" ||
+           name ==
+               "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100020023_0_0_2_0_0";
+}
+
+bool nativeCloudEffectTechset(const std::string_view name)
+{
+    return name == "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100020023_0_0_2_0_0";
 }
 
 std::optional<uint8_t> generatedTextureSlot(const char *name)
@@ -298,6 +305,10 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
         m.constants = unhex(d.at("constants"));
         m.bufferIndices = unhex(d.at("bufferIndices"));
         m.techset = d.at("techset");
+        m.decalVolumeMaterial = d.value("decalVolumeMaterial", std::string{});
+        const bool ownedDecalCarrier = ownedEffect && m.techset == "null" &&
+                                       m.decalVolumeMaterial ==
+                                           "i/vfx_decal_surface_glass_2";
         const bool nativeEffectAlias = ownedEffect && nativeEffectTechset(m.techset) &&
                                        !d.contains("techsetDefinition");
         if (d.contains("techsetDefinition"))
@@ -424,17 +435,36 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
             if (m.materialInfo.size() != 32)
                 throw std::runtime_error("Replay effect material metadata is incomplete");
             std::memcpy(&materialType, m.materialInfo.data() + 0xC, sizeof(materialType));
+            const bool cloud = nativeCloudEffectTechset(m.techset);
             if (materialType != 0x40200Cu || m.materialInfo[0x14] != 1 ||
-                (m.materialInfo[0x15] != 3 && m.materialInfo[0x15] != 4) ||
-                m.materialInfo[0x16] != 2 || !m.materialInfo[0x1A] ||
-                !m.materialInfo[0x1B])
+                (cloud ? m.materialInfo[0x15] != 1 || m.materialInfo[0x16] != 1 ||
+                             m.materialInfo[0x1A] != 1 || m.materialInfo[0x1B] != 1
+                       : (m.materialInfo[0x15] != 3 && m.materialInfo[0x15] != 4) ||
+                             m.materialInfo[0x16] != 2 || !m.materialInfo[0x1A] ||
+                             !m.materialInfo[0x1B]))
                 throw std::runtime_error("Replay effect material alias has invalid metadata");
         }
-        if (m.materialInfo.size() != 32 || m.bufferIndices.size() != 195 ||
+        if (ownedDecalCarrier)
+        {
+            uint32_t surfaceFlags{}, materialType{};
+            if (m.materialInfo.size() != 32)
+                throw std::runtime_error("Replay decal carrier metadata is incomplete");
+            std::memcpy(&surfaceFlags, m.materialInfo.data() + 4, sizeof(surfaceFlags));
+            std::memcpy(&materialType, m.materialInfo.data() + 0xC, sizeof(materialType));
+            if (surfaceFlags != 98304u || materialType != 0x800000u ||
+                m.materialInfo[0x10] != 3 || m.materialInfo[0x11] != 29 ||
+                m.materialInfo[0x14] || m.materialInfo[0x15] || m.materialInfo[0x16] ||
+                m.materialInfo[0x17] || m.materialInfo[0x18] || m.materialInfo[0x19] ||
+                m.materialInfo[0x1A] != 1 || m.materialInfo[0x1B] != 1 ||
+                !m.constants.empty() || !m.bufferIndices.empty())
+                throw std::runtime_error("Replay decal carrier has invalid native metadata");
+        }
+        if (m.materialInfo.size() != 32 ||
+            (!ownedDecalCarrier && m.bufferIndices.size() != 195) ||
             (!m.techset.starts_with("w/lit_3_") && m.techset != "tw/mw120r_graybox_v1" &&
              !(owned && m.techset.starts_with("tw/mw120r_mp_") && !m.techniques.empty()) &&
              !(ownedEffect && m.techset.starts_with("tw/mw120r_fx_") && !m.techniques.empty()) &&
-             !nativeEffectAlias) ||
+             !nativeEffectAlias && !ownedDecalCarrier) ||
             m.techset.size() > 200)
             throw std::runtime_error("Invalid Replay material metadata");
         if (d.contains("imageDefinitions"))
@@ -479,17 +509,30 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
             m.buffers.size() != m.materialInfo[0x16] || m.materialInfo[0x17] ||
             m.materialInfo[0x18] || m.materialInfo[0x19])
             throw std::runtime_error("Material metadata counts do not match arrays");
-        if (nativeEffectAlias &&
-            (m.images.size() != 1 || m.textureHeaders.size() != 8 ||
-             m.textureHeaders[0] != 18 ||
-             std::any_of(m.textureHeaders.begin() + 1, m.textureHeaders.end(),
-                         [](const uint8_t value) { return value != 0; }) ||
-             m.buffers.size() != 2 || m.buffers.front()[0].size() != 160 ||
-             !m.buffers.front()[1].empty() || !m.buffers.front()[2].empty() ||
-             !m.buffers.front()[3].empty() || !m.buffers.back()[0].empty() ||
-             !m.buffers.back()[1].empty() || !m.buffers.back()[2].empty() ||
-             !m.buffers.back()[3].empty()))
-            throw std::runtime_error("Replay effect material alias has invalid bindings");
+        if (nativeEffectAlias)
+        {
+            const bool cloud = nativeCloudEffectTechset(m.techset);
+            const bool common = m.images.size() == 1 && m.textureHeaders.size() == 8 &&
+                                m.textureHeaders[0] == 18 &&
+                                std::all_of(m.textureHeaders.begin() + 1,
+                                            m.textureHeaders.end(),
+                                            [](const uint8_t value) { return value == 0; });
+            const bool cloudBuffers =
+                m.buffers.size() == 1 && m.buffers.front()[0].empty() &&
+                m.buffers.front()[1].empty() && m.buffers.front()[2].empty() &&
+                m.buffers.front()[3].size() == 48;
+            const bool featherBuffers =
+                m.buffers.size() == 2 && m.buffers.front()[0].size() == 160 &&
+                m.buffers.front()[1].empty() && m.buffers.front()[2].empty() &&
+                m.buffers.front()[3].empty() && m.buffers.back()[0].empty() &&
+                m.buffers.back()[1].empty() && m.buffers.back()[2].empty() &&
+                m.buffers.back()[3].empty();
+            if (!common || (cloud ? !cloudBuffers : !featherBuffers))
+                throw std::runtime_error("Replay effect material alias has invalid bindings");
+        }
+        if (ownedDecalCarrier &&
+            (!m.images.empty() || !m.textureHeaders.empty() || !m.buffers.empty()))
+            throw std::runtime_error("Replay decal carrier owns unexpected tables");
     }
     return m;
 }
@@ -1578,8 +1621,17 @@ void EmitMaterial(ZoneWriter &w, const Material &m, bool definition)
     if (definition)
     {
         std::memcpy(material + 8, m.materialInfo.data(), 32);
-        for (size_t o : {0x40, 0x48, 0x50, 0x60, 0x68})
-            put(material, o, PTR_FOLLOWS);
+        put(material, 0x40, PTR_FOLLOWS);
+        if (!m.images.empty())
+            put(material, 0x48, PTR_FOLLOWS);
+        if (!m.constants.empty())
+            put(material, 0x50, PTR_FOLLOWS);
+        if (!m.decalVolumeMaterial.empty())
+            put(material, 0x58, PTR_FOLLOWS);
+        if (!m.bufferIndices.empty())
+            put(material, 0x60, PTR_FOLLOWS);
+        if (!m.buffers.empty())
+            put(material, 0x68, PTR_FOLLOWS);
     }
     w.write(material, sizeof(material));
     w.pushStream(XFILE_BLOCK_VIRTUAL);
@@ -1613,28 +1665,47 @@ void EmitMaterial(ZoneWriter &w, const Material &m, bool definition)
             w.popStream();
             w.popStream();
         }
-        w.align(15);
-        w.write(m.constants.data(), m.constants.size());
-        w.write(m.bufferIndices.data(), m.bufferIndices.size());
-        w.align(15);
-        for (const auto &cb : m.buffers)
+        if (!m.constants.empty())
         {
-            uint8_t b[0x110]{};
-            for (unsigned k = 0; k < 4; ++k)
-                if (!cb[k].empty())
-                {
-                    put(b, 4 * k, uint32_t(cb[k].size()));
-                    put(b, 16 + 8 * k, PTR_FOLLOWS);
-                }
-            w.write(b, sizeof(b));
+            w.align(15);
+            w.write(m.constants.data(), m.constants.size());
         }
-        for (const auto &cb : m.buffers)
-            for (const auto &stage : cb)
-                if (!stage.empty())
-                {
-                    w.align(15);
-                    w.write(stage.data(), stage.size());
-                }
+        if (!m.decalVolumeMaterial.empty())
+        {
+            w.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
+            w.align(7);
+            uint8_t decal[0x68]{};
+            put(decal, 0, PTR_FOLLOWS);
+            w.write(decal, sizeof(decal));
+            w.pushStream(XFILE_BLOCK_VIRTUAL);
+            w.writeStr(("," + m.decalVolumeMaterial).c_str());
+            w.popStream();
+            w.popStream();
+        }
+        if (!m.bufferIndices.empty())
+            w.write(m.bufferIndices.data(), m.bufferIndices.size());
+        if (!m.buffers.empty())
+        {
+            w.align(15);
+            for (const auto &cb : m.buffers)
+            {
+                uint8_t b[0x110]{};
+                for (unsigned k = 0; k < 4; ++k)
+                    if (!cb[k].empty())
+                    {
+                        put(b, 4 * k, uint32_t(cb[k].size()));
+                        put(b, 16 + 8 * k, PTR_FOLLOWS);
+                    }
+                w.write(b, sizeof(b));
+            }
+            for (const auto &cb : m.buffers)
+                for (const auto &stage : cb)
+                    if (!stage.empty())
+                    {
+                        w.align(15);
+                        w.write(stage.data(), stage.size());
+                    }
+        }
     }
     w.popStream();
     w.popStream();
@@ -1793,6 +1864,7 @@ void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
     definition.textureHeaders = m.textureHeaders;
     definition.techset = m.techset;
     definition.images = m.images;
+    definition.decalVolumeMaterial = m.decalVolumeMaterial;
     definition.buffers = m.buffers;
     w.add(ASSET_TYPE_MATERIAL, m.material,
           [definition = std::move(definition)](ZoneWriter &out) {
@@ -1802,6 +1874,11 @@ void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
         out.reserveCalc(120);
         out.align(7);
         out.reserveCalc(64);
+        if (!definition.decalVolumeMaterial.empty())
+        {
+            out.align(7);
+            out.reserveCalc(0x68);
+        }
         for (size_t index = 0; index < definition.images.size(); ++index)
         {
             out.align(15);

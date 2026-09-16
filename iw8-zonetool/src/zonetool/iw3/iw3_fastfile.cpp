@@ -1108,7 +1108,7 @@ std::string_view SourceAssetAuditReason(const std::string_view type)
         return "source techniquesets are not portable; reachable materials use generated Replay "
                "techniquesets";
     if (type == "fx")
-        return "no IW8-native source-FX graph emitter is built by build-iw3";
+        return "these source FX graphs do not yet have native Replay emitters";
     if (type == "impactfx")
         return "the source impact graph is not converted; the package contains the fixed native "
                "Replay impact table";
@@ -1151,7 +1151,8 @@ std::string SourceAssetExamples(const std::set<std::string> &names)
     return result;
 }
 
-void AuditSourceAssetDeclarations(const std::filesystem::path &root)
+void AuditSourceAssetDeclarations(const std::filesystem::path &root,
+                                  const std::set<std::string> &emittedFx)
 {
     const auto zoneRoot = root / "zone_source";
     std::error_code error;
@@ -1244,10 +1245,16 @@ void AuditSourceAssetDeclarations(const std::filesystem::path &root)
     {
         if (IsConsumedIw3SourceAssetType(type))
             continue;
-        const auto examples = SourceAssetExamples(names);
+        std::set<std::string> unconsumed(names);
+        if (type == "fx")
+            for (const auto &name : emittedFx)
+                unconsumed.erase(name);
+        if (unconsumed.empty())
+            continue;
+        const auto examples = SourceAssetExamples(unconsumed);
         zt::warn("iw3: source type '%s' has %zu declaration(s) outside the native map package "
                  "(%s); examples: %s",
-                 type.c_str(), names.size(), SourceAssetAuditReason(type).data(),
+                 type.c_str(), unconsumed.size(), SourceAssetAuditReason(type).data(),
                  examples.c_str());
     }
 }
@@ -3408,6 +3415,460 @@ void WriteFootsteps(const std::filesystem::path &path, const std::vector<BrushMo
         throw std::runtime_error("cannot finish temporary IW3 footsteps");
     zt::info("iw3: generated %u walkable footstep triangles", count);
 }
+
+template <typename Payload>
+iw8::vfx::Module VfxValueModule(const iw8_focus::ParticleModuleType type,
+                                const Payload &payload)
+{
+    static_assert(sizeof(Payload) <= 0xE0);
+    iw8::vfx::Module module;
+    module.native.moduleType = static_cast<std::uint16_t>(type);
+    std::memcpy(module.native.moduleData, &payload, sizeof(payload));
+    return module;
+}
+
+iw8_focus::ParticleFloatRange VfxRange(const PreparedFxFloatRange &source,
+                                       const float scale = 1.0f)
+{
+    const float first = source.base * scale;
+    const float second = (source.base + source.amplitude) * scale;
+    return {std::min(first, second), std::max(first, second)};
+}
+
+iw8_focus::ParticleIntRange VfxRange(const PreparedFxIntRange &source)
+{
+    const std::int32_t second = source.base + source.amplitude;
+    return {std::min(source.base, second), std::max(source.base, second)};
+}
+
+iw8::vfx::Module::Curve VfxCurve(const std::vector<float> &values, const float scale)
+{
+    iw8::vfx::Module::Curve curve;
+    curve.points.reserve(values.size());
+    for (std::size_t index = 0; index < values.size(); ++index)
+    {
+        const float time = values.size() <= 1
+                               ? 0.0f
+                               : static_cast<float>(index) /
+                                     static_cast<float>(values.size() - 1);
+        const float previous = index == 0
+                                   ? 0.0f
+                                   : static_cast<float>(index - 1) /
+                                         static_cast<float>(values.size() - 1);
+        curve.points.push_back(
+            {time, scale == 0.0f ? values[index] : values[index] / scale,
+             index == 0 ? 0.0f : 1.0f / (time - previous), 0});
+    }
+    return curve;
+}
+
+float VfxCurveScale(const std::vector<float> &first, const std::vector<float> &second,
+                    const float fallback = 1.0f)
+{
+    float scale = 0.0f;
+    for (const float value : first)
+        scale = std::max(scale, std::abs(value));
+    for (const float value : second)
+        scale = std::max(scale, std::abs(value));
+    return scale == 0.0f ? fallback : scale;
+}
+
+std::string VfxMaterial(const PreparedMap &map, const std::string &name)
+{
+    const auto material = map.fxMaterialAliases.find(name);
+    if (material == map.fxMaterialAliases.end())
+        throw std::runtime_error("IW3 VFX material has no converted Replay asset: " + name);
+    return material->second;
+}
+
+void VfxSetVec(iw8_focus::vec4_t &target, const float x, const float y, const float z,
+               const float w = 0.0f)
+{
+    target.v[0] = x;
+    target.v[1] = y;
+    target.v[2] = z;
+    target.v[3] = w;
+}
+
+iw8::vfx::Module VfxSpawnModule()
+{
+    iw8_focus::ParticleModuleInitSpawn payload{};
+    payload.base.type = static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initSpawn);
+    payload.curve.scale = 1.0f;
+    auto module = VfxValueModule(iw8_focus::ParticleModuleType::initSpawn, payload);
+    module.spawnCurve = {{0.0f, 1.0f, 0.0f, 0}, {1.0f, 1.0f, 1.0f, 0}};
+    return module;
+}
+
+iw8::vfx::Module VfxAttributesModule()
+{
+    iw8_focus::ParticleModuleInitAttributes payload{};
+    payload.base.type =
+        static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initAttributes);
+    VfxSetVec(payload.sizeMin, 1.0f, 1.0f, 1.0f);
+    VfxSetVec(payload.sizeMax, 1.0f, 1.0f, 1.0f);
+    VfxSetVec(payload.colorMin, 1.0f, 1.0f, 1.0f, 1.0f);
+    VfxSetVec(payload.colorMax, 1.0f, 1.0f, 1.0f, 1.0f);
+    return VfxValueModule(iw8_focus::ParticleModuleType::initAttributes, payload);
+}
+
+void AddVfxSpawnShape(const PreparedFxElement &source, iw8::vfx::State &state)
+{
+    const auto radius = VfxRange(source.spawnOffsetRadius);
+    const auto height = VfxRange(source.spawnOffsetHeight);
+    const bool hasOffset = radius.min != 0.0f || radius.max != 0.0f ||
+                           height.min != 0.0f || height.max != 0.0f ||
+                           std::ranges::any_of(source.spawnOrigin, [](const auto &range) {
+                               return range.base != 0.0f || range.amplitude != 0.0f;
+                           });
+    if (!hasOffset)
+        return;
+
+    iw8_focus::ParticleModuleInitSpawnShapeCylinder payload{};
+    payload.base.base.type = static_cast<std::uint16_t>(
+        iw8_focus::ParticleModuleType::initSpawnShapeCylinder);
+    payload.base.axisFlags = 0x3F;
+    payload.base.normalAxis = 0;
+    payload.base.spawnType = 1;
+    for (std::size_t axis = 0; axis < 3; ++axis)
+        payload.base.offset.v[axis] =
+            source.spawnOrigin[axis].base + source.spawnOrigin[axis].amplitude * 0.5f;
+    payload.halfHeight = std::max(std::abs(height.min), std::abs(height.max));
+    payload.radius = radius;
+    const float volume = 6.28318530718f * radius.max * radius.max * payload.halfHeight;
+    payload.base.volumeCubeRoot = volume > 0.0f ? std::cbrt(volume) : 0.0f;
+    auto module =
+        VfxValueModule(iw8_focus::ParticleModuleType::initSpawnShapeCylinder, payload);
+    module.curves.resize(5);
+    for (auto &curve : module.curves)
+        curve = VfxCurve({1.0f, 1.0f}, 0.0f);
+    state.groups[0].push_back(std::move(module));
+}
+
+void AddVfxVelocity(const PreparedFxElement &source, iw8::vfx::State &state)
+{
+    if (source.velocitySamples.empty())
+        return;
+    constexpr std::int32_t runMask = 0x1C0;
+    const bool world = (source.flags & runMask) == 0;
+    std::array<std::vector<float>, 6> values;
+    for (const auto &sample : source.velocitySamples)
+    {
+        const auto &velocity = world ? sample.world.velocity : sample.local.velocity;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            values[axis].push_back(velocity.base[axis] * 1000.0f);
+            values[axis + 3].push_back(
+                (velocity.base[axis] + velocity.amplitude[axis]) * 1000.0f);
+        }
+    }
+    if (std::ranges::all_of(values, [](const auto &curve) {
+            return std::ranges::all_of(curve,
+                                       [](const float value) { return value == 0.0f; });
+        }))
+        return;
+
+    iw8_focus::ParticleModuleInitRelativeVelocity relative{};
+    relative.base.type = static_cast<std::uint16_t>(
+        iw8_focus::ParticleModuleType::initRelativeVelocity);
+    relative.velocityType = world ? 1u : 2u;
+    state.groups[0].push_back(
+        VfxValueModule(iw8_focus::ParticleModuleType::initRelativeVelocity, relative));
+
+    iw8_focus::ParticleModuleVelocityGraph payload{};
+    payload.base.type =
+        static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::velocityGraph);
+    if (world)
+        payload.base.flags |= 0x80;
+    auto module = VfxValueModule(iw8_focus::ParticleModuleType::velocityGraph, payload);
+    module.curves.resize(6);
+    for (std::size_t axis = 0; axis < 3; ++axis)
+    {
+        const float scale = VfxCurveScale(values[axis], values[axis + 3]);
+        module.curves[axis] = VfxCurve(values[axis], scale);
+        module.curves[axis + 3] = VfxCurve(values[axis + 3], scale);
+        iw8_focus::ParticleModuleVelocityGraph stored{};
+        std::memcpy(&stored, module.native.moduleData, sizeof(payload));
+        stored.curves[axis].scale = scale;
+        stored.curves[axis + 3].scale = scale;
+        if (values[axis] != values[axis + 3])
+            stored.base.flags |= 0x10;
+        std::memcpy(module.native.moduleData, &stored, sizeof(stored));
+    }
+    state.groups[1].push_back(std::move(module));
+}
+
+void AddVfxRotation(const PreparedFxElement &source, const bool model,
+                    iw8::vfx::State &state)
+{
+    if (model)
+    {
+        iw8_focus::ParticleModuleInitRotation3D payload{};
+        payload.base.type =
+            static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initRotation3D);
+        const auto angle = VfxRange(source.initialRotation);
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            payload.rotationAngleMin.v[axis] = angle.min;
+            payload.rotationAngleMax.v[axis] = angle.max;
+            const auto rate = VfxRange(source.angularVelocity[axis], 1000.0f);
+            payload.rotationRateMin.v[axis] = rate.min;
+            payload.rotationRateMax.v[axis] = rate.max;
+        }
+        state.groups[0].push_back(
+            VfxValueModule(iw8_focus::ParticleModuleType::initRotation3D, payload));
+        return;
+    }
+    if (source.initialRotation.base == 0.0f && source.initialRotation.amplitude == 0.0f)
+        return;
+    iw8_focus::ParticleModuleInitRotation payload{};
+    payload.base.type =
+        static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initRotation);
+    payload.base.flags = source.initialRotation.amplitude == 0.0f ? 0u : 1u;
+    payload.rotationAngle = VfxRange(source.initialRotation);
+    state.groups[0].push_back(
+        VfxValueModule(iw8_focus::ParticleModuleType::initRotation, payload));
+}
+
+void AddVfxVisualCurves(const PreparedFxElement &source, iw8::vfx::State &state)
+{
+    if (source.visualSamples.empty())
+        return;
+    std::array<std::vector<float>, 8> colors;
+    std::array<std::vector<float>, 6> sizes;
+    for (const auto &sample : source.visualSamples)
+    {
+        for (std::size_t channel = 0; channel < 4; ++channel)
+        {
+            colors[channel].push_back(static_cast<float>(sample.base.color[channel]) / 255.0f);
+            colors[channel + 4].push_back(
+                static_cast<float>(sample.amplitude.color[channel]) / 255.0f);
+        }
+        const float baseScale = sample.base.scale;
+        const float maxScale = baseScale + sample.amplitude.scale;
+        const std::array<float, 3> base{sample.base.size[0], sample.base.size[1], baseScale};
+        const std::array<float, 3> maximum{
+            sample.base.size[0] + sample.amplitude.size[0],
+            sample.base.size[1] + sample.amplitude.size[1], maxScale};
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            sizes[axis].push_back(base[axis]);
+            sizes[axis + 3].push_back(maximum[axis]);
+        }
+    }
+
+    iw8_focus::ParticleModuleColorGraph colorPayload{};
+    colorPayload.base.type =
+        static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::colorGraph);
+    colorPayload.firstCurve = 1;
+    auto color = VfxValueModule(iw8_focus::ParticleModuleType::colorGraph, colorPayload);
+    color.curves.resize(8);
+    for (std::size_t index = 0; index < colors.size(); ++index)
+        color.curves[index] = VfxCurve(colors[index], 1.0f);
+    colorPayload.base.flags =
+        std::equal(colors.begin(), colors.begin() + 4, colors.begin() + 4) ? 0u : 0x10u;
+    std::memcpy(color.native.moduleData, &colorPayload, sizeof(colorPayload));
+    state.groups[1].push_back(std::move(color));
+
+    iw8_focus::ParticleModuleSizeGraph sizePayload{};
+    sizePayload.base.type =
+        static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::sizeGraph);
+    sizePayload.firstCurve = 1;
+    auto size = VfxValueModule(iw8_focus::ParticleModuleType::sizeGraph, sizePayload);
+    size.curves.resize(6);
+    for (std::size_t axis = 0; axis < 3; ++axis)
+    {
+        const float scale = VfxCurveScale(sizes[axis], sizes[axis + 3]);
+        size.curves[axis] = VfxCurve(sizes[axis], scale);
+        size.curves[axis + 3] = VfxCurve(sizes[axis + 3], scale);
+        sizePayload.curves[axis].scale = scale;
+        sizePayload.curves[axis + 3].scale = scale;
+        if (sizes[axis] != sizes[axis + 3])
+            sizePayload.base.flags |= 0x10;
+    }
+    std::memcpy(size.native.moduleData, &sizePayload, sizeof(sizePayload));
+    state.groups[1].push_back(std::move(size));
+}
+
+void AddVfxGravity(const PreparedFxElement &source, iw8::vfx::State &state)
+{
+    if (source.gravity.base == 0.0f && source.gravity.amplitude == 0.0f)
+        return;
+    iw8_focus::ParticleModuleGravity payload{};
+    payload.base.type = static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::gravity);
+    payload.percentage = VfxRange(source.gravity);
+    state.groups[1].push_back(
+        VfxValueModule(iw8_focus::ParticleModuleType::gravity, payload));
+}
+
+void AddVfxAtlas(const PreparedFxElement &source, iw8::vfx::State &state)
+{
+    if (source.atlas.entryCount <= 1)
+        return;
+    iw8_focus::ParticleModuleInitAtlas payload{};
+    payload.base.type = static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initAtlas);
+    payload.startFrame = source.atlas.index;
+    payload.loopCount = source.atlas.loopCount;
+    payload.randomIndex = source.atlas.behavior == 0 ? 1 : 0;
+    payload.playOverLife = source.atlas.behavior == 0 ? 0 : 1;
+    payload.curves[0].scale = 1.0f;
+    payload.curves[1].scale = 1.0f;
+    auto module = VfxValueModule(iw8_focus::ParticleModuleType::initAtlas, payload);
+    module.curves = {VfxCurve({0.0f, 1.0f}, 1.0f), VfxCurve({1.0f, 1.0f}, 1.0f)};
+    state.groups[0].push_back(std::move(module));
+}
+
+iw8::vfx::Emitter ConvertSmallGlassElement(const PreparedMap &map,
+                                           const PreparedFxElement &source)
+{
+    iw8::vfx::Emitter emitter;
+    const auto burst = VfxRange(source.spawn.oneShotCount);
+    const std::uint32_t maxCount = static_cast<std::uint32_t>(std::max(1, burst.max));
+    emitter.native.particleSpawnRate = {static_cast<float>(maxCount),
+                                        static_cast<float>(maxCount)};
+    emitter.native.particleLife = VfxRange(
+        {static_cast<float>(source.lifeSpanMsec.base),
+         static_cast<float>(source.lifeSpanMsec.amplitude)},
+        0.001f);
+    emitter.native.particleDelay = VfxRange(
+        {static_cast<float>(source.spawnDelayMsec.base),
+         static_cast<float>(source.spawnDelayMsec.amplitude)},
+        0.001f);
+    emitter.native.particleCountMax = maxCount;
+    emitter.native.particleBurstCount = {std::max(1, burst.min), std::max(1, burst.max)};
+    const auto distance = VfxRange(source.spawnRange);
+    emitter.native.spawnRangeSq = {distance.min * distance.min, distance.max * distance.max};
+    emitter.native.spawnFrustumCullRadius = source.spawnFrustumCullRadius;
+    emitter.native.emitByDistanceDensity = {0.1f, 0.1f};
+
+    iw8::vfx::State state;
+    const bool model = source.type == 5;
+    switch (source.type)
+    {
+    case 0:
+        state.native.elementType = 0;
+        state.native.flags = 550830604356ull;
+        emitter.native.flags = 4194306;
+        emitter.native.dataFlags = 30603519;
+        break;
+    case 2:
+        state.native.elementType = 10;
+        state.native.flags = 1074790400ull;
+        emitter.native.flags = 4194306;
+        emitter.native.dataFlags = 26409215;
+        break;
+    case 4:
+        // Replay keeps the legacy initCloud selector in its ABI, but none of
+        // the shipped common-zone VFX uses it. Native cloud/smoke emitters use
+        // an element-0 material state with this measured flag family.
+        state.native.elementType = 0;
+        state.native.flags = 550830630912ull;
+        emitter.native.flags = 4194306;
+        emitter.native.dataFlags = 30603519;
+        break;
+    case 5:
+        state.native.elementType = 7;
+        state.native.flags = 549755815044ull;
+        emitter.native.flags = 2;
+        emitter.native.dataFlags = 131529215;
+        break;
+    case 9:
+        state.native.elementType = 2;
+        state.native.flags = 549755844672ull;
+        emitter.native.flags = 2;
+        emitter.native.dataFlags = 26409215;
+        break;
+    default:
+        throw std::runtime_error("small_glass contains an unsupported IW3 element type");
+    }
+
+    state.groups[0].push_back(VfxSpawnModule());
+    state.groups[0].push_back(VfxAttributesModule());
+    if (source.type == 9)
+    {
+        iw8_focus::ParticleModuleInitDecal payload{};
+        payload.base.type =
+            static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initDecal);
+        auto module = VfxValueModule(iw8_focus::ParticleModuleType::initDecal, payload);
+        for (const auto &visual : source.visuals)
+        {
+            if (visual.kind != PreparedFxVisualKind::decal || visual.names.size() != 2)
+                throw std::runtime_error("small_glass decal has an invalid material pair");
+            // Replay consumes one selected platform/profile material in all three
+            // ParticleMarkVisuals slots. The second IW3 decal entry is the WC
+            // world-context material used by this Windows Replay target.
+            const auto material = VfxMaterial(map, visual.names[1]);
+            module.decalMaterials.push_back({material, material, material});
+        }
+        state.groups[0].push_back(std::move(module));
+    }
+    else
+    {
+        iw8::vfx::Module module;
+        if (model)
+        {
+            iw8_focus::ParticleModuleInitModel payload{};
+            payload.base =
+                static_cast<std::uint64_t>(iw8_focus::ParticleModuleType::initModel);
+            module = VfxValueModule(iw8_focus::ParticleModuleType::initModel, payload);
+            for (const auto &visual : source.visuals)
+            {
+                if (visual.kind != PreparedFxVisualKind::xmodel || visual.names.size() != 1)
+                    throw std::runtime_error("small_glass model has an invalid XModel visual");
+                module.models.push_back(visual.names.front());
+            }
+        }
+        else
+        {
+            if (source.type == 2)
+            {
+                iw8_focus::ParticleModuleInitTail tail{};
+                tail.base.type =
+                    static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initTail);
+                state.groups[0].push_back(
+                    VfxValueModule(iw8_focus::ParticleModuleType::initTail, tail));
+            }
+            iw8_focus::ParticleModuleInitMaterial payload{};
+            payload.base.type =
+                static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initMaterial);
+            module = VfxValueModule(iw8_focus::ParticleModuleType::initMaterial, payload);
+            for (const auto &visual : source.visuals)
+            {
+                if (visual.kind != PreparedFxVisualKind::material || visual.names.size() != 1)
+                    throw std::runtime_error("small_glass particle has an invalid material visual");
+                module.materials.push_back(VfxMaterial(map, visual.names.front()));
+            }
+        }
+        state.groups[0].push_back(std::move(module));
+    }
+
+    AddVfxAtlas(source, state);
+    AddVfxSpawnShape(source, state);
+    AddVfxVelocity(source, state);
+    AddVfxRotation(source, model, state);
+    AddVfxGravity(source, state);
+    AddVfxVisualCurves(source, state);
+    emitter.states.push_back(std::move(state));
+    return emitter;
+}
+
+iw8::vfx::Effect ConvertSmallGlass(const PreparedMap &map, const PreparedFx &source,
+                                   const std::string &targetMap)
+{
+    if (source.elements.size() != 6)
+        throw std::runtime_error("impacts/small_glass does not have the expected six elements");
+    iw8::vfx::Effect effect;
+    effect.name = "mw120r/" + targetMap + "/impacts/small_glass";
+    effect.native.flags = 262145;
+    effect.native.occlusionOverrideEmitterIndex = -1;
+    effect.native.drawFrustumCullRadius = 350.0f;
+    effect.native.updateFrustumCullRadius = 500.0f;
+    effect.native.sunDistance = 100000.0f;
+    effect.emitters.reserve(source.elements.size());
+    for (const auto &element : source.elements)
+        effect.emitters.push_back(ConvertSmallGlassElement(map, element));
+    return effect;
+}
 } // namespace
 
 PreparedMap::PreparedMap(PreparedMap &&other) noexcept
@@ -3417,6 +3878,9 @@ PreparedMap::PreparedMap(PreparedMap &&other) noexcept
     , scratch(std::move(other.scratch))
     , xmodels(std::move(other.xmodels))
     , fxEffects(std::move(other.fxEffects))
+    , fxMaterialAliases(std::move(other.fxMaterialAliases))
+    , vfxEffects(std::move(other.vfxEffects))
+    , smallGlassEffect(std::move(other.smallGlassEffect))
     , staticModels(std::move(other.staticModels))
     , dynamicEntities(std::move(other.dynamicEntities))
 {
@@ -3438,6 +3902,9 @@ PreparedMap &PreparedMap::operator=(PreparedMap &&other) noexcept
         scratch = std::move(other.scratch);
         xmodels = std::move(other.xmodels);
         fxEffects = std::move(other.fxEffects);
+        fxMaterialAliases = std::move(other.fxMaterialAliases);
+        vfxEffects = std::move(other.vfxEffects);
+        smallGlassEffect = std::move(other.smallGlassEffect);
         staticModels = std::move(other.staticModels);
         dynamicEntities = std::move(other.dynamicEntities);
         other.scratch.clear();
@@ -3558,7 +4025,6 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
         zt::warn("iw3: %zu declared source FX graph(s) have no exported payload; first: %s",
                  unresolvedFx.size(), unresolvedFx.front().c_str());
 
-    AuditSourceAssetDeclarations(exportRoot);
     result.fxEffects = ReadPreparedFx(exportRoot);
     const auto declaredFx = ReadDeclaredFx(exportRoot / "zone_source" / (sourceMap + ".zone"));
     std::set<std::string> reachableFx(declaredFx.begin(), declaredFx.end());
@@ -3709,6 +4175,7 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     const RenderPlan renderPlan =
         PrepareRenderAssets(exportRoot, world, materialNames, modelMaterialNames, fxMaterials,
                             options.searchPaths, mapDirectory, options.map);
+    result.fxMaterialAliases = renderPlan.fxMaterialAliases;
     BuildPreparedStaticModels(sourceStaticModels, renderPlan, options.map, "smodel", result.xmodels,
                               result.staticModels, true);
     replayrender::StaticModels unusedDynamicTables;
@@ -3721,6 +4188,17 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
                               result.xmodels, unusedFxTables, true, true);
     zt::info("iw3: converted %zu FX-referenced XModels through native model/material closure",
              sourceFxModels.models.size());
+    if (glassFx != result.fxEffects.end())
+    {
+        result.vfxEffects.push_back(ConvertSmallGlass(result, *glassFx, options.map));
+        result.smallGlassEffect = result.vfxEffects.back().name;
+        zt::info("iw3: converted impacts/small_glass to native Replay VFX '%s'",
+                 result.smallGlassEffect.c_str());
+    }
+    std::set<std::string> emittedFx;
+    if (glassFx != result.fxEffects.end())
+        emittedFx.insert(glassFx->name);
+    AuditSourceAssetDeclarations(exportRoot, emittedFx);
     result.dynamicEntities.reserve(sourceDynamicEntities.definitionModels.size() +
                                    sourceDynamicEntities.brushes.size());
     for (std::size_t index = 0; index < sourceDynamicEntities.definitionModels.size(); ++index)

@@ -37,6 +37,7 @@ struct Material
     std::vector<Shader> shaders;
     std::vector<Technique> techniques;
     std::vector<std::string> images;
+    std::string decalVolumeMaterial;
     std::vector<Image> imageDefinitions;
     std::vector<std::array<std::vector<uint8_t>, 4>> buffers;
 };

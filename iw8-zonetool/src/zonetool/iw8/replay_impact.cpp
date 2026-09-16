@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace iw8::impact
@@ -18,6 +19,8 @@ constexpr size_t kImpactTableSize = 40;
 constexpr size_t kImpactEntrySize = 16;
 constexpr size_t kParticleSystemSize = 128;
 constexpr size_t kRegisteredImpactTypeCount = 33;
+constexpr std::string_view kStockSmallGlass =
+    ",vfx/iw8/weap/_impact/glass/vfx_imp_glass_sml";
 
 template <typename T> void Store(void *destination, size_t offset, T value)
 {
@@ -46,7 +49,8 @@ void WriteParticleReference(ZoneWriter &writer, std::string_view name)
     writer.popStream();
 }
 
-size_t WritePacks(ZoneWriter &writer, size_t impactType, size_t direction)
+size_t WritePacks(ZoneWriter &writer, size_t impactType, size_t direction,
+                  const std::string_view smallGlassEffect)
 {
     writer.align(7);
 
@@ -81,13 +85,18 @@ size_t WritePacks(ZoneWriter &writer, size_t impactType, size_t direction)
             {
                 throw std::runtime_error("impact effect template contains an invalid name index");
             }
-            WriteParticleReference(writer, impact_data::kEffectNames[index - 1]);
+            const std::string_view stockName = impact_data::kEffectNames[index - 1];
+            if (!smallGlassEffect.empty() && stockName == kStockSmallGlass)
+                WriteParticleReference(writer, smallGlassEffect);
+            else
+                WriteParticleReference(writer, stockName);
         }
     }
     return referenceCount;
 }
 
-void WriteBody(ZoneWriter &writer, const std::string &mapName)
+void WriteBody(ZoneWriter &writer, const std::string &mapName,
+               const std::string_view smallGlassEffect)
 {
     writer.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
     writer.align(7);
@@ -119,10 +128,10 @@ void WriteBody(ZoneWriter &writer, const std::string &mapName)
     size_t particleReferenceCount = 0;
     for (size_t impactType = 0; impactType < impact_data::kImpactTypeCount; ++impactType)
     {
-        particleReferenceCount += WritePacks(writer, impactType, 0);
+        particleReferenceCount += WritePacks(writer, impactType, 0, smallGlassEffect);
         if ((impact_data::kExitMask & (uint64_t{1} << impactType)) != 0)
         {
-            particleReferenceCount += WritePacks(writer, impactType, 1);
+            particleReferenceCount += WritePacks(writer, impactType, 1, smallGlassEffect);
         }
     }
 
@@ -157,10 +166,17 @@ void WriteBody(ZoneWriter &writer, const std::string &mapName)
 
 } // namespace
 
-void Register(ZoneWriter &writer, const std::string &mapName)
+void Register(ZoneWriter &writer, const std::string &mapName,
+              const std::string &smallGlassEffect)
 {
+    const std::string referenceName =
+        smallGlassEffect.empty() || smallGlassEffect.front() == ','
+            ? smallGlassEffect
+            : "," + smallGlassEffect;
     writer.add(ASSET_TYPE_IMPACT_FX, mapName,
-               [mapName](ZoneWriter &output) { WriteBody(output, mapName); });
+               [mapName, referenceName](ZoneWriter &output) {
+                   WriteBody(output, mapName, referenceName);
+               });
 }
 
 } // namespace iw8::impact

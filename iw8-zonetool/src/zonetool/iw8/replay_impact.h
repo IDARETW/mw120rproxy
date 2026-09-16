@@ -7,6 +7,7 @@
 namespace iw8::impact
 {
 
-void Register(ZoneWriter &writer, const std::string &mapName);
+void Register(ZoneWriter &writer, const std::string &mapName,
+              const std::string &smallGlassEffect = {});
 
 } // namespace iw8::impact

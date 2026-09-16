@@ -71,6 +71,8 @@ enum class FxMaterialFamily
     unsupported,
     alphaFeather,
     additiveFeather,
+    cloud,
+    decal,
 };
 
 struct SourceFxMaterial
@@ -78,6 +80,8 @@ struct SourceFxMaterial
     std::string name;
     std::string techniqueSet;
     std::string image;
+    std::string normal;
+    std::string response;
     std::array<float, 4> tint{1, 1, 1, 1};
     unsigned rows{1};
     unsigned columns{1};
@@ -1035,12 +1039,16 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
         material.family = FxMaterialFamily::alphaFeather;
     else if (material.techniqueSet == "effect_zfeather_add")
         material.family = FxMaterialFamily::additiveFeather;
+    else if (material.techniqueSet == "particle_cloud")
+        material.family = FxMaterialFamily::cloud;
+    else if (material.techniqueSet == "mc_l_sm_b0c0s0" ||
+             material.techniqueSet == "wc_l_sm_b0c0s0")
+        material.family = FxMaterialFamily::decal;
     else
         return material;
 
     if (source.at("_game") != "iw3" || source.at("_type") != "material" ||
-        source.at("_version") != 1 || source.at("cameraRegion") != "emissive" ||
-        source.at("stateFlags") != 16)
+        source.at("_version") != 1)
         throw std::runtime_error("unsupported IW3 FX material metadata: " + name);
     const auto &atlas = source.at("textureAtlas");
     material.rows = atlas.at("rows").get<unsigned>();
@@ -1050,6 +1058,59 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
         static_cast<std::uint64_t>(material.rows) * material.columns > 65535)
         throw std::runtime_error("unsupported IW3 FX material atlas: " + name);
 
+    const auto validImageName = [](const std::string &image) {
+        return !image.empty() && image.find("..") == std::string::npos &&
+               image.find(':') == std::string::npos && image.find('\\') == std::string::npos &&
+               image.front() != '/';
+    };
+
+    if (material.family == FxMaterialFamily::decal)
+    {
+        if (source.at("cameraRegion") != "decal" || source.at("stateFlags") != 52 ||
+            material.rows != 1 || material.columns != 1)
+            throw std::runtime_error("unsupported IW3 FX decal metadata: " + name);
+        const auto &textures = source.at("textures");
+        if (!textures.is_array() || textures.size() != 3)
+            throw std::runtime_error("IW3 FX decal must have color, normal, and specular maps: " +
+                                     name);
+        for (const auto &texture : textures)
+        {
+            const std::string semantic = texture.at("semantic").get<std::string>();
+            const std::string image = texture.at("image").get<std::string>();
+            if (!validImageName(image))
+                throw std::runtime_error("IW3 FX decal has an invalid image name: " + name);
+            if (semantic == "colorMap" && material.image.empty())
+                material.image = image;
+            else if (semantic == "normalMap" && material.normal.empty())
+                material.normal = image;
+            else if (semantic == "specularMap" && material.response.empty())
+                material.response = image;
+            else
+                throw std::runtime_error("IW3 FX decal has an unsupported texture semantic: " +
+                                         name);
+        }
+        if (material.image.empty() || material.normal.empty() || material.response.empty())
+            throw std::runtime_error("IW3 FX decal texture closure is incomplete: " + name);
+        bool foundTint = false, foundEnvironment = false;
+        for (const auto &constant : source.at("constants"))
+        {
+            const std::string key = constant.at("name").get<std::string>();
+            if (key == "colorTint")
+                material.tint = FxLiteral(constant.at("literal"), "color tint"), foundTint = true;
+            else if (key == "envMapParms")
+                FxLiteral(constant.at("literal"), "environment parameters"),
+                    foundEnvironment = true;
+            else
+                throw std::runtime_error("IW3 FX decal has an unsupported constant: " + name);
+        }
+        if (!foundTint || !foundEnvironment)
+            throw std::runtime_error("IW3 FX decal is missing material constants: " + name);
+        return material;
+    }
+
+    if (source.at("cameraRegion") != "emissive" || source.at("stateFlags") != 16)
+        throw std::runtime_error("unsupported IW3 FX material metadata: " + name);
+
     const auto &textures = source.at("textures");
     if (!textures.is_array() || textures.size() != 1)
         throw std::runtime_error("IW3 FX material must have one color texture: " + name);
@@ -1057,15 +1118,18 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
     if (texture.at("name") != "colorMap" || texture.at("semantic") != "colorMap")
         throw std::runtime_error("IW3 FX material has an unsupported texture semantic: " + name);
     material.image = texture.at("image").get<std::string>();
-    if (material.image.empty() || material.image.find("..") != std::string::npos ||
-        material.image.find(':') != std::string::npos ||
-        material.image.find('\\') != std::string::npos || material.image.front() == '/')
+    if (!validImageName(material.image))
         throw std::runtime_error("IW3 FX material has an invalid image name: " + name);
     const auto &sampler = texture.at("samplerState");
     const std::string filter = sampler.at("filter").get<std::string>();
     const std::string mipMap = sampler.at("mipMap").get<std::string>();
-    if (sampler.at("clampU").get<bool>() || sampler.at("clampV").get<bool>() ||
-        sampler.at("clampW").get<bool>() ||
+    const bool clamped = sampler.at("clampU").get<bool>() &&
+                         sampler.at("clampV").get<bool>() &&
+                         sampler.at("clampW").get<bool>();
+    const bool wrapped = !sampler.at("clampU").get<bool>() &&
+                         !sampler.at("clampV").get<bool>() &&
+                         !sampler.at("clampW").get<bool>();
+    if ((material.family == FxMaterialFamily::cloud ? !clamped : !wrapped) ||
         (filter != "linear" && filter != "aniso2x") ||
         (mipMap != "disabled" && mipMap != "nearest" && mipMap != "linear"))
         throw std::runtime_error("IW3 FX material sampler has no pinned Replay mapping: " + name);
@@ -1087,12 +1151,22 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
         const bool additive = state.at("alphaTest") == "disabled" &&
                               state.at("srcBlendRgb") == "one" &&
                               state.at("dstBlendRgb") == "one";
-        if (!shared || (material.family == FxMaterialFamily::alphaFeather ? !alpha : !additive))
+        const bool wantsAlpha = material.family == FxMaterialFamily::alphaFeather ||
+                                material.family == FxMaterialFamily::cloud;
+        if (!shared || (wantsAlpha ? !alpha : !additive))
             throw std::runtime_error("IW3 FX material blend state has no pinned Replay mapping: " +
                                      name);
     }
     if (!foundColorState)
         throw std::runtime_error("IW3 FX material has no color state: " + name);
+
+    if (material.family == FxMaterialFamily::cloud)
+    {
+        if (material.rows != 1 || material.columns != 1 || !source.at("constants").empty())
+            throw std::runtime_error("IW3 cloud material has no pinned Replay atlas mapping: " +
+                                     name);
+        return material;
+    }
 
     bool foundFeather = false, foundTint = false;
     for (const auto &constant : source.at("constants"))
@@ -1710,8 +1784,31 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
         "elcq/unlit_6_effect_bad_ta0_802_1004_0_1_0_0_0_100000023_0_0_2_0_0";
     constexpr std::string_view additiveTechset =
         "elcq/unlit_6_effect_bad_tca_802_10a4_0_1_0_0_0_100060023_0_0_3_0_0";
+    constexpr std::string_view cloudTechset =
+        "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100020023_0_0_2_0_0";
+    if (source.family == FxMaterialFamily::decal)
+    {
+        std::vector<std::uint8_t> info(32);
+        Put<std::uint32_t>(info, 4, 98304u);
+        Put<std::uint32_t>(info, 0xC, 0x800000u);
+        info[0x10] = 3;
+        info[0x11] = 29;
+        info[0x1A] = 1;
+        info[0x1B] = 1;
+        return {{"schema", 1},
+                {"source", source.name},
+                {"info", Hex(info)},
+                {"techset", "null"},
+                {"textures", Json::array()},
+                {"constants", ""},
+                {"bufferIndices", ""},
+                {"buffers", Json::array()},
+                {"imageDefinitions", Json::array()},
+                {"decalVolumeMaterial", "i/vfx_decal_surface_glass_2"}};
+    }
     const bool additive = source.family == FxMaterialFamily::additiveFeather;
-    if (source.family != FxMaterialFamily::alphaFeather && !additive)
+    const bool cloud = source.family == FxMaterialFamily::cloud;
+    if (source.family != FxMaterialFamily::alphaFeather && !additive && !cloud)
         throw std::runtime_error("IW3 FX material family is not ready for Replay emission");
 
     std::vector<std::uint8_t> info(32);
@@ -1721,8 +1818,8 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
     info[0x11] = 35;
     info[0x12] = 16;
     info[0x14] = 1;
-    info[0x15] = additive ? 4 : 3;
-    info[0x16] = 2;
+    info[0x15] = cloud ? 1 : additive ? 4 : 3;
+    info[0x16] = cloud ? 1 : 2;
     info[0x1A] = static_cast<std::uint8_t>(source.rows);
     info[0x1B] = static_cast<std::uint8_t>(source.columns);
 
@@ -1742,6 +1839,8 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
                                                     0x4C2B5CAFu, 0u});
     }
     appendConstant(36u, source.tint);
+    if (!cloud)
+    {
     const std::array<float, 4> atlas{static_cast<float>(source.columns),
                                      static_cast<float>(source.rows),
                                      1.0f / static_cast<float>(source.columns),
@@ -1769,6 +1868,22 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
             {"bufferIndices", Hex(bufferIndices)},
             {"buffers", Json::array({Json::array({Hex(vertexConstants), "", "", ""}),
                                       Json::array({"", "", "", ""})})},
+            {"imageDefinitions", Json::array()}};
+    }
+
+    std::vector<std::uint8_t> pixelConstants(48);
+    std::memcpy(pixelConstants.data() + 32, source.tint.data(), 16);
+    std::vector<std::uint8_t> bufferIndices(195, 0xFF);
+    bufferIndices[30] = 0;
+    return {{"schema", 1},
+            {"source", source.name},
+            {"info", Hex(info)},
+            {"techset", cloudTechset},
+            {"textures", Json::array({{{"header", "1200000000000000"},
+                                        {"image", ""}}})},
+            {"constants", Hex(constants)},
+            {"bufferIndices", Hex(bufferIndices)},
+            {"buffers", Json::array({Json::array({"", "", "", Hex(pixelConstants)})})},
             {"imageDefinitions", Json::array()}};
 }
 } // namespace
@@ -2277,17 +2392,22 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         const SourceFxMaterial source = ReadFxMaterial(exportRoot, sourcePaths, name);
         if (source.family == FxMaterialFamily::unsupported)
             continue;
-        const auto &sourceImage = image(source.image);
-        if (sourceImage.size() != 1)
-            throw std::runtime_error("IW3 FX material color map is a cubemap: " + name);
         const std::string materialName = FxMaterialName(map, source);
         const std::string id = materialName.substr(materialName.rfind('_') + 1);
         const std::string materialFile = stem + ".fx." + id + ".material.json";
         Json direct = BuildFxMaterialDefinition(source);
-        residentImage(direct, 0, sourceImage.front(), {1, 1, 1, 1}, "fx");
+        if (source.family != FxMaterialFamily::decal)
+        {
+            const auto &sourceImage = image(source.image);
+            if (sourceImage.size() != 1)
+                throw std::runtime_error("IW3 FX material color map is a cubemap: " + name);
+            residentImage(direct, 0, sourceImage.front(), {1, 1, 1, 1}, "fx");
+        }
         WriteJson(mapDirectory / materialFile, direct);
         plan.assetMaterials.push_back(
             {{"schema", 1}, {"material", materialName}, {"materialDefinition", materialFile}});
+        if (!plan.fxMaterialAliases.emplace(name, materialName).second)
+            throw std::runtime_error("duplicate IW3 FX material alias: " + name);
     }
     return plan;
 }

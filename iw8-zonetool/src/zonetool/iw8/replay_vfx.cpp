@@ -193,6 +193,17 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
             std::memcpy(record.moduleData, &payload, sizeof(payload));
             break;
         }
+        case iw8_focus::ParticleModuleType::velocityGraph:
+        {
+            if (!module.spawnCurve.empty() || !module.models.empty() ||
+                !module.materials.empty() || !module.decalMaterials.empty())
+                throw std::runtime_error("Replay VFX velocity graph has unrelated pointer assets");
+            iw8_focus::ParticleModuleVelocityGraph payload{};
+            std::memcpy(&payload, record.moduleData, sizeof(payload));
+            SetCurves(payload.curves, module.curves);
+            std::memcpy(record.moduleData, &payload, sizeof(payload));
+            break;
+        }
         case iw8_focus::ParticleModuleType::initAttributes:
         case iw8_focus::ParticleModuleType::initCloud:
         case iw8_focus::ParticleModuleType::initTail:
@@ -271,6 +282,7 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initSpawnShapeCylinder:
         case iw8_focus::ParticleModuleType::initSpawnShapeSphere:
         case iw8_focus::ParticleModuleType::forceDragGraph:
+        case iw8_focus::ParticleModuleType::velocityGraph:
             WriteCurves(writer, module.curves);
             break;
         case iw8_focus::ParticleModuleType::initModel:

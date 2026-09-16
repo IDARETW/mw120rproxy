@@ -440,6 +440,7 @@ enum class ParticleModuleType : uint16_t
     forceDragGraph = 40,
     gravity = 41,
     sizeGraph = 51,
+    velocityGraph = 53,
 };
 
 // INIT_MODEL (selector 13) has a 0x10 linked-asset list at +0x10 of its
@@ -598,6 +599,29 @@ struct ParticleModuleInitOrientedSprite
     uint32_t pad[2];
     vec4_t orientationQuat;
 };
+struct ParticleModuleInitRelativeVelocity
+{
+    ParticleModuleBase base;
+    uint32_t velocityType;
+    uint8_t useBoltInfo;
+    uint8_t pad[3];
+};
+struct ParticleModuleInitRotation
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+    ParticleFloatRange rotationAngle;
+    ParticleFloatRange rotationRate;
+};
+struct ParticleModuleInitRotation3D
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+    vec4_t rotationAngleMin;
+    vec4_t rotationAngleMax;
+    vec4_t rotationRateMin;
+    vec4_t rotationRateMax;
+};
 struct ParticleModuleGravity
 {
     ParticleModuleBase base;
@@ -620,6 +644,12 @@ static_assert(offsetof(ParticleModuleSizeGraph, sizeBegin) == 0x70);
 static_assert(sizeof(ParticleModuleInitCloud) == 0x10);
 static_assert(sizeof(ParticleModuleInitTail) == 0x10);
 static_assert(sizeof(ParticleModuleInitOrientedSprite) == 0x20);
+static_assert(sizeof(ParticleModuleInitRelativeVelocity) == 0x10);
+static_assert(offsetof(ParticleModuleInitRelativeVelocity, velocityType) == 0x08);
+static_assert(sizeof(ParticleModuleInitRotation) == 0x20);
+static_assert(offsetof(ParticleModuleInitRotation, rotationAngle) == 0x10);
+static_assert(sizeof(ParticleModuleInitRotation3D) == 0x50);
+static_assert(offsetof(ParticleModuleInitRotation3D, rotationAngleMin) == 0x10);
 static_assert(sizeof(ParticleModuleGravity) == 0x10);
 
 struct ParticleModuleInitSpawnShape
@@ -657,6 +687,14 @@ struct ParticleModuleForceDragGraph
     uint32_t pad[2];
     ParticleCurveDef curves[2];
 };
+struct ParticleModuleVelocityGraph
+{
+    ParticleModuleBase base;
+    uint32_t pad[2];
+    ParticleCurveDef curves[6];
+    vec4_t velocityBegin;
+    vec4_t velocityEnd;
+};
 static_assert(sizeof(ParticleModuleInitSpawnShape) == 0x30);
 static_assert(sizeof(ParticleModuleInitSpawnShapeCylinder) == 0xA0);
 static_assert(offsetof(ParticleModuleInitSpawnShapeCylinder, curves) == 0x50);
@@ -664,6 +702,9 @@ static_assert(sizeof(ParticleModuleInitSpawnShapeSphere) == 0x80);
 static_assert(offsetof(ParticleModuleInitSpawnShapeSphere, curves) == 0x40);
 static_assert(sizeof(ParticleModuleForceDragGraph) == 0x30);
 static_assert(offsetof(ParticleModuleForceDragGraph, curves) == 0x10);
+static_assert(sizeof(ParticleModuleVelocityGraph) == 0x90);
+static_assert(offsetof(ParticleModuleVelocityGraph, curves) == 0x10);
+static_assert(offsetof(ParticleModuleVelocityGraph, velocityBegin) == 0x70);
 
 struct ParticleModuleDef
 {

@@ -18,6 +18,7 @@
 #include "iw8/replay_impact.h"
 #include "iw8/replay_render.h"
 #include "iw8/replay_script.h"
+#include "iw8/replay_vfx.h"
 #include "iw8/write_xsurface.h"
 
 #include <algorithm>
@@ -954,7 +955,6 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
                                             : iw8::DynamicEntityCounts{};
         replayrender::RegisterMaterial(writer, renderMesh);
         replayrender::RegisterReflectionProbeImage(writer, renderMesh);
-        iw8::impact::Register(writer, map);
         if (glassInitCount)
             iw8::writePhysicsAsset(writer, glassPhysics);
         if (prepared)
@@ -967,8 +967,12 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
                     iw8xs_dump::writeXModelSurfs(writer, lod.name, lod);
                 iw8::writeXModel(writer, model.model);
             }
+            for (auto &effect : prepared->vfxEffects)
+                iw8::vfx::Register(writer, std::move(effect));
             iw8::RegisterDynamicEntityList(writer, prepared->dynamicEntities);
         }
+        iw8::impact::Register(writer, map,
+                              prepared ? prepared->smallGlassEffect : std::string{});
         if (!renderMesh.glassPanes.empty())
         {
             writer.add(ASSET_TYPE_FX_MAP, assetName,

@@ -111,9 +111,12 @@ The material adapter converts IW3 color, normal, specular, glass, foliage, and s
 matching Replay material and technique-set layouts. It does not copy IW3 technique-set bytes into an
 incompatible IW8 structure. Reachable single-image `effect_zfeather` and `effect_zfeather_add` FX
 materials are also converted into native Replay effect-quad materials and resident images; the
-converter validates their IW3 atlas and render-state data before serialization. The generated
-footstep, collision, and light-grid files exist only in the private conversion directory and are
-embedded in the fastfiles before that directory is removed. No loose gameplay sidecar is emitted.
+converter validates their IW3 atlas and render-state data before serialization. The stock
+`impacts/small_glass` source graph is converted into a native Replay particle system, including its
+material, decal, model-shard, velocity, gravity, size, color, and atlas data, and is installed in all
+small-glass entries of the native impact table. The generated footstep, collision, and light-grid
+files exist only in the private conversion directory and are embedded in the fastfiles before that
+directory is removed. No loose gameplay sidecar is emitted.
 
 The patched Unlinker setup and complete command are documented in
 [`docs/IW3_FASTFILE.md`](docs/IW3_FASTFILE.md).

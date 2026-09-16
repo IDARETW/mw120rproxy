@@ -48,6 +48,7 @@ struct ReflectionProbePlan
 struct RenderPlan
 {
     std::unordered_map<std::string, MaterialPlan> materials;
+    std::unordered_map<std::string, std::string> fxMaterialAliases;
     std::vector<LightmapRectangle> lightmaps;
     std::array<std::size_t, 6> skyTiles{};
     unsigned columns{};
