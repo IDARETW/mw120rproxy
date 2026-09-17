@@ -118,9 +118,10 @@ materials and resident images; the converter validates their IW3 atlas and rende
 serialization. Complete eligible IW3 FX graph closures are emitted as native Replay particle
 systems. The current element mapping covers billboard, oriented-sprite, tail, cloud, model, decal,
 and runner elements together with their supported spawn, lifetime, velocity, gravity, rotation,
-size, color, atlas, material, model, and child-effect data. A graph is omitted when any element,
-material, event child, or runner child lacks a complete mapping, so the fastfile never contains a
-knowingly partial graph.
+size, color, atlas, material, model, and child-effect data. Model-particle impact children use
+Replay's native `TestImpact` module, while IW3 emitted-effect children use the reconstructed Replay
+1.20 `TestBirth` module. A graph is omitted when any element, material, event child, or runner child
+lacks a complete mapping, so the fastfile never contains a knowingly partial graph.
 
 Baked opaque world surfaces use source-specific native Replay materials backed by a retained
 shipped world-technique contract. Their packed atlas UVs and native lightmap index feed Replay's

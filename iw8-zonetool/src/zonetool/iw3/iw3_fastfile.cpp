@@ -3812,11 +3812,34 @@ void AddVfxImpact(
     iw8_focus::ParticleModuleTestImpact impact{};
     impact.test.base.type =
         static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::testImpact);
+    impact.test.moduleIndex = static_cast<std::uint16_t>(state.groups[2].size());
     impact.test.orientationOptions = 6;
     impact.test.eventHandlerData.kill = 1;
     auto module = VfxValueModule(iw8_focus::ParticleModuleType::testImpact, impact);
     module.childEffects.push_back(child->second);
     state.groups[2].push_back(std::move(module));
+}
+
+void AddVfxBirth(
+    const PreparedFxElement &source,
+    const std::unordered_map<std::string, std::string> &effectAliases,
+    iw8::vfx::State &state)
+{
+    if (source.effectEmitted.empty())
+        return;
+    const auto child = effectAliases.find(source.effectEmitted);
+    if (child == effectAliases.end())
+        throw std::runtime_error("IW3 FX birth child was not converted: " +
+                                 source.effectEmitted);
+
+    iw8_focus::ParticleModuleTest birth{};
+    birth.base.type = static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::testBirth);
+    birth.moduleIndex = static_cast<std::uint16_t>(state.groups[2].size());
+    birth.orientationOptions = 6;
+    auto module = VfxValueModule(iw8_focus::ParticleModuleType::testBirth, birth);
+    module.childEffects.push_back(child->second);
+    state.groups[2].push_back(std::move(module));
+    state.native.flags |= 0x100000000ull;
 }
 
 void AddVfxAtlas(const PreparedFxElement &source, iw8::vfx::State &state)
@@ -4062,6 +4085,7 @@ iw8::vfx::Emitter ConvertFxElement(
     AddVfxRotation(source, model, state);
     AddVfxGravity(source, state);
     AddVfxImpact(source, effectAliases, state);
+    AddVfxBirth(source, effectAliases, state);
     AddVfxVisualCurves(source, state);
     emitter.states.push_back(std::move(state));
     return emitter;
@@ -4100,8 +4124,8 @@ bool HasDirectReplayFxMapping(const PreparedMap &map, const PreparedFx &effect)
                                           element.type == 6 ||
                                           element.type == 9 || element.type == 10;
                if (!supportedType || !element.effectOnDeath.empty() ||
-                   !element.effectEmitted.empty() ||
-                   (!element.effectOnImpact.empty() && element.type != 5))
+                   (!element.effectOnImpact.empty() && element.type != 5) ||
+                   (!element.effectEmitted.empty() && element.type == 10))
                    return false;
                if (element.type == 0 || element.type == 1 || element.type == 2 ||
                    element.type == 4)
@@ -4160,7 +4184,9 @@ BuildFxAliases(const PreparedMap &map, const std::string &targetMap)
                         });
                     const bool missingImpact = !element.effectOnImpact.empty() &&
                                                !convertible.contains(element.effectOnImpact);
-                    return missingRunner || missingImpact;
+                    const bool missingBirth = !element.effectEmitted.empty() &&
+                                              !convertible.contains(element.effectEmitted);
+                    return missingRunner || missingImpact || missingBirth;
                 });
             if (missingChild)
             {
@@ -4647,6 +4673,14 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
                 if (child == convertibleEffects.end())
                     throw std::runtime_error("IW3 impact child effect was not converted: " +
                                              element.effectOnImpact);
+                self(self, *child->second);
+            }
+            if (!element.effectEmitted.empty())
+            {
+                const auto child = convertibleEffects.find(element.effectEmitted);
+                if (child == convertibleEffects.end())
+                    throw std::runtime_error("IW3 birth child effect was not converted: " +
+                                             element.effectEmitted);
                 self(self, *child->second);
             }
         }

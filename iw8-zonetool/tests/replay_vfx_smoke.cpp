@@ -16,8 +16,10 @@ int main(int argc, char **argv)
     const bool withModel = mode == "model";
     const bool rich = mode == "rich";
     const bool runnerMode = mode == "runner";
+    const bool birthMode = mode == "birth";
     const bool materialMode = mode == "material";
-    if (mode != "basic" && !withModel && !rich && !runnerMode && !materialMode)
+    if (mode != "basic" && !withModel && !rich && !runnerMode && !birthMode &&
+        !materialMode)
         return 2;
     iw8::ZoneWriter writer;
     const std::string modelName = "mw120r/vfx_probe_model";
@@ -154,18 +156,35 @@ int main(int argc, char **argv)
 
     emitter.states.push_back(state);
     effect.emitters.push_back(emitter);
-    if (runnerMode)
+    if (runnerMode || birthMode)
     {
         iw8::vfx::Effect child = effect;
         child.name = "mw120r/vfx_contract_child";
         iw8::vfx::Register(writer, std::move(child));
-        iw8::vfx::Module runner;
-        runner.native.moduleType = static_cast<uint16_t>(iw8_focus::ParticleModuleType::initRunner);
-        iw8_focus::ParticleModuleInitRunner runnerPayload{};
-        runnerPayload.base.type = runner.native.moduleType;
-        std::memcpy(runner.native.moduleData, &runnerPayload, sizeof(runnerPayload));
-        runner.childEffects.push_back("mw120r/vfx_contract_child");
-        effect.emitters[0].states[0].groups[1].push_back(std::move(runner));
+        iw8::vfx::Module childModule;
+        if (runnerMode)
+        {
+            childModule.native.moduleType =
+                static_cast<uint16_t>(iw8_focus::ParticleModuleType::initRunner);
+            iw8_focus::ParticleModuleInitRunner payload{};
+            payload.base.type = childModule.native.moduleType;
+            std::memcpy(childModule.native.moduleData, &payload, sizeof(payload));
+            effect.emitters[0].states[0].groups[1].push_back(std::move(childModule));
+        }
+        else
+        {
+            childModule.native.moduleType =
+                static_cast<uint16_t>(iw8_focus::ParticleModuleType::testBirth);
+            iw8_focus::ParticleModuleTest payload{};
+            payload.base.type = childModule.native.moduleType;
+            payload.orientationOptions = 6;
+            std::memcpy(childModule.native.moduleData, &payload, sizeof(payload));
+            effect.emitters[0].states[0].native.flags |= 0x100000000ull;
+            effect.emitters[0].states[0].groups[2].push_back(std::move(childModule));
+        }
+        auto &module = runnerMode ? effect.emitters[0].states[0].groups[1].back()
+                                  : effect.emitters[0].states[0].groups[2].back();
+        module.childEffects.push_back("mw120r/vfx_contract_child");
         effect.name = "mw120r/vfx_contract_parent";
     }
     iw8::vfx::Register(writer, std::move(effect));

@@ -444,6 +444,7 @@ enum class ParticleModuleType : uint16_t
     physicsRayCast = 46,
     sizeGraph = 51,
     velocityGraph = 53,
+    testBirth = 56,
     testDeath = 57,
     testImpact = 59,
 };

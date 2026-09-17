@@ -181,10 +181,13 @@ decal materials as native Replay materials and images.
 The native graph translator currently supports complete graph closures made from billboard,
 oriented-sprite, tail, cloud, model, decal, and runner elements. It preserves supported material,
 model, and child-effect references together with spawn, lifetime, velocity, gravity, rotation,
-size, color, and atlas data. A source graph is emitted only when every element and runner child in
-its closure is eligible; effect-on-impact, effect-on-death, emitted-effect fields, unsupported
-material families, and unsupported element types keep the graph out of the output rather than
-creating a partial particle system.
+size, color, and atlas data. Model-particle effect-on-impact edges use Replay's native
+`TestImpact` module. IW3 emitted-effect edges use the reconstructed Replay 1.20 `TestBirth`
+module, including the target build's 0x70 payload, linked-particle selector, child-state flag,
+relative orientation, and dependency ordering. A source graph is emitted only when every element,
+event child, and runner child in its closure is eligible; effect-on-death, effect-on-impact on other
+element families, unsupported materials, and unsupported element types keep the graph out of the
+output rather than creating a partial particle system.
 
 The converter reads the IW3 impact table and maps its twelve semantic rows into Replay's native
 impact table: small and large bullet hit/exit, shotgun hit/exit, armor-piercing hit/exit, grenade

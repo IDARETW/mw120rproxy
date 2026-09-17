@@ -57,6 +57,7 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
     {
         auto record = module.native;
         if (record.moduleType != static_cast<uint16_t>(iw8_focus::ParticleModuleType::initRunner) &&
+            record.moduleType != static_cast<uint16_t>(iw8_focus::ParticleModuleType::testBirth) &&
             record.moduleType != static_cast<uint16_t>(iw8_focus::ParticleModuleType::testImpact) &&
             !module.childEffects.empty())
             throw std::runtime_error("Replay VFX child effect list belongs only to a runner or test module");
@@ -143,6 +144,24 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
             payload.linkedAssets.numAssets = Count(module.childEffects);
             StorePointer(&payload, offsetof(iw8_focus::ParticleModuleInitRunner, linkedAssets),
                          payload.linkedAssets.numAssets ? PTR_FOLLOWS : PTR_NULL);
+            std::memcpy(record.moduleData, &payload, sizeof(payload));
+            break;
+        }
+        case iw8_focus::ParticleModuleType::testBirth:
+        {
+            if (!module.spawnCurve.empty() || !module.models.empty() ||
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty() || !module.curves.empty())
+                throw std::runtime_error("Replay VFX birth test has unrelated pointer assets");
+            iw8_focus::ParticleModuleTest payload{};
+            std::memcpy(&payload, record.moduleData, sizeof(payload));
+            payload.eventHandlerData.linkedAssets.numAssets = Count(module.childEffects);
+            constexpr std::size_t linkedAssetsOffset =
+                offsetof(iw8_focus::ParticleModuleTest, eventHandlerData) +
+                offsetof(iw8_focus::ParticleModuleTestEventHandlerData, linkedAssets);
+            StorePointer(&payload, linkedAssetsOffset,
+                         payload.eventHandlerData.linkedAssets.numAssets ? PTR_FOLLOWS
+                                                                         : PTR_NULL);
             std::memcpy(record.moduleData, &payload, sizeof(payload));
             break;
         }
@@ -335,6 +354,7 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
             }
             break;
         case iw8_focus::ParticleModuleType::initRunner:
+        case iw8_focus::ParticleModuleType::testBirth:
         case iw8_focus::ParticleModuleType::testImpact:
             if (!module.childEffects.empty())
             {
@@ -343,8 +363,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
                 {
                     iw8_focus::ParticleLinkedAssetDef linked{};
                     StorePointer(&linked, 0, writer.assetAlias(ASSET_TYPE_VFX, name));
-                    if (module.native.moduleType ==
-                        static_cast<uint16_t>(iw8_focus::ParticleModuleType::testImpact))
+                    if (module.native.moduleType !=
+                        static_cast<uint16_t>(iw8_focus::ParticleModuleType::initRunner))
                     {
                         // Replay's TEST_* particle-system union marks the linked
                         // member with selector data 0x00010000. INIT_RUNNER
