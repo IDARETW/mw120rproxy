@@ -7,7 +7,9 @@ conversion code, and game-specific IW8 asset writers.
 The compiler writes native Replay 1.20 fastfiles. Collision, footsteps, render geometry,
 materials, authored baked lightmaps, lightgrid data, reflection probes, sun settings,
 bullet-impact effects, glass, ladders, dynamic models, and an optional HUD minimap are serialized
-into the zones. Direct conversion does not create a manifest, loose collision file,
+into the zones. Map-local IW3 rawfiles, including source GSC text and zero-byte zone markers, are
+stored in the main zone with Replay's native compressed `RawFile` layout. Direct conversion does
+not create a manifest, loose collision file,
 report, preview, or other generated sidecar. It writes the five fastfiles and one `map.json`.
 
 The converter has no Python runtime or Python package dependency. It builds as a single Windows x64 C++
@@ -108,7 +110,10 @@ and angles. Alternate-mode records such as DM and non-start Sabotage markers are
 an explicit build warning until their separate Replay game-mode consumer is proven. Script
 origins, brush models, and brush-backed triggers are retained as Replay `MapEnts` records. Trigger
 hulls and non-axis slabs reference the same native Havok entity shapes as their source brush
-models.
+models. Map-local `rawfile` declarations are read as binary data and embedded with Replay's native
+zlib-compressed `RawFile` ABI, so they do not become loose package files. Source GSC text remains
+source data; conversion does not compile it into Replay `ScriptFile` bytecode or imply that it will
+execute in the target engine.
 
 The material adapter converts IW3 color, normal, specular, glass, foliage, and sky inputs into the
 matching Replay material and technique-set layouts. It does not copy IW3 technique-set bytes into an

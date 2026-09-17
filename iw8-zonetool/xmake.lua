@@ -74,3 +74,14 @@ target("vfx-smoke")
     add_syslinks("kernel32")
     add_files("tests/replay_vfx_smoke.cpp", "src/zonetool/iw8/iw8_zone.cpp",
               "src/zonetool/iw8/replay_vfx.cpp", "src/common/ff_io.cpp", "src/common/fs_util.cpp")
+
+target("rawfile-smoke")
+    set_kind("binary")
+    set_default(false)
+    set_targetdir(path.join(os.projectdir(), "xmake-out", "x64", is_mode("debug") and "Debug" or "Release"))
+    add_defines("WIN32", "NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS")
+    add_includedirs("src", "src/common", "src/zonetool")
+    add_syslinks("kernel32")
+    add_files("tests/replay_rawfile_smoke.cpp", "src/zonetool/iw8/iw8_zone.cpp",
+              "src/zonetool/iw8/replay_rawfile.cpp", "src/zonetool/iw8/replay_script.cpp",
+              "src/common/ff_io.cpp", "src/common/fs_util.cpp")

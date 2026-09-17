@@ -39,13 +39,31 @@ void appendF32(std::vector<uint8_t> &out, const float value)
     std::memcpy(out.data() + offset, &value, sizeof(value));
 }
 
-// The native ScriptFile stores a zlib-wrapped DEFLATE stack.  Stored blocks
-// keep this converter self-contained and preserve the exact decompressed stack
-// bytes; the signed linker accepts the same zlib representation.
+void writeScriptHeader(ZoneWriter &writer, const uint32_t compressedLength,
+                       const uint32_t stackLength, const uint32_t bytecodeLength)
+{
+    uint8_t header[0x28]{};
+    std::memcpy(header + 0x00, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
+    std::memcpy(header + 0x08, &compressedLength, sizeof(compressedLength));
+    std::memcpy(header + 0x0C, &stackLength, sizeof(stackLength));
+    std::memcpy(header + 0x10, &bytecodeLength, sizeof(bytecodeLength));
+    std::memcpy(header + 0x18, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
+    std::memcpy(header + 0x20, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
+
+    writer.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
+    writer.align(7);
+    writer.write(header, sizeof(header));
+    writer.popStream();
+}
+} // namespace
+
+// The native ScriptFile and RawFile assets store zlib-wrapped DEFLATE data.
+// Stored blocks keep the converter self-contained while preserving the exact
+// decompressed bytes.
 std::vector<uint8_t> zlibStored(const std::vector<uint8_t> &input)
 {
     if (input.size() > std::numeric_limits<uint32_t>::max())
-        throw std::length_error("Replay startup script stack is too large");
+        throw std::length_error("Replay zlib payload is too large");
 
     std::vector<uint8_t> output{0x78, 0x01};
     uint32_t adlerA = 1;
@@ -79,24 +97,6 @@ std::vector<uint8_t> zlibStored(const std::vector<uint8_t> &input)
     output.push_back(static_cast<uint8_t>(adler));
     return output;
 }
-
-void writeScriptHeader(ZoneWriter &writer, const uint32_t compressedLength,
-                       const uint32_t stackLength, const uint32_t bytecodeLength)
-{
-    uint8_t header[0x28]{};
-    std::memcpy(header + 0x00, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
-    std::memcpy(header + 0x08, &compressedLength, sizeof(compressedLength));
-    std::memcpy(header + 0x0C, &stackLength, sizeof(stackLength));
-    std::memcpy(header + 0x10, &bytecodeLength, sizeof(bytecodeLength));
-    std::memcpy(header + 0x18, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
-    std::memcpy(header + 0x20, &PTR_FOLLOWS, sizeof(PTR_FOLLOWS));
-
-    writer.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
-    writer.align(7);
-    writer.write(header, sizeof(header));
-    writer.popStream();
-}
-} // namespace
 
 void emitCompassStartup(ZoneWriter &writer, const std::string &assetName,
                         const std::string &mapName, const float northwestX,

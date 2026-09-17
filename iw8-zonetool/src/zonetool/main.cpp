@@ -16,6 +16,7 @@
 #include "iw8/replay_dynentity.h"
 #include "iw8/replay_havok.h"
 #include "iw8/replay_impact.h"
+#include "iw8/replay_rawfile.h"
 #include "iw8/replay_render.h"
 #include "iw8/replay_script.h"
 #include "iw8/replay_vfx.h"
@@ -959,6 +960,8 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
             iw8::writePhysicsAsset(writer, glassPhysics);
         if (prepared)
         {
+            for (const auto &rawFile : prepared->rawFiles)
+                iw8::rawfile::Register(writer, rawFile.name, rawFile.data);
             for (const auto &model : prepared->xmodels)
             {
                 if (!model.physicsAsset.name.empty())

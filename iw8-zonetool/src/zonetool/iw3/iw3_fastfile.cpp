@@ -1053,6 +1053,66 @@ std::set<std::string> ReadDeclaredFx(const std::filesystem::path &zoneFile)
     return names;
 }
 
+std::vector<PreparedRawFile> ReadPreparedRawFiles(const std::filesystem::path &root,
+                                                  const std::string &sourceMap)
+{
+    const auto zoneRoot = root / "zone_source";
+    std::error_code error;
+    std::set<std::string> names;
+    for (std::filesystem::directory_iterator iterator(zoneRoot, error), end;
+         !error && iterator != end; iterator.increment(error))
+    {
+        if (!iterator->is_regular_file(error) || iterator->path().extension() != ".zone")
+            continue;
+        const std::string stem = iterator->path().stem().string();
+        if (stem != sourceMap && !stem.starts_with(sourceMap + "_"))
+            continue;
+
+        std::ifstream input(iterator->path(), std::ios::binary);
+        if (!input)
+            throw std::runtime_error("cannot read IW3 rawfile zone declarations");
+        std::string line;
+        while (std::getline(input, line))
+        {
+            if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB &&
+                static_cast<unsigned char>(line[2]) == 0xBF)
+                line.erase(0, 3);
+            const auto comma = line.find(',');
+            if (comma == std::string::npos ||
+                TrimSourceAssetField(std::string_view(line).substr(0, comma)) != "rawfile")
+                continue;
+            const auto name = TrimSourceAssetField(
+                std::string_view(line).substr(line.rfind(',') + 1));
+            const std::filesystem::path relative(name);
+            if (name.empty() || relative.has_root_path() ||
+                std::find(relative.begin(), relative.end(), std::filesystem::path("..")) !=
+                    relative.end())
+                throw std::runtime_error("invalid IW3 rawfile declaration name: " + name);
+            names.insert(name);
+        }
+        if (input.bad())
+            throw std::runtime_error("cannot read IW3 rawfile zone declarations");
+    }
+    if (error)
+        throw std::runtime_error("cannot enumerate IW3 rawfile zone declarations");
+
+    std::vector<PreparedRawFile> rawFiles;
+    rawFiles.reserve(names.size());
+    for (const auto &name : names)
+    {
+        PreparedRawFile rawFile;
+        rawFile.name = name;
+        if (!zt::read_file((root / std::filesystem::path(name)).string(), rawFile.data))
+            throw std::runtime_error("map-local IW3 rawfile payload is missing: " + name);
+        if (rawFile.data.size() > std::numeric_limits<std::uint32_t>::max())
+            throw std::runtime_error("map-local IW3 rawfile payload is too large: " + name);
+        rawFiles.push_back(std::move(rawFile));
+    }
+    zt::info("iw3: prepared %zu map-local rawfile asset(s)", rawFiles.size());
+    return rawFiles;
+}
+
 std::vector<std::string> MissingDeclaredFx(const std::filesystem::path &root)
 {
     std::set<std::string> missing;
@@ -1119,7 +1179,7 @@ std::string_view SourceAssetAuditReason(const std::string_view type)
     if (type == "gameworldsp")
         return "build-iw3 accepts multiplayer map roots only";
     if (type == "rawfile")
-        return "raw files are not imported generically; only explicitly consumed map data is read";
+        return "map-local raw files are imported; shared-zone declarations remain stock dependencies";
     return "the declaration has no native build-iw3 consumer";
 }
 
@@ -1151,6 +1211,7 @@ std::string SourceAssetExamples(const std::set<std::string> &names)
 
 void AuditSourceAssetDeclarations(const std::filesystem::path &root,
                                   const std::set<std::string> &emittedFx,
+                                  const std::set<std::string> &emittedRawFiles,
                                   const bool emittedLinearLightDef)
 {
     const auto zoneRoot = root / "zone_source";
@@ -1247,6 +1308,9 @@ void AuditSourceAssetDeclarations(const std::filesystem::path &root,
         std::set<std::string> unconsumed(names);
         if (type == "fx")
             for (const auto &name : emittedFx)
+                unconsumed.erase(name);
+        if (type == "rawfile")
+            for (const auto &name : emittedRawFiles)
                 unconsumed.erase(name);
         if (type == "lightdef" && emittedLinearLightDef)
             unconsumed.erase("light_point_linear");
@@ -4306,6 +4370,7 @@ PreparedMap::PreparedMap(PreparedMap &&other) noexcept
     , footsteps(std::move(other.footsteps))
     , scratch(std::move(other.scratch))
     , xmodels(std::move(other.xmodels))
+    , rawFiles(std::move(other.rawFiles))
     , fxEffects(std::move(other.fxEffects))
     , fxMaterialAliases(std::move(other.fxMaterialAliases))
     , vfxEffects(std::move(other.vfxEffects))
@@ -4332,6 +4397,7 @@ PreparedMap &PreparedMap::operator=(PreparedMap &&other) noexcept
         footsteps = std::move(other.footsteps);
         scratch = std::move(other.scratch);
         xmodels = std::move(other.xmodels);
+        rawFiles = std::move(other.rawFiles);
         fxEffects = std::move(other.fxEffects);
         fxMaterialAliases = std::move(other.fxMaterialAliases);
         vfxEffects = std::move(other.vfxEffects);
@@ -4458,6 +4524,7 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
         zt::warn("iw3: %zu declared source FX graph(s) have no exported payload; first: %s",
                  unresolvedFx.size(), unresolvedFx.front().c_str());
 
+    result.rawFiles = ReadPreparedRawFiles(exportRoot, sourceMap);
     result.fxEffects = ReadPreparedFx(exportRoot);
     const auto declaredFx = ReadDeclaredFx(exportRoot / "zone_source" / (sourceMap + ".zone"));
     std::set<std::string> reachableFx(declaredFx.begin(), declaredFx.end());
@@ -4704,7 +4771,10 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     std::set<std::string> emittedFx;
     for (const auto &entry : effectAliases)
         emittedFx.insert(entry.first);
-    AuditSourceAssetDeclarations(exportRoot, emittedFx, localLinearLightDef);
+    std::set<std::string> emittedRawFiles;
+    for (const auto &rawFile : result.rawFiles)
+        emittedRawFiles.insert(rawFile.name);
+    AuditSourceAssetDeclarations(exportRoot, emittedFx, emittedRawFiles, localLinearLightDef);
     result.dynamicEntities.reserve(sourceDynamicEntities.definitionModels.size() +
                                    sourceDynamicEntities.brushes.size());
     for (std::size_t index = 0; index < sourceDynamicEntities.definitionModels.size(); ++index)

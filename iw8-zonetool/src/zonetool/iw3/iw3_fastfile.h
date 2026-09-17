@@ -190,6 +190,12 @@ struct PreparedFx
     std::vector<PreparedFxDependency> dependencies;
 };
 
+struct PreparedRawFile
+{
+    std::string name;
+    std::vector<std::uint8_t> data;
+};
+
 struct PreparedMap
 {
     std::filesystem::path root;
@@ -197,6 +203,7 @@ struct PreparedMap
     std::filesystem::path footsteps;
     std::filesystem::path scratch;
     std::vector<PreparedXModel> xmodels;
+    std::vector<PreparedRawFile> rawFiles;
     std::vector<PreparedFx> fxEffects;
     std::unordered_map<std::string, std::string> fxMaterialAliases;
     std::vector<iw8::vfx::Effect> vfxEffects;

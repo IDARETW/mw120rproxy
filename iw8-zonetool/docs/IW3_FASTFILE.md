@@ -172,8 +172,13 @@ recognized. It also converts surface information into native footstep and collis
 `build-map` invocation, or loose sidecar. Multiplayer spawn markers retain their source origins
 and angles, including DM, Domination, Sabotage, Search and Destroy, CTF, and TDM markers.
 
-Arbitrary IW3 gameplay scripts, scripted doors/movers, and destructible systems are not translated
-by this path yet. The Unlinker collects map-local and shared FX source graphs and their typed
+Map-local `rawfile` declarations from the map and sibling load zones are embedded in the main
+fastfile with Replay's native zlib-compressed `RawFile` layout. Payload bytes are preserved exactly,
+including valid zero-byte marker files. A `.gsc` rawfile is retained as source text; the converter
+does not compile IW3 source into Replay `ScriptFile` bytecode. Arbitrary IW3 gameplay scripts,
+scripted doors/movers, and destructible systems are therefore not translated by this path yet.
+
+The Unlinker collects map-local and shared FX source graphs and their typed
 dependencies. `build-iw3` validates that data against the IW3 multiplayer ABI and embeds supported
 single-image `effect_zfeather`, `effect_zfeather_add`, and `particle_cloud` materials plus supported
 decal materials as native Replay materials and images.
