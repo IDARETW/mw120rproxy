@@ -567,11 +567,13 @@ hook::Status Install(uintptr_t base) {
     const auto root = std::filesystem::path(executable).parent_path() / "zone";
     std::vector<std::unique_ptr<Package>> packages;
     std::set<unsigned> slots;
+    std::string currentManifest;
     try {
         for (const auto& entry : std::filesystem::directory_iterator(root)) {
             const auto filename = entry.path().filename().string();
             if (!filename.starts_with("iw8_cw_") || !filename.ends_with(".weapon.json"))
                 continue;
+            currentManifest = filename;
             if (!entry.is_regular_file() || entry.file_size() > 131072)
                 throw std::runtime_error("invalid custom weapon metadata file");
             std::ifstream input(entry.path());
@@ -597,7 +599,10 @@ hook::Status Install(uintptr_t base) {
                 package->reference.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos ||
                 !package->reference.ends_with("_mp") || package->slot < 61 || package->slot > 254 ||
                 !slots.insert(package->slot).second)
-                throw std::runtime_error("invalid or conflicting custom weapon registration");
+                throw std::runtime_error("invalid or conflicting custom weapon registration: " + filename +
+                                         " (base=" + package->base + ", asset=" + package->asset +
+                                         ", reference=" + package->reference + ", slot=" +
+                                         std::to_string(package->slot) + ")");
             if (project) {
                 package->defaultAttachments = metadata.value("default_attachments", std::string());
                 package->attachmentMap = metadata.value("attachment_map", std::map<std::string, std::string>());
@@ -636,7 +641,8 @@ hook::Status Install(uintptr_t base) {
             packages.push_back(std::move(package));
         }
     } catch (const std::exception& error) {
-        logger::Trace("Weapons", "registration disabled: %s", error.what());
+        logger::Trace("Weapons", "registration disabled while reading '%s': %s",
+                      currentManifest.c_str(), error.what());
         return hook::Status::Installed;
     }
     if (packages.empty())
