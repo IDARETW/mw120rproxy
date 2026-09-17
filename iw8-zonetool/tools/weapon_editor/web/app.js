@@ -68,9 +68,7 @@ async function setHands(value){
 
 
 
-function authorizedUrl(path){if(!replayAccessToken)return path;const url=new URL(path,location.href);if(url.origin===location.origin)url.searchParams.set('access',replayAccessToken);return url.pathname+url.search+url.hash;}
-
-function projectUrl(path){return authorizedUrl(`/project-files/${state.project.id}/${path}`);}
+function projectUrl(path){return `/project-files/${state.project.id}/${path}`;}
 
 function field(path){return state.fields.find(f=>f.field===path);}
 
@@ -313,7 +311,7 @@ function renderType(){const t=state.layout.types[state.selectedType];if(!t)retur
 
 async function renderBuilds(){const validation=await api(`/api/projects/${state.project.id}/validate`);$('#page-content').innerHTML=`<div class="two-columns"><div class="card">${panel('Build native fastfiles',`<p class="helper">Build a snapshot of revision ${state.project.revision}. Your source project stays editable while ZoneTool compiles the package.</p><div class="divider"></div>${property('Weapon',state.project.base+'.ff')}${property('Companions','Techsets · Worldwide · English')}${property('Sound lifetime','Separate common package')}${property('Loadout ordinal',state.project.loadout_slot)}<button class="button primary" data-action="start-build" style="margin-top:20px">◈ Build this revision</button>`)}</div><div class="card">${panel('Project checks',validation.errors.length?note(validation.errors.map(escape).join('<br>'),'error'):'<span class="tag green">Project inputs valid</span>')}${validation.warnings.length?`<div class="panel-body"><ul class="validation-list">${validation.warnings.map(w=>`<li>${escape(w)}</li>`).join('')}</ul></div>`:''}</div></div><div id="build-result"></div>`;if(state.job)renderJob();}
 
-function renderJob(){const j=state.job;if(!$('#build-result'))return;$('#build-result').innerHTML=`<div class="card"><div class="panel-body"><div class="build-heading"><h2 class="section-title">${j.status==='succeeded'?'Package built':j.status==='failed'?'Build needs attention':'Building native assets…'}</h2><span class="tag ${j.status==='succeeded'?'green':''}">${escape(j.status)}</span></div><p class="helper">Revision ${j.revision} · ${j.id}</p><pre class="build-log">${escape(j.log)}</pre>${j.download?`<a class="button primary" href="${authorizedUrl(j.download)}" download>Download fastfiles</a><div class="build-files">${j.files.map(f=>`<div class="build-file"><span class="mono">${escape(f.name)}</span><span>${(f.bytes/1024).toFixed(1)} KB</span></div>`).join('')}</div>`:''}</div></div>`;}
+function renderJob(){const j=state.job;if(!$('#build-result'))return;$('#build-result').innerHTML=`<div class="card"><div class="panel-body"><div class="build-heading"><h2 class="section-title">${j.status==='succeeded'?'Package built':j.status==='failed'?'Build needs attention':'Building native assets…'}</h2><span class="tag ${j.status==='succeeded'?'green':''}">${escape(j.status)}</span></div><p class="helper">Revision ${j.revision} · ${j.id}</p><pre class="build-log">${escape(j.log)}</pre>${j.download?`<a class="button primary" href="${escape(j.download)}" download>Download fastfiles</a><div class="build-files">${j.files.map(f=>`<div class="build-file"><span class="mono">${escape(f.name)}</span><span>${(f.bytes/1024).toFixed(1)} KB</span></div>`).join('')}</div>`:''}</div></div>`;}
 
 async function startBuild(){await queue.catch(()=>{});state.job=await api(`/api/projects/${state.project.id}/build`,{});await navigate('builds');const poll=async()=>{state.job=await api('/api/jobs/'+state.job.id);renderJob();if(['building','queued'].includes(state.job.status))setTimeout(()=>poll().catch(e=>toast(e.message,true)),800);else toast(state.job.status==='succeeded'?'Native fastfile package is ready.':'Build failed. Open the log for details.',state.job.status==='failed');};await poll();}
 
