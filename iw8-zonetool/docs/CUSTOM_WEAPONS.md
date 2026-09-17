@@ -27,8 +27,8 @@ many small files. Stock previews add a cache as you open weapons. The first ACTS
 build can take a while. Replace all example paths below with your own.
 
 ```powershell
-# New checkout (the workbench is on the dev branch):
-git clone --branch dev https://github.com/IDARETW/mw120rproxy.git
+# New checkout (main is the primary publication branch):
+git clone --branch main https://github.com/IDARETW/mw120rproxy.git
 Set-Location mw120rproxy
 
 # From the repository root:
