@@ -47,6 +47,7 @@ enum IW8_XAssetType : int32_t
     ASSET_TYPE_STRINGTABLE = 54,
     ASSET_TYPE_NET_CONST_STRINGS = 61,
     ASSET_TYPE_LUAFILE = 62,
+    ASSET_TYPE_DECAL_VOLUME_MATERIAL = 111,
     ASSET_TYPE_DYNENTITYLIST = 113,
     ASSET_TYPE_EDGELIST = 116,
     ASSET_TYPE_COUNT = 0x100,
@@ -73,6 +74,7 @@ constexpr size_t FX_MAP = 0x3CD0;
 constexpr size_t GFX_MAP = 0x4590;
 constexpr size_t GFX_MAP_TRZONE = 0x148;
 constexpr size_t LIGHTDEF = 0x20;
+constexpr size_t DECAL_VOLUME_MATERIAL = 0x68;
 constexpr size_t DYNENTITYLIST = 0x40;
 constexpr size_t EDGELIST = 0xA0;
 
@@ -119,6 +121,8 @@ inline const char *type_name(int t)
         return "rawfile";
     case ASSET_TYPE_NET_CONST_STRINGS:
         return "net_const_strings";
+    case ASSET_TYPE_DECAL_VOLUME_MATERIAL:
+        return "decalvolumematerial";
     case ASSET_TYPE_DYNENTITYLIST:
         return "dynentitylist";
     case ASSET_TYPE_EDGELIST:

@@ -355,7 +355,7 @@ void RunUnlinker(const std::filesystem::path &unlinker, const ImportOptions &opt
     if (supplementalAssets)
     {
         arguments.push_back(L"--include-assets");
-        arguments.push_back(L"xmodel,material,image,fx");
+        arguments.push_back(L"xmodel,material,image,fx,impactfx");
     }
 
     std::vector<std::filesystem::path> searchPaths;
@@ -1105,8 +1105,8 @@ bool IsConsumedIw3SourceAssetType(const std::string_view type)
 std::string_view SourceAssetAuditReason(const std::string_view type)
 {
     if (type == "techniqueset")
-        return "source techniquesets are not portable; reachable materials use generated Replay "
-               "techniquesets";
+        return "source techniquesets are not portable; reachable materials use matched Replay "
+               "material and techniqueset contracts";
     if (type == "fx")
         return "these source FX graphs use element or material families that are not yet mapped "
                "to native Replay emitters";
@@ -1150,7 +1150,8 @@ std::string SourceAssetExamples(const std::set<std::string> &names)
 }
 
 void AuditSourceAssetDeclarations(const std::filesystem::path &root,
-                                  const std::set<std::string> &emittedFx)
+                                  const std::set<std::string> &emittedFx,
+                                  const bool emittedLinearLightDef)
 {
     const auto zoneRoot = root / "zone_source";
     std::error_code error;
@@ -1247,6 +1248,8 @@ void AuditSourceAssetDeclarations(const std::filesystem::path &root,
         if (type == "fx")
             for (const auto &name : emittedFx)
                 unconsumed.erase(name);
+        if (type == "lightdef" && emittedLinearLightDef)
+            unconsumed.erase("light_point_linear");
         if (unconsumed.empty())
             continue;
         const auto examples = SourceAssetExamples(unconsumed);
@@ -1870,13 +1873,21 @@ std::uint32_t PackedNormal(const Vec3 &source, const Vec3 &sourceTangent, const 
     return packed;
 }
 
-unsigned MaterialIndex(const RenderPlan &plan, const SurfaceKind kind)
+unsigned MaterialIndex(const RenderPlan &plan, const MaterialPlan &material,
+                       const bool nativeWorld)
 {
-    if (kind == SurfaceKind::opaque)
+    if (nativeWorld)
+    {
+        if (!material.worldMaterialIndex ||
+            material.worldMaterialIndex > plan.additionalMaterials.size())
+            throw std::runtime_error("IW3 render plan is missing a native world material");
+        return material.worldMaterialIndex;
+    }
+    if (material.kind == SurfaceKind::opaque)
         return 0;
-    const std::string suffix = kind == SurfaceKind::cutout  ? "_foliage"
-                               : kind == SurfaceKind::glass ? "_glass"
-                                                            : "_sky";
+    const std::string suffix = material.kind == SurfaceKind::cutout  ? "_foliage"
+                               : material.kind == SurfaceKind::glass ? "_glass"
+                                                                     : "_sky";
     for (std::size_t index = 0; index < plan.additionalMaterials.size(); ++index)
         if (plan.additionalMaterials[index].at("material").get<std::string>().ends_with(suffix))
             return static_cast<unsigned>(index + 1);
@@ -1884,7 +1895,7 @@ unsigned MaterialIndex(const RenderPlan &plan, const SurfaceKind kind)
 }
 
 Vec2 EncodedLightmap(const Vertex &vertex, const Surface &surface, const MaterialPlan &material,
-                     const RenderPlan &plan)
+                     const RenderPlan &plan, const bool nativeWorld)
 {
     float x = 0, y = 0;
     if (surface.lightmap >= 0 && static_cast<std::size_t>(surface.lightmap) >= plan.lightmaps.size())
@@ -1899,6 +1910,12 @@ Vec2 EncodedLightmap(const Vertex &vertex, const Surface &surface, const Materia
         y = (rectangle.y +
              std::clamp(vertex.lightmapUv[1] * rectangle.height, 0.5f, rectangle.height - 0.5f)) /
             4096.0f;
+    }
+    if (nativeWorld)
+    {
+        if (!baked)
+            throw std::runtime_error("native Replay world material requires a baked lightmap");
+        return {x, y};
     }
     const unsigned kind = material.kind == SurfaceKind::cutout  ? 3u
                           : material.kind == SurfaceKind::glass ? 2u
@@ -2468,11 +2485,21 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                    {"additionalMaterials", plan.additionalMaterials},
                    {"assetMaterials", plan.assetMaterials},
                    {"reflectionProbeArrayImage", plan.reflectionProbeArrayImage},
+                   {"nativeLightmaps", Json::array()},
                    {"atlasVertexLayout", 3},
                    {"brushModels", Json::array()},
                    {"glassPanes", Json::array()},
                    {"reflectionProbes", Json::array()},
                    {"surfaces", Json::array()}};
+    for (const auto &lightmap : plan.nativeLightmaps)
+    {
+        Json images = Json::array();
+        for (std::size_t channel = 0; channel < lightmap.files.size(); ++channel)
+            images.push_back({{"format", lightmap.formats[channel]},
+                              {"pixels", lightmap.files[channel]}});
+        output["nativeLightmaps"].push_back(
+            {{"width", lightmap.width}, {"height", lightmap.height}, {"images", images}});
+    }
     std::vector<std::set<unsigned>> treeSurfaces(visibility.treeBounds.size());
     std::set<unsigned> globalSurfaces;
     struct ProbeBounds
@@ -2504,11 +2531,16 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
     };
     if (plan.reflectionProbes.empty() || plan.reflectionProbes.size() > 256)
         throw std::runtime_error("invalid IW3 reflection-probe render plan");
-    std::vector<ProbeBounds> geometryProbeBounds(plan.reflectionProbes.size());
-    std::vector<ProbeBounds> cellProbeBounds(plan.reflectionProbes.size());
+    // Geometry and cell lists still use source indices, including the reserved
+    // default probe. The render plan contains only selectable captures.
+    const auto sourceProbeCount = world.at("reflection_probes").size();
+    std::vector<ProbeBounds> geometryProbeBounds(sourceProbeCount);
+    std::vector<ProbeBounds> cellProbeBounds(sourceProbeCount);
 
     const auto appendSky = [&] {
-        const unsigned skyMaterial = MaterialIndex(plan, SurfaceKind::sky);
+        MaterialPlan skyPlan;
+        skyPlan.kind = SurfaceKind::sky;
+        const unsigned skyMaterial = MaterialIndex(plan, skyPlan, false);
         using SkyMapping = Vec3 (*)(float, float);
         const std::array<SkyMapping, 6> mappings{[](float u, float v) { return Vec3{1, -v, -u}; },
                                                  [](float u, float v) { return Vec3{-1, -v, u}; },
@@ -2594,7 +2626,8 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                 target = nullptr;
                 activeKey.clear();
             }
-            const unsigned materialIndex = MaterialIndex(plan, material.kind);
+            const bool nativeWorld = material.kind == SurfaceKind::opaque && surface.lightmap >= 0;
+            const unsigned materialIndex = MaterialIndex(plan, material, nativeWorld);
             std::ostringstream key;
             key << materialIndex;
             for (const float value : material.environment)
@@ -2608,6 +2641,9 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                 output["surfaces"].push_back({{"vertices", Json::array()},
                                               {"indices", Json::array()},
                                               {"materialIndex", materialIndex},
+                                              {"atlasVertexLayout", nativeWorld ? 1u : 3u},
+                                              {"lightmapIndex", 0u},
+                                              {"opaque", material.kind == SurfaceKind::opaque},
                                               {"reflectionProbe", surface.reflectionProbe},
                                               {"materialParameters", material.environment}});
                 target = &output["surfaces"].back();
@@ -2650,7 +2686,8 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                                 "IW3 surface references an invalid reflection probe");
                         geometryProbeBounds[surface.reflectionProbe].Add(vertex.position);
                         const std::uint32_t index = static_cast<std::uint32_t>(targetVertices++);
-                        const Vec2 lightmap = EncodedLightmap(vertex, surface, material, plan);
+                        const Vec2 lightmap =
+                            EncodedLightmap(vertex, surface, material, plan, nativeWorld);
                         (*target)["vertices"].push_back(
                             {{"position", vertex.position},
                              {"uv", vertex.uv},
@@ -2719,26 +2756,29 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
     for (std::size_t index = 0; index < plan.reflectionProbes.size(); ++index)
     {
         const auto &probe = plan.reflectionProbes[index];
+        const auto sourceIndex = probe.sourceIndex;
+        if (sourceIndex >= sourceProbeCount)
+            throw std::runtime_error("IW3 render plan references an invalid reflection probe");
         Vec3 minimum{}, maximum{};
-        if (index == 0)
+        if (sourceIndex == 0)
         {
             minimum = ReadVector<3>(worldBounds.at(0));
             maximum = ReadVector<3>(worldBounds.at(1));
         }
-        else if (geometryProbeBounds[index].valid)
+        else if (geometryProbeBounds[sourceIndex].valid)
         {
-            minimum = geometryProbeBounds[index].minimum;
-            maximum = geometryProbeBounds[index].maximum;
+            minimum = geometryProbeBounds[sourceIndex].minimum;
+            maximum = geometryProbeBounds[sourceIndex].maximum;
             for (std::size_t axis = 0; axis < 3; ++axis)
             {
                 minimum[axis] -= 32.0f;
                 maximum[axis] += 32.0f;
             }
         }
-        else if (cellProbeBounds[index].valid)
+        else if (cellProbeBounds[sourceIndex].valid)
         {
-            minimum = cellProbeBounds[index].minimum;
-            maximum = cellProbeBounds[index].maximum;
+            minimum = cellProbeBounds[sourceIndex].minimum;
+            maximum = cellProbeBounds[sourceIndex].maximum;
         }
         else
         {
@@ -3519,8 +3559,33 @@ void AddVfxSpawnShape(const PreparedFxElement &source, iw8::vfx::State &state)
                            std::ranges::any_of(source.spawnOrigin, [](const auto &range) {
                                return range.base != 0.0f || range.amplitude != 0.0f;
                            });
-    if (!hasOffset)
+    if (!hasOffset && source.type != 6)
         return;
+
+    if (source.type == 6)
+    {
+        iw8_focus::ParticleModuleInitSpawnShapeBox payload{};
+        payload.base.base.type = static_cast<std::uint16_t>(
+            iw8_focus::ParticleModuleType::initSpawnShapeBox);
+        payload.base.axisFlags = 0x3F;
+        payload.base.normalAxis = 2;
+        payload.base.spawnType = 0;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            const float minimum = source.spawnOrigin[axis].base;
+            const float maximum = minimum + source.spawnOrigin[axis].amplitude;
+            payload.dimensionsMin.v[axis] = std::min(minimum, maximum);
+            payload.dimensionsMax.v[axis] = std::max(minimum, maximum);
+            payload.base.offset.v[axis] = (minimum + maximum) * 0.5f;
+        }
+        auto module = VfxValueModule(iw8_focus::ParticleModuleType::initSpawnShapeBox,
+                                     payload);
+        module.curves.resize(6);
+        for (auto &curve : module.curves)
+            curve = VfxCurve({1.0f, 1.0f}, 0.0f);
+        state.groups[0].push_back(std::move(module));
+        return;
+    }
 
     iw8_focus::ParticleModuleInitSpawnShapeCylinder payload{};
     payload.base.base.type = static_cast<std::uint16_t>(
@@ -3636,18 +3701,34 @@ void AddVfxVisualCurves(const PreparedFxElement &source, iw8::vfx::State &state)
     std::array<std::vector<float>, 6> sizes;
     for (const auto &sample : source.visualSamples)
     {
+        constexpr std::array<std::size_t, 4> sourceColorChannels{2, 1, 0, 3};
         for (std::size_t channel = 0; channel < 4; ++channel)
         {
-            colors[channel].push_back(static_cast<float>(sample.base.color[channel]) / 255.0f);
+            const auto sourceChannel = sourceColorChannels[channel];
+            colors[channel].push_back(
+                static_cast<float>(sample.base.color[sourceChannel]) / 255.0f);
             colors[channel + 4].push_back(
-                static_cast<float>(sample.amplitude.color[channel]) / 255.0f);
+                static_cast<float>(sample.amplitude.color[sourceChannel]) / 255.0f);
         }
         const float baseScale = sample.base.scale;
         const float maxScale = baseScale + sample.amplitude.scale;
-        const std::array<float, 3> base{sample.base.size[0], sample.base.size[1], baseScale};
-        const std::array<float, 3> maximum{
+        std::array<float, 3> base{sample.base.size[0], sample.base.size[1], baseScale};
+        std::array<float, 3> maximum{
             sample.base.size[0] + sample.amplitude.size[0],
             sample.base.size[1] + sample.amplitude.size[1], maxScale};
+        if (source.type == 5)
+        {
+            base = {baseScale, baseScale, baseScale};
+            maximum = {maxScale, maxScale, maxScale};
+        }
+        else if (source.type == 6)
+        {
+            // IW3 omni lights animate radius in size[0]. Its unused second
+            // channel maps to Replay's neutral brightness multiplier.
+            if (base[1] == 0.0f && maximum[1] == 0.0f)
+                base[1] = maximum[1] = 1.0f;
+            base[2] = maximum[2] = 1.0f;
+        }
         for (std::size_t axis = 0; axis < 3; ++axis)
         {
             sizes[axis].push_back(base[axis]);
@@ -3699,6 +3780,45 @@ void AddVfxGravity(const PreparedFxElement &source, iw8::vfx::State &state)
         VfxValueModule(iw8_focus::ParticleModuleType::gravity, payload));
 }
 
+void AddVfxImpact(
+    const PreparedFxElement &source,
+    const std::unordered_map<std::string, std::string> &effectAliases,
+    iw8::vfx::State &state)
+{
+    if (source.effectOnImpact.empty())
+        return;
+    if (source.type != 5)
+        throw std::runtime_error("IW3 FX impact conversion is pinned only for model particles");
+
+    iw8_focus::ParticleModulePhysicsRayCast rayCast{};
+    rayCast.base.type =
+        static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::physicsRayCast);
+    rayCast.bounce = VfxRange(source.reflectionFactor);
+    for (std::size_t axis = 0; axis < 3; ++axis)
+    {
+        rayCast.bounds.midPoint.v[axis] =
+            (source.collisionMins[axis] + source.collisionMaxs[axis]) * 0.5f;
+        rayCast.bounds.halfSize.v[axis] =
+            (source.collisionMaxs[axis] - source.collisionMins[axis]) * 0.5f;
+    }
+    rayCast.useItemClip = source.useItemClip;
+    state.groups[1].push_back(
+        VfxValueModule(iw8_focus::ParticleModuleType::physicsRayCast, rayCast));
+
+    const auto child = effectAliases.find(source.effectOnImpact);
+    if (child == effectAliases.end())
+        throw std::runtime_error("IW3 FX impact child was not converted: " +
+                                 source.effectOnImpact);
+    iw8_focus::ParticleModuleTestImpact impact{};
+    impact.test.base.type =
+        static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::testImpact);
+    impact.test.orientationOptions = 6;
+    impact.test.eventHandlerData.kill = 1;
+    auto module = VfxValueModule(iw8_focus::ParticleModuleType::testImpact, impact);
+    module.childEffects.push_back(child->second);
+    state.groups[2].push_back(std::move(module));
+}
+
 void AddVfxAtlas(const PreparedFxElement &source, iw8::vfx::State &state)
 {
     if (source.atlas.entryCount <= 1)
@@ -3718,7 +3838,8 @@ void AddVfxAtlas(const PreparedFxElement &source, iw8::vfx::State &state)
 
 iw8::vfx::Emitter ConvertFxElement(
     const PreparedMap &map, const PreparedFxElement &source,
-    const std::unordered_map<std::string, std::string> &effectAliases)
+    const std::unordered_map<std::string, std::string> &effectAliases,
+    const std::string &lightDef)
 {
     iw8::vfx::Emitter emitter;
     const auto burst = VfxRange(source.spawn.oneShotCount);
@@ -3777,6 +3898,12 @@ iw8::vfx::Emitter ConvertFxElement(
         emitter.native.flags = 2;
         emitter.native.dataFlags = 131529215;
         break;
+    case 6:
+        state.native.elementType = 5;
+        state.native.flags = 549756862468ull;
+        emitter.native.flags = 130;
+        emitter.native.dataFlags = 26409215;
+        break;
     case 9:
         state.native.elementType = 2;
         state.native.flags = 549755844672ull;
@@ -3791,6 +3918,16 @@ iw8::vfx::Emitter ConvertFxElement(
         break;
     default:
         throw std::runtime_error("IW3 FX graph contains an unsupported element type");
+    }
+    if (!source.effectOnImpact.empty())
+    {
+        if (!model)
+            throw std::runtime_error("IW3 FX impact conversion is pinned only for model particles");
+        // Shipped Replay debris with PHYSICS_RAY_CAST + TEST_IMPACT uses this
+        // exact model-state family. The collision bit is 0x10000 in m_dataFlags.
+        state.native.flags = 4297130116ull;
+        emitter.native.flags = 4194306;
+        emitter.native.dataFlags = 131594751;
     }
 
     state.groups[0].push_back(VfxSpawnModule());
@@ -3824,7 +3961,35 @@ iw8::vfx::Emitter ConvertFxElement(
         emitter.states.push_back(std::move(state));
         return emitter;
     }
-    if (source.type == 9)
+    if (source.type == 6)
+    {
+        if (lightDef.empty())
+            throw std::runtime_error("IW3 omni light has no Replay LightDef");
+        if (!std::ranges::all_of(source.visuals, [](const PreparedFxVisual &visual) {
+                return visual.kind == PreparedFxVisualKind::none && visual.names.empty();
+            }))
+            throw std::runtime_error("IW3 omni light has an invalid visual definition");
+        iw8_focus::ParticleModuleInitLightOmni payload{};
+        payload.base.type =
+            static_cast<std::uint16_t>(iw8_focus::ParticleModuleType::initLightOmni);
+        payload.base.flags = 2048;
+        payload.fovOuter = 0.7853981852531433f;
+        payload.bulbRadius = 2.0f;
+        payload.bulbLength = 1.0f / 255.0f;
+        payload.distanceFalloff = 1.0f;
+        payload.brightness = 1.0f;
+        payload.shadowSoftness = 0.55f;
+        payload.shadowBias = 0.4f;
+        payload.shadowArea = 0.018f;
+        payload.toneMappingScaleFactor = 1.0f;
+        payload.disableVolumetric = 1;
+        payload.disableDynamicShadows = 1;
+        payload.scriptScale = 1;
+        auto module = VfxValueModule(iw8_focus::ParticleModuleType::initLightOmni, payload);
+        module.lightDefs.push_back(lightDef);
+        state.groups[0].push_back(std::move(module));
+    }
+    else if (source.type == 9)
     {
         iw8_focus::ParticleModuleInitDecal payload{};
         payload.base.type =
@@ -3896,6 +4061,7 @@ iw8::vfx::Emitter ConvertFxElement(
     AddVfxVelocity(source, state);
     AddVfxRotation(source, model, state);
     AddVfxGravity(source, state);
+    AddVfxImpact(source, effectAliases, state);
     AddVfxVisualCurves(source, state);
     emitter.states.push_back(std::move(state));
     return emitter;
@@ -3903,20 +4069,24 @@ iw8::vfx::Emitter ConvertFxElement(
 
 iw8::vfx::Effect ConvertFx(
     const PreparedMap &map, const PreparedFx &source,
-    const std::unordered_map<std::string, std::string> &effectAliases)
+    const std::unordered_map<std::string, std::string> &effectAliases,
+    const std::string &lightDef)
 {
     if (source.elements.empty())
         throw std::runtime_error("IW3 FX graph has no elements: " + source.name);
     iw8::vfx::Effect effect;
     effect.name = effectAliases.at(source.name);
     effect.native.flags = 262145;
+    if (std::ranges::any_of(source.elements,
+                            [](const PreparedFxElement &element) { return element.type == 6; }))
+        effect.native.flags |= 0x4;
     effect.native.occlusionOverrideEmitterIndex = -1;
     effect.native.drawFrustumCullRadius = 350.0f;
     effect.native.updateFrustumCullRadius = 500.0f;
     effect.native.sunDistance = 100000.0f;
     effect.emitters.reserve(source.elements.size());
     for (const auto &element : source.elements)
-        effect.emitters.push_back(ConvertFxElement(map, element, effectAliases));
+        effect.emitters.push_back(ConvertFxElement(map, element, effectAliases, lightDef));
     return effect;
 }
 
@@ -3927,9 +4097,11 @@ bool HasDirectReplayFxMapping(const PreparedMap &map, const PreparedFx &effect)
                const bool supportedType = element.type == 0 || element.type == 1 ||
                                           element.type == 2 ||
                                           element.type == 4 || element.type == 5 ||
+                                          element.type == 6 ||
                                           element.type == 9 || element.type == 10;
-               if (!supportedType || !element.effectOnImpact.empty() ||
-                   !element.effectOnDeath.empty() || !element.effectEmitted.empty())
+               if (!supportedType || !element.effectOnDeath.empty() ||
+                   !element.effectEmitted.empty() ||
+                   (!element.effectOnImpact.empty() && element.type != 5))
                    return false;
                if (element.type == 0 || element.type == 1 || element.type == 2 ||
                    element.type == 4)
@@ -3938,12 +4110,25 @@ bool HasDirectReplayFxMapping(const PreparedMap &map, const PreparedFx &effect)
                               visual.names.size() == 1 &&
                               map.fxMaterialAliases.contains(visual.names.front());
                    });
+               if (element.type == 6)
+                   return std::ranges::all_of(
+                       element.visuals, [](const PreparedFxVisual &visual) {
+                           return visual.kind == PreparedFxVisualKind::none &&
+                                  visual.names.empty();
+                       });
                if (element.type == 9)
-                   return std::ranges::all_of(element.visuals, [&](const PreparedFxVisual &visual) {
-                       return visual.kind == PreparedFxVisualKind::decal &&
-                              visual.names.size() == 2 && !visual.names[1].empty() &&
-                              map.fxMaterialAliases.contains(visual.names[1]);
-                   });
+                   return std::ranges::all_of(
+                       element.visuals, [&](const PreparedFxVisual &visual) {
+                           // The Windows Replay decal module selects IW3's
+                           // world-context (second) material. Do not admit a
+                           // graph unless that exact material has a converted
+                           // Replay carrier; ConvertFxElement would otherwise
+                           // discover the missing asset only after aliasing the
+                           // parent graph.
+                           return visual.kind == PreparedFxVisualKind::decal &&
+                                  visual.names.size() == 2 &&
+                                  map.fxMaterialAliases.contains(visual.names[1]);
+                       });
                return true;
            });
 }
@@ -3966,12 +4151,16 @@ BuildFxAliases(const PreparedMap &map, const std::string &targetMap)
             const auto effect = std::ranges::find(effects, *iterator, &PreparedFx::name);
             const bool missingChild = std::ranges::any_of(
                 effect->elements, [&](const PreparedFxElement &element) {
-                    return element.type == 10 &&
-                           std::ranges::any_of(element.visuals, [&](const PreparedFxVisual &visual) {
-                               return visual.kind != PreparedFxVisualKind::effect ||
-                                      visual.names.size() != 1 ||
-                                      !convertible.contains(visual.names.front());
-                           });
+                    const bool missingRunner =
+                        element.type == 10 &&
+                        std::ranges::any_of(element.visuals, [&](const PreparedFxVisual &visual) {
+                            return visual.kind != PreparedFxVisualKind::effect ||
+                                   visual.names.size() != 1 ||
+                                   !convertible.contains(visual.names.front());
+                        });
+                    const bool missingImpact = !element.effectOnImpact.empty() &&
+                                               !convertible.contains(element.effectOnImpact);
+                    return missingRunner || missingImpact;
                 });
             if (missingChild)
             {
@@ -3994,6 +4183,7 @@ BuildFxAliases(const PreparedMap &map, const std::string &targetMap)
 
 iw8::impact::EffectOverrides ReadImpactOverrides(
     const std::filesystem::path &root,
+    const std::vector<std::filesystem::path> &sourcePaths,
     const std::unordered_map<std::string, std::string> &effectAliases)
 {
     constexpr std::array<std::pair<std::size_t, std::size_t>, 12> targetRows{{
@@ -4013,7 +4203,29 @@ iw8::impact::EffectOverrides ReadImpactOverrides(
     constexpr std::size_t nonFleshCount = 29;
     constexpr std::size_t fleshCount = 4;
 
-    const auto path = root / "impactfx" / "_default.iw3.json";
+    std::filesystem::path path;
+    const auto relative = std::filesystem::path("impactfx") / "_default.iw3.json";
+    std::vector<std::filesystem::path> roots{root};
+    roots.insert(roots.end(), sourcePaths.begin(), sourcePaths.end());
+    std::error_code pathError;
+    for (const auto &source : roots)
+    {
+        for (const auto &candidate : {source / relative, source / "raw" / relative})
+        {
+            if (std::filesystem::is_regular_file(candidate, pathError))
+            {
+                path = candidate;
+                break;
+            }
+            pathError.clear();
+        }
+        if (!path.empty())
+            break;
+    }
+    if (path.empty())
+        throw std::runtime_error(
+            "IW3 impact FX export is missing; add common_mp.ff or an extracted IW3 raw "
+            "directory with --search-path");
     const Json source = ReadJson(path);
     const auto &layout = source.at("layout");
     const auto &entries = source.at("entries");
@@ -4071,6 +4283,7 @@ PreparedMap::PreparedMap(PreparedMap &&other) noexcept
     , fxEffects(std::move(other.fxEffects))
     , fxMaterialAliases(std::move(other.fxMaterialAliases))
     , vfxEffects(std::move(other.vfxEffects))
+    , vfxLightDef(std::move(other.vfxLightDef))
     , smallGlassEffect(std::move(other.smallGlassEffect))
     , impactOverrides(std::move(other.impactOverrides))
     , staticModels(std::move(other.staticModels))
@@ -4096,6 +4309,7 @@ PreparedMap &PreparedMap::operator=(PreparedMap &&other) noexcept
         fxEffects = std::move(other.fxEffects);
         fxMaterialAliases = std::move(other.fxMaterialAliases);
         vfxEffects = std::move(other.vfxEffects);
+        vfxLightDef = std::move(other.vfxLightDef);
         smallGlassEffect = std::move(other.smallGlassEffect);
         impactOverrides = std::move(other.impactOverrides);
         staticModels = std::move(other.staticModels);
@@ -4330,10 +4544,14 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     for (const auto &name : fxModelNames)
         sourceFxModels.models.push_back(ReadSourceModel(exportRoot, name));
     std::vector<std::string> materialNames;
+    std::vector<std::string> worldMaterialNames;
     std::vector<std::string> modelMaterialNames;
     for (const BrushModel &model : brushModels)
         for (const Surface &surface : model.surfaces)
+        {
             materialNames.push_back(surface.material);
+            worldMaterialNames.push_back(surface.material);
+        }
     for (const SourceStaticModel &model : sourceStaticModels.models)
         for (const SourceStaticModelLod &lod : model.lods)
             for (const Surface &surface : lod.surfaces)
@@ -4366,8 +4584,9 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     std::filesystem::create_directories(mapDirectory);
     const std::vector<std::string> fxMaterials(fxMaterialNames.begin(), fxMaterialNames.end());
     const RenderPlan renderPlan =
-        PrepareRenderAssets(exportRoot, world, materialNames, modelMaterialNames, fxMaterials,
-                            options.searchPaths, mapDirectory, options.map);
+        PrepareRenderAssets(exportRoot, world, materialNames, worldMaterialNames,
+                            modelMaterialNames, fxMaterials, options.searchPaths, mapDirectory,
+                            options.map);
     result.fxMaterialAliases = renderPlan.fxMaterialAliases;
     BuildPreparedStaticModels(sourceStaticModels, renderPlan, options.map, "smodel", result.xmodels,
                               result.staticModels, true);
@@ -4382,6 +4601,15 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     zt::info("iw3: converted %zu FX-referenced XModels through native model/material closure",
              sourceFxModels.models.size());
     const auto effectAliases = BuildFxAliases(result, options.map);
+    const bool hasOmniLights = std::ranges::any_of(
+        result.fxEffects, [&](const PreparedFx &effect) {
+            return effectAliases.contains(effect.name) &&
+                   std::ranges::any_of(effect.elements, [](const PreparedFxElement &element) {
+                       return element.type == 6;
+                   });
+        });
+    if (hasOmniLights)
+        result.vfxLightDef = "mw120r/" + options.map + "/light_fx_default";
     result.vfxEffects.reserve(effectAliases.size());
     std::unordered_map<std::string, const PreparedFx *> convertibleEffects;
     convertibleEffects.reserve(effectAliases.size());
@@ -4397,23 +4625,33 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
         if (state == 2)
             return;
         if (state == 1)
-            throw std::runtime_error("IW3 FX graph contains a runner dependency cycle: " +
+            throw std::runtime_error("IW3 FX graph contains a child dependency cycle: " +
                                      effect.name);
         state = 1;
         for (const auto &element : effect.elements)
         {
-            if (element.type != 10)
-                continue;
-            for (const auto &visual : element.visuals)
+            if (element.type == 10)
             {
-                const auto child = convertibleEffects.find(visual.names.front());
+                for (const auto &visual : element.visuals)
+                {
+                    const auto child = convertibleEffects.find(visual.names.front());
+                    if (child == convertibleEffects.end())
+                        throw std::runtime_error("IW3 runner child effect was not converted: " +
+                                                 visual.names.front());
+                    self(self, *child->second);
+                }
+            }
+            if (!element.effectOnImpact.empty())
+            {
+                const auto child = convertibleEffects.find(element.effectOnImpact);
                 if (child == convertibleEffects.end())
-                    throw std::runtime_error("IW3 runner child effect was not converted: " +
-                                             visual.names.front());
+                    throw std::runtime_error("IW3 impact child effect was not converted: " +
+                                             element.effectOnImpact);
                 self(self, *child->second);
             }
         }
-        result.vfxEffects.push_back(ConvertFx(result, effect, effectAliases));
+        result.vfxEffects.push_back(
+            ConvertFx(result, effect, effectAliases, result.vfxLightDef));
         if (effect.name == "impacts/small_glass")
             result.smallGlassEffect = effectAliases.at(effect.name);
         state = 2;
@@ -4426,13 +4664,13 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     if (!result.smallGlassEffect.empty())
         zt::info("iw3: converted impacts/small_glass to native Replay VFX '%s'",
                  result.smallGlassEffect.c_str());
-    result.impactOverrides = ReadImpactOverrides(exportRoot, effectAliases);
+    result.impactOverrides = ReadImpactOverrides(exportRoot, options.searchPaths, effectAliases);
     zt::info("iw3: mapped %zu native IW3 impact slots into Replay's impact table",
              result.impactOverrides.size());
     std::set<std::string> emittedFx;
     for (const auto &entry : effectAliases)
         emittedFx.insert(entry.first);
-    AuditSourceAssetDeclarations(exportRoot, emittedFx);
+    AuditSourceAssetDeclarations(exportRoot, emittedFx, localLinearLightDef);
     result.dynamicEntities.reserve(sourceDynamicEntities.definitionModels.size() +
                                    sourceDynamicEntities.brushes.size());
     for (std::size_t index = 0; index < sourceDynamicEntities.definitionModels.size(); ++index)

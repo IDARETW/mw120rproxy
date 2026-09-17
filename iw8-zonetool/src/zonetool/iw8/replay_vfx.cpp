@@ -57,14 +57,16 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
     {
         auto record = module.native;
         if (record.moduleType != static_cast<uint16_t>(iw8_focus::ParticleModuleType::initRunner) &&
+            record.moduleType != static_cast<uint16_t>(iw8_focus::ParticleModuleType::testImpact) &&
             !module.childEffects.empty())
-            throw std::runtime_error("Replay VFX child effect list belongs only to INIT_RUNNER");
+            throw std::runtime_error("Replay VFX child effect list belongs only to a runner or test module");
         switch (static_cast<iw8_focus::ParticleModuleType>(record.moduleType))
         {
         case iw8_focus::ParticleModuleType::initSpawn:
         {
             if (!module.models.empty() || !module.materials.empty() ||
-                !module.decalMaterials.empty() || !module.curves.empty())
+                !module.lightDefs.empty() || !module.decalMaterials.empty() ||
+                !module.curves.empty())
                 throw std::runtime_error("Replay VFX spawn module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitSpawn payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -77,7 +79,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initModel:
         {
             if (!module.spawnCurve.empty() || !module.materials.empty() ||
-                !module.decalMaterials.empty() || !module.curves.empty())
+                !module.lightDefs.empty() || !module.decalMaterials.empty() ||
+                !module.curves.empty())
                 throw std::runtime_error("Replay VFX model module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitModel payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -87,10 +90,25 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
             std::memcpy(record.moduleData, &payload, sizeof(payload));
             break;
         }
+        case iw8_focus::ParticleModuleType::initLightOmni:
+        {
+            if (!module.spawnCurve.empty() || !module.models.empty() ||
+                !module.materials.empty() || !module.decalMaterials.empty() ||
+                !module.curves.empty())
+                throw std::runtime_error("Replay VFX omni-light module has unrelated pointer assets");
+            iw8_focus::ParticleModuleInitLightOmni payload{};
+            std::memcpy(&payload, record.moduleData, sizeof(payload));
+            payload.linkedAssets.numAssets = Count(module.lightDefs);
+            StorePointer(&payload, offsetof(iw8_focus::ParticleModuleInitLightOmni, linkedAssets),
+                         payload.linkedAssets.numAssets ? PTR_FOLLOWS : PTR_NULL);
+            std::memcpy(record.moduleData, &payload, sizeof(payload));
+            break;
+        }
         case iw8_focus::ParticleModuleType::initMaterial:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.decalMaterials.empty() || !module.curves.empty())
+                !module.lightDefs.empty() || !module.decalMaterials.empty() ||
+                !module.curves.empty())
                 throw std::runtime_error("Replay VFX material module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitMaterial payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -103,7 +121,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initDecal:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.curves.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.curves.empty())
                 throw std::runtime_error("Replay VFX decal module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitDecal payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -116,8 +135,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initRunner:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty() ||
-                !module.curves.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty() || !module.curves.empty())
                 throw std::runtime_error("Replay VFX runner module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitRunner payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -127,10 +146,30 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
             std::memcpy(record.moduleData, &payload, sizeof(payload));
             break;
         }
+        case iw8_focus::ParticleModuleType::testImpact:
+        {
+            if (!module.spawnCurve.empty() || !module.models.empty() ||
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty() || !module.curves.empty())
+                throw std::runtime_error("Replay VFX impact test has unrelated pointer assets");
+            iw8_focus::ParticleModuleTestImpact payload{};
+            std::memcpy(&payload, record.moduleData, sizeof(payload));
+            payload.test.eventHandlerData.linkedAssets.numAssets = Count(module.childEffects);
+            constexpr std::size_t linkedAssetsOffset =
+                offsetof(iw8_focus::ParticleModuleTestImpact, test) +
+                offsetof(iw8_focus::ParticleModuleTest, eventHandlerData) +
+                offsetof(iw8_focus::ParticleModuleTestEventHandlerData, linkedAssets);
+            StorePointer(&payload, linkedAssetsOffset,
+                         payload.test.eventHandlerData.linkedAssets.numAssets ? PTR_FOLLOWS
+                                                                             : PTR_NULL);
+            std::memcpy(record.moduleData, &payload, sizeof(payload));
+            break;
+        }
         case iw8_focus::ParticleModuleType::initAtlas:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
                 throw std::runtime_error("Replay VFX atlas module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitAtlas payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -141,7 +180,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::colorGraph:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
                 throw std::runtime_error("Replay VFX color graph has unrelated pointer assets");
             iw8_focus::ParticleModuleColorGraph payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -152,9 +192,22 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::sizeGraph:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
                 throw std::runtime_error("Replay VFX size graph has unrelated pointer assets");
             iw8_focus::ParticleModuleSizeGraph payload{};
+            std::memcpy(&payload, record.moduleData, sizeof(payload));
+            SetCurves(payload.curves, module.curves);
+            std::memcpy(record.moduleData, &payload, sizeof(payload));
+            break;
+        }
+        case iw8_focus::ParticleModuleType::initSpawnShapeBox:
+        {
+            if (!module.spawnCurve.empty() || !module.models.empty() ||
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
+                throw std::runtime_error("Replay VFX box module has unrelated pointer assets");
+            iw8_focus::ParticleModuleInitSpawnShapeBox payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
             SetCurves(payload.curves, module.curves);
             std::memcpy(record.moduleData, &payload, sizeof(payload));
@@ -163,7 +216,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initSpawnShapeCylinder:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
                 throw std::runtime_error("Replay VFX cylinder module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitSpawnShapeCylinder payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -174,7 +228,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initSpawnShapeSphere:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
                 throw std::runtime_error("Replay VFX sphere module has unrelated pointer assets");
             iw8_focus::ParticleModuleInitSpawnShapeSphere payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -185,7 +240,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::forceDragGraph:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
                 throw std::runtime_error("Replay VFX force drag module has unrelated pointer assets");
             iw8_focus::ParticleModuleForceDragGraph payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -196,7 +252,8 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::velocityGraph:
         {
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty())
                 throw std::runtime_error("Replay VFX velocity graph has unrelated pointer assets");
             iw8_focus::ParticleModuleVelocityGraph payload{};
             std::memcpy(&payload, record.moduleData, sizeof(payload));
@@ -213,9 +270,10 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initRotation:
         case iw8_focus::ParticleModuleType::initRotation3D:
         case iw8_focus::ParticleModuleType::gravity:
+        case iw8_focus::ParticleModuleType::physicsRayCast:
             if (!module.spawnCurve.empty() || !module.models.empty() ||
-                !module.materials.empty() || !module.decalMaterials.empty() ||
-                !module.curves.empty())
+                !module.materials.empty() || !module.lightDefs.empty() ||
+                !module.decalMaterials.empty() || !module.curves.empty())
                 throw std::runtime_error("Replay VFX value module has pointer assets");
             break;
         default:
@@ -248,6 +306,18 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
                 }
             }
             break;
+        case iw8_focus::ParticleModuleType::initLightOmni:
+            if (!module.lightDefs.empty())
+            {
+                writer.align(7);
+                for (const auto &name : module.lightDefs)
+                {
+                    iw8_focus::ParticleLinkedAssetDef linked{};
+                    StorePointer(&linked, 0, writer.assetAlias(ASSET_TYPE_LIGHTDEF, name));
+                    writer.writeT(linked);
+                }
+            }
+            break;
         case iw8_focus::ParticleModuleType::initDecal:
             if (!module.decalMaterials.empty())
             {
@@ -265,6 +335,7 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
             }
             break;
         case iw8_focus::ParticleModuleType::initRunner:
+        case iw8_focus::ParticleModuleType::testImpact:
             if (!module.childEffects.empty())
             {
                 writer.align(7);
@@ -272,6 +343,15 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
                 {
                     iw8_focus::ParticleLinkedAssetDef linked{};
                     StorePointer(&linked, 0, writer.assetAlias(ASSET_TYPE_VFX, name));
+                    if (module.native.moduleType ==
+                        static_cast<uint16_t>(iw8_focus::ParticleModuleType::testImpact))
+                    {
+                        // Replay's TEST_* particle-system union marks the linked
+                        // member with selector data 0x00010000. INIT_RUNNER
+                        // records leave this union data zeroed (selector 21).
+                        const uint32_t selector = 0x00010000u;
+                        std::memcpy(linked.selectorData, &selector, sizeof(selector));
+                    }
                     writer.writeT(linked);
                 }
             }
@@ -279,6 +359,7 @@ void WriteModules(ZoneWriter &writer, const std::vector<Module> &modules)
         case iw8_focus::ParticleModuleType::initAtlas:
         case iw8_focus::ParticleModuleType::colorGraph:
         case iw8_focus::ParticleModuleType::sizeGraph:
+        case iw8_focus::ParticleModuleType::initSpawnShapeBox:
         case iw8_focus::ParticleModuleType::initSpawnShapeCylinder:
         case iw8_focus::ParticleModuleType::initSpawnShapeSphere:
         case iw8_focus::ParticleModuleType::forceDragGraph:
@@ -381,5 +462,23 @@ void Register(ZoneWriter &writer, Effect effect)
     const auto name = effect.name;
     writer.add(ASSET_TYPE_VFX, name,
                [effect = std::move(effect)](ZoneWriter &output) { WriteBody(output, effect); });
+}
+
+void RegisterLightDef(ZoneWriter &writer, std::string name)
+{
+    if (name.empty())
+        throw std::runtime_error("Replay VFX LightDef has no asset name");
+    const auto assetName = name;
+    writer.add(ASSET_TYPE_LIGHTDEF, assetName, [name = std::move(name)](ZoneWriter &output) {
+        std::array<uint8_t, iw8sz::LIGHTDEF> lightDef{};
+        StorePointer(lightDef.data(), 0, PTR_FOLLOWS);
+        output.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
+        output.align(7);
+        output.write(lightDef.data(), lightDef.size());
+        output.pushStream(XFILE_BLOCK_VIRTUAL);
+        output.writeStr(name);
+        output.popStream();
+        output.popStream();
+    });
 }
 } // namespace iw8::vfx

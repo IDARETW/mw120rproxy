@@ -29,14 +29,28 @@ Change the multiplier in small steps and rebuild all five fastfiles. High values
 
 ## Baked and indirect light
 
-Converted GPU lightgrid data uses both files below:
+Prepared-map staging can describe the converted GPU light grid with both files below:
 
 ```text
 maps/mp/<map-id>.d3dbsp.gpulightgrid.json
 maps/mp/<map-id>.d3dbsp.gpulightgrid.bin
 ```
 
-The compiler embeds both in the main map zone. Keep them from the same export. Incorrect counts, offsets, probes, or color data can cause camera-dependent artifacts and poor indoor or viewmodel lighting.
+The direct `build-iw3` route creates the same native staging data privately during conversion. The
+compiler validates it and embeds it in the main fastfile; neither file is part of the final map
+package. Keep prepared inputs from the same export. Incorrect counts, offsets, probes, or color
+data can cause camera-dependent artifacts and poor indoor or viewmodel lighting.
+
+Authored IW3 lightmaps are packed into Replay's native temporary atlas contract. Baked opaque
+surfaces use source-specific native Replay materials, direct packed-atlas UVs, and the native
+lightmap index. The atlas contains the three target planes in BC4, R11G11B10F, and BC5 order.
+
+Screen-space ambient occlusion remains owned by MW2019's rendering engine. Lit generated passes
+bind Replay's GTAO code image at `t95` and sampler at `s8`; the converter does not bake a custom AO
+texture or install a rendering hook. Replay light-grid tetrahedron visibility is a separate baked
+target structure. IW3 does not expose a proven transform for its per-corner flags and 64-byte
+visibility records, so the converter keeps that optional path disabled rather than fabricating
+lighting data.
 
 The sky image is visual and should agree with the source sun. Do not use it as a second ambient-light override.
 

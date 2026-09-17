@@ -28,6 +28,21 @@ struct Technique
     std::vector<uint8_t> header, states, rootsig, statebits, args;
     std::array<std::string, 4> shaders;
 };
+struct DecalVolumeMaterial
+{
+    std::string name;
+    std::array<std::string, 6> channels;
+    uint32_t flags{};
+    std::array<float, 3> colorTint{1.0f, 1.0f, 1.0f};
+    float alphaDissolveParms{};
+    float emissiveScale{1.0f};
+    uint32_t packedDisplacementScaleAndBias{3154132992u};
+    float displacementCutoffDistance{750.0f};
+    float displacementCutoffFalloff{0.004f};
+    uint32_t packedTemperatureBaseAndScale{48128u};
+    uint8_t rows{1};
+    uint8_t columns{1};
+};
 struct Material
 {
     std::string material;
@@ -38,6 +53,7 @@ struct Material
     std::vector<Technique> techniques;
     std::vector<std::string> images;
     std::string decalVolumeMaterial;
+    DecalVolumeMaterial decalVolumeDefinition;
     std::vector<Image> imageDefinitions;
     std::vector<std::array<std::vector<uint8_t>, 4>> buffers;
 };
@@ -81,6 +97,17 @@ struct ReflectionProbe
     replaybounds::Bounds volume{};
     Image image;
     std::array<std::array<float, 9>, 4> sh{};
+};
+struct NativeLightmapImage
+{
+    uint32_t format{};
+    uint16_t width{};
+    uint16_t height{};
+    std::vector<uint8_t> pixels;
+};
+struct NativeLightmap
+{
+    std::array<NativeLightmapImage, 3> images;
 };
 struct GlassPane
 {
@@ -133,6 +160,7 @@ struct Mesh : Material
     std::vector<Cell> cells;
     std::vector<ReflectionProbe> reflectionProbes;
     Image reflectionProbeArrayImage;
+    std::vector<NativeLightmap> nativeLightmaps;
     std::vector<GlassPane> glassPanes;
     std::vector<unsigned> surfaceMaterials;
     unsigned opaqueCount = 0;

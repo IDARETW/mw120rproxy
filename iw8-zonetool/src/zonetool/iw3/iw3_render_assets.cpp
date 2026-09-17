@@ -69,7 +69,9 @@ struct SourceMaterial
 enum class FxMaterialFamily
 {
     unsupported,
+    alpha,
     alphaFeather,
+    additive,
     additiveFeather,
     cloud,
     decal,
@@ -101,6 +103,123 @@ void WriteBytes(const std::filesystem::path &path, const std::vector<std::uint8_
     std::filesystem::create_directories(path.parent_path());
     if (!zt::write_file(path.string(), data))
         throw std::runtime_error("cannot write " + path.string());
+}
+
+std::array<std::uint8_t, 8> EncodeBc4Block(const std::array<std::uint8_t, 16> &values)
+{
+    const auto [minimum, maximum] = std::minmax_element(values.begin(), values.end());
+    std::array<std::uint8_t, 8> block{};
+    block[0] = *maximum;
+    block[1] = *minimum;
+    if (block[0] == block[1])
+        return block;
+
+    std::array<unsigned, 8> palette{block[0], block[1]};
+    for (unsigned index = 1; index <= 6; ++index)
+        palette[index + 1] = ((7 - index) * unsigned(block[0]) +
+                              index * unsigned(block[1]) + 3) /
+                             7;
+
+    std::uint64_t indices = 0;
+    for (unsigned pixel = 0; pixel < values.size(); ++pixel)
+    {
+        unsigned best = 0;
+        unsigned distance = UINT_MAX;
+        for (unsigned candidate = 0; candidate < palette.size(); ++candidate)
+        {
+            const unsigned delta = palette[candidate] > values[pixel]
+                                       ? palette[candidate] - values[pixel]
+                                       : values[pixel] - palette[candidate];
+            if (delta < distance)
+            {
+                distance = delta;
+                best = candidate;
+            }
+        }
+        indices |= std::uint64_t(best) << (pixel * 3);
+    }
+    for (unsigned byte = 0; byte < 6; ++byte)
+        block[byte + 2] = static_cast<std::uint8_t>(indices >> (byte * 8));
+    return block;
+}
+
+std::vector<std::uint8_t> EncodeBc4(const unsigned width, const unsigned height,
+                                    const std::vector<std::uint8_t> &values)
+{
+    if (values.size() != static_cast<std::size_t>(width) * height)
+        throw std::runtime_error("invalid BC4 source dimensions");
+    const unsigned blocksWide = (width + 3) / 4;
+    const unsigned blocksHigh = (height + 3) / 4;
+    std::vector<std::uint8_t> encoded(static_cast<std::size_t>(blocksWide) * blocksHigh * 8);
+    for (unsigned blockY = 0; blockY < blocksHigh; ++blockY)
+        for (unsigned blockX = 0; blockX < blocksWide; ++blockX)
+        {
+            std::array<std::uint8_t, 16> blockValues{};
+            for (unsigned y = 0; y < 4; ++y)
+                for (unsigned x = 0; x < 4; ++x)
+                {
+                    const unsigned sourceX = std::min(blockX * 4 + x, width - 1);
+                    const unsigned sourceY = std::min(blockY * 4 + y, height - 1);
+                    blockValues[y * 4 + x] = values[static_cast<std::size_t>(sourceY) * width +
+                                                        sourceX];
+                }
+            const auto block = EncodeBc4Block(blockValues);
+            std::memcpy(encoded.data() +
+                            (static_cast<std::size_t>(blockY) * blocksWide + blockX) * 8,
+                        block.data(), block.size());
+        }
+    return encoded;
+}
+
+std::vector<std::uint8_t> EncodeBc5(const unsigned width, const unsigned height,
+                                    const std::vector<std::uint8_t> &xValues,
+                                    const std::vector<std::uint8_t> &yValues)
+{
+    const auto x = EncodeBc4(width, height, xValues);
+    const auto y = EncodeBc4(width, height, yValues);
+    std::vector<std::uint8_t> encoded(x.size() * 2);
+    for (std::size_t block = 0; block < x.size() / 8; ++block)
+    {
+        std::memcpy(encoded.data() + block * 16, x.data() + block * 8, 8);
+        std::memcpy(encoded.data() + block * 16 + 8, y.data() + block * 8, 8);
+    }
+    return encoded;
+}
+
+std::uint32_t EncodeUnsignedFloat(const float value, const unsigned mantissaBits)
+{
+    if (!(value > 0.0f))
+        return 0;
+    int exponent = 0;
+    const float mantissa = std::frexp(value, &exponent) * 2.0f;
+    int biasedExponent = exponent - 1 + 15;
+    if (biasedExponent <= 0)
+    {
+        const auto denormal = static_cast<std::uint32_t>(
+            std::lround(std::ldexp(value, 14 + static_cast<int>(mantissaBits))));
+        return std::min(denormal, (1u << mantissaBits) - 1);
+    }
+    if (biasedExponent >= 31)
+        return (30u << mantissaBits) | ((1u << mantissaBits) - 1);
+    auto fraction = static_cast<std::uint32_t>(
+        std::lround((mantissa - 1.0f) * static_cast<float>(1u << mantissaBits)));
+    if (fraction == (1u << mantissaBits))
+    {
+        fraction = 0;
+        if (++biasedExponent >= 31)
+            return (30u << mantissaBits) | ((1u << mantissaBits) - 1);
+    }
+    return (static_cast<std::uint32_t>(biasedExponent) << mantissaBits) | fraction;
+}
+
+std::uint32_t EncodeR11G11B10(const std::uint8_t red, const std::uint8_t green,
+                              const std::uint8_t blue)
+{
+    constexpr float scale = 1.0f / 255.0f;
+    const std::uint32_t r = EncodeUnsignedFloat(red * scale, 6);
+    const std::uint32_t g = EncodeUnsignedFloat(green * scale, 6);
+    const std::uint32_t b = EncodeUnsignedFloat(blue * scale, 5);
+    return r | (g << 11) | (b << 22);
 }
 
 Json ReadJson(const std::filesystem::path &path)
@@ -1035,11 +1154,19 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
     SourceFxMaterial material;
     material.name = name;
     material.techniqueSet = source.at("techniqueSet").get<std::string>();
-    if (material.techniqueSet == "effect_zfeather")
+    const bool noFogAlias = material.techniqueSet.ends_with("_nofog");
+    if (material.techniqueSet == "effect" || material.techniqueSet == "effect_nofog")
+        material.family = FxMaterialFamily::alpha;
+    else if (material.techniqueSet == "effect_zfeather" ||
+        material.techniqueSet == "effect_zfeather_nofog")
         material.family = FxMaterialFamily::alphaFeather;
-    else if (material.techniqueSet == "effect_zfeather_add")
+    else if (material.techniqueSet == "effect_zfeather_add" ||
+             material.techniqueSet == "effect_zfeather_add_nofog")
         material.family = FxMaterialFamily::additiveFeather;
-    else if (material.techniqueSet == "particle_cloud")
+    else if (material.techniqueSet == "effect_add_nofog")
+        material.family = FxMaterialFamily::additive;
+    else if (material.techniqueSet == "particle_cloud" ||
+             material.techniqueSet == "particle_cloud_outdoor")
         material.family = FxMaterialFamily::cloud;
     else if (material.techniqueSet == "mc_l_sm_b0c0s0" ||
              material.techniqueSet == "wc_l_sm_b0c0s0")
@@ -1109,7 +1236,14 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
     }
 
     if (source.at("cameraRegion") != "emissive" || source.at("stateFlags") != 16)
+    {
+        if (material.family == FxMaterialFamily::alpha)
+        {
+            material.family = FxMaterialFamily::unsupported;
+            return material;
+        }
         throw std::runtime_error("unsupported IW3 FX material metadata: " + name);
+    }
 
     const auto &textures = source.at("textures");
     if (!textures.is_array() || textures.size() != 1)
@@ -1129,10 +1263,20 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
     const bool wrapped = !sampler.at("clampU").get<bool>() &&
                          !sampler.at("clampV").get<bool>() &&
                          !sampler.at("clampW").get<bool>();
+    const bool outdoorCloud = material.techniqueSet == "particle_cloud_outdoor";
+    const bool supportedFilter = filter == "linear" || filter == "aniso2x" ||
+                                 (outdoorCloud && filter == "aniso4x");
     if ((material.family == FxMaterialFamily::cloud ? !clamped : !wrapped) ||
-        (filter != "linear" && filter != "aniso2x") ||
+        !supportedFilter ||
         (mipMap != "disabled" && mipMap != "nearest" && mipMap != "linear"))
+    {
+        if (noFogAlias)
+        {
+            material.family = FxMaterialFamily::unsupported;
+            return material;
+        }
         throw std::runtime_error("IW3 FX material sampler has no pinned Replay mapping: " + name);
+    }
 
     bool foundColorState = false;
     for (const auto &state : source.at("stateBits"))
@@ -1151,8 +1295,9 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
         const bool additive = state.at("alphaTest") == "disabled" &&
                               state.at("srcBlendRgb") == "one" &&
                               state.at("dstBlendRgb") == "one";
-        const bool wantsAlpha = material.family == FxMaterialFamily::alphaFeather ||
-                                material.family == FxMaterialFamily::cloud;
+        const bool wantsAlpha = material.family == FxMaterialFamily::alpha ||
+                                 material.family == FxMaterialFamily::alphaFeather ||
+                                 material.family == FxMaterialFamily::cloud;
         if (!shared || (wantsAlpha ? !alpha : !additive))
             throw std::runtime_error("IW3 FX material blend state has no pinned Replay mapping: " +
                                      name);
@@ -1172,15 +1317,19 @@ SourceFxMaterial ReadFxMaterial(const std::filesystem::path &root,
     for (const auto &constant : source.at("constants"))
     {
         const std::string key = constant.at("name").get<std::string>();
-        if (key == "featherParms")
+        if (key == "featherParms" &&
+            (material.family == FxMaterialFamily::alphaFeather ||
+             material.family == FxMaterialFamily::additiveFeather))
             FxLiteral(constant.at("literal"), "feather parameters"), foundFeather = true;
         else if (key == "colorTint")
             material.tint = FxLiteral(constant.at("literal"), "color tint"), foundTint = true;
         else
             throw std::runtime_error("IW3 FX material has an unsupported constant: " + name);
     }
-    if (!foundFeather || !foundTint)
-        throw std::runtime_error("IW3 FX material is missing feather constants: " + name);
+    const bool requiresFeather = material.family == FxMaterialFamily::alphaFeather ||
+                                 material.family == FxMaterialFamily::additiveFeather;
+    if (!foundTint || (requiresFeather && !foundFeather))
+        throw std::runtime_error("IW3 FX material is missing required constants: " + name);
     return material;
 }
 
@@ -1780,10 +1929,14 @@ std::string FxMaterialName(const std::string &map, const SourceFxMaterial &sourc
 
 Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
 {
+    constexpr std::string_view alphaSimpleTechset =
+        "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100000023_0_0_2_0_0";
     constexpr std::string_view alphaTechset =
         "elcq/unlit_6_effect_bad_ta0_802_1004_0_1_0_0_0_100000023_0_0_2_0_0";
     constexpr std::string_view additiveTechset =
         "elcq/unlit_6_effect_bad_tca_802_10a4_0_1_0_0_0_100060023_0_0_3_0_0";
+    constexpr std::string_view additiveSimpleTechset =
+        "elcq/unlit_6_effect_bad_tca_802_4_0_1_0_0_0_100060023_0_0_3_0_0";
     constexpr std::string_view cloudTechset =
         "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100020023_0_0_2_0_0";
     if (source.family == FxMaterialFamily::decal)
@@ -1806,9 +1959,14 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
                 {"imageDefinitions", Json::array()},
                 {"decalVolumeMaterial", "i/vfx_decal_surface_glass_2"}};
     }
-    const bool additive = source.family == FxMaterialFamily::additiveFeather;
+    const bool alpha = source.family == FxMaterialFamily::alpha;
+    const bool simpleAlpha = alpha && source.rows == 1 && source.columns == 1;
+    const bool additive = source.family == FxMaterialFamily::additive ||
+                          source.family == FxMaterialFamily::additiveFeather;
+    const bool simpleAdditive = source.family == FxMaterialFamily::additive &&
+                                source.rows == 1 && source.columns == 1;
     const bool cloud = source.family == FxMaterialFamily::cloud;
-    if (source.family != FxMaterialFamily::alphaFeather && !additive && !cloud)
+    if (!alpha && source.family != FxMaterialFamily::alphaFeather && !additive && !cloud)
         throw std::runtime_error("IW3 FX material family is not ready for Replay emission");
 
     std::vector<std::uint8_t> info(32);
@@ -1818,8 +1976,8 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
     info[0x11] = 35;
     info[0x12] = 16;
     info[0x14] = 1;
-    info[0x15] = cloud ? 1 : additive ? 4 : 3;
-    info[0x16] = cloud ? 1 : 2;
+    info[0x15] = cloud || simpleAlpha ? 1 : simpleAdditive ? 2 : additive ? 4 : 3;
+    info[0x16] = cloud || simpleAlpha || simpleAdditive ? 1 : 2;
     info[0x1A] = static_cast<std::uint8_t>(source.rows);
     info[0x1B] = static_cast<std::uint8_t>(source.columns);
 
@@ -1832,53 +1990,63 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
     };
     if (additive)
     {
-        // Native Replay one-image additive atlas contract. Index 9 is the
-        // fixed effect-color setup used by the shipped tca/10a4 family.
+        // Native Replay one-image additive contracts carry a target-owned
+        // effect-color setup at index 9. The shipped 1x1 tca/4 and atlas
+        // tca/10a4 fixtures use distinct third words.
         appendConstant(9u,
                        std::array<std::uint32_t, 4>{0xFFFFFFFFu, 0x00FF17E7u,
-                                                    0x4C2B5CAFu, 0u});
+                                                     simpleAdditive ? 0x4C2B5D08u
+                                                                    : 0x4C2B5CAFu,
+                                                     0u});
     }
     appendConstant(36u, source.tint);
-    if (!cloud)
+    if (!cloud && !simpleAlpha && !simpleAdditive)
     {
-    const std::array<float, 4> atlas{static_cast<float>(source.columns),
-                                     static_cast<float>(source.rows),
-                                     1.0f / static_cast<float>(source.columns),
-                                     1.0f / static_cast<float>(source.rows)};
-    appendConstant(94u, atlas);
-    const std::array<std::uint32_t, 4> atlasBits{
-        source.rows * source.columns, source.columns - 1,
-        static_cast<std::uint32_t>(std::countr_zero(source.columns)), 0u};
-    appendConstant(95u, atlasBits);
+        const std::array<float, 4> atlas{static_cast<float>(source.columns),
+                                         static_cast<float>(source.rows),
+                                         1.0f / static_cast<float>(source.columns),
+                                         1.0f / static_cast<float>(source.rows)};
+        appendConstant(94u, atlas);
+        const std::array<std::uint32_t, 4> atlasBits{
+            source.rows * source.columns, source.columns - 1,
+            static_cast<std::uint32_t>(std::countr_zero(source.columns)), 0u};
+        appendConstant(95u, atlasBits);
 
-    std::vector<std::uint8_t> vertexConstants(160);
-    std::memcpy(vertexConstants.data() + 128, atlas.data(), 16);
-    std::memcpy(vertexConstants.data() + 144, atlasBits.data(), 16);
-    std::vector<std::uint8_t> bufferIndices(195, 0xFF);
-    bufferIndices[29] = 0;
-    bufferIndices[30] = 1;
+        std::vector<std::uint8_t> vertexConstants(160);
+        std::memcpy(vertexConstants.data() + 128, atlas.data(), 16);
+        std::memcpy(vertexConstants.data() + 144, atlasBits.data(), 16);
+        std::vector<std::uint8_t> bufferIndices(195, 0xFF);
+        bufferIndices[29] = 0;
+        bufferIndices[30] = 1;
 
-    return {{"schema", 1},
-            {"source", source.name},
-            {"info", Hex(info)},
-            {"techset", additive ? additiveTechset : alphaTechset},
-            {"textures", Json::array({{{"header", "1200000000000000"},
-                                        {"image", ""}}})},
-            {"constants", Hex(constants)},
-            {"bufferIndices", Hex(bufferIndices)},
-            {"buffers", Json::array({Json::array({Hex(vertexConstants), "", "", ""}),
-                                      Json::array({"", "", "", ""})})},
-            {"imageDefinitions", Json::array()}};
+        return {{"schema", 1},
+                {"source", source.name},
+                {"info", Hex(info)},
+                {"techset", additive ? additiveTechset : alphaTechset},
+                {"textures", Json::array({{{"header", "1200000000000000"},
+                                            {"image", ""}}})},
+                {"constants", Hex(constants)},
+                {"bufferIndices", Hex(bufferIndices)},
+                {"buffers", Json::array({Json::array({Hex(vertexConstants), "", "", ""}),
+                                          Json::array({"", "", "", ""})})},
+                {"imageDefinitions", Json::array()}};
     }
 
     std::vector<std::uint8_t> pixelConstants(48);
+    if (simpleAdditive)
+    {
+        const std::array<std::uint32_t, 4> effectColor{
+            0xFFFFFFFFu, 0x00FF17E7u, 0x4C2B5D08u, 0u};
+        std::memcpy(pixelConstants.data() + 16, effectColor.data(), 16);
+    }
     std::memcpy(pixelConstants.data() + 32, source.tint.data(), 16);
     std::vector<std::uint8_t> bufferIndices(195, 0xFF);
     bufferIndices[30] = 0;
     return {{"schema", 1},
             {"source", source.name},
             {"info", Hex(info)},
-            {"techset", cloudTechset},
+            {"techset", cloud ? cloudTechset
+                               : simpleAdditive ? additiveSimpleTechset : alphaSimpleTechset},
             {"textures", Json::array({{{"header", "1200000000000000"},
                                         {"image", ""}}})},
             {"constants", Hex(constants)},
@@ -1890,6 +2058,7 @@ Json BuildFxMaterialDefinition(const SourceFxMaterial &source)
 
 RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Json &world,
                                const std::vector<std::string> &surfaceMaterials,
+                               const std::vector<std::string> &worldMaterials,
                                const std::vector<std::string> &modelMaterials,
                                const std::vector<std::string> &fxMaterials,
                                const std::vector<std::filesystem::path> &sourcePaths,
@@ -1931,7 +2100,12 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     plan.reflectionProbes.reserve(sourceProbes.size());
     std::vector<Cubemap> probeCubemaps;
     probeCubemaps.reserve(sourceProbes.size());
-    for (std::size_t index = 0; index < sourceProbes.size(); ++index)
+    // IW3 reserves probe 0 for R_CreateDefaultProbe's red diagnostic image.
+    // R_FindNearestReflectionProbe/R_AddAllProbesToAllCells skip it when
+    // authored captures exist. Only those captures belong in Replay's array,
+    // SH table and spatial instances; retain the sole default for unprobed maps.
+    const std::size_t firstProbe = sourceProbes.size() > 1 ? 1 : 0;
+    for (std::size_t index = firstProbe; index < sourceProbes.size(); ++index)
     {
         const auto &source = sourceProbes.at(index);
         const auto &sourceOrigin = source.at("origin");
@@ -1942,6 +2116,7 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             sourceName.find('\\') != std::string::npos || sourceName.front() == '/')
             throw std::runtime_error("invalid IW3 reflection probe");
         ReflectionProbePlan probe;
+        probe.sourceIndex = index;
         for (std::size_t axis = 0; axis < 3; ++axis)
         {
             probe.origin[axis] = sourceOrigin.at(axis).get<float>();
@@ -2160,9 +2335,89 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             response.rgba[index * 4 + 2] = b[0];
             response.rgba[index * 4 + 3] = a[0];
         }
+        // Replay 1.20's native temporary lightmap atlas takes one BC4 mask,
+        // one R11G11B10F irradiance image and one BC5 direction image per
+        // target lightmap. A single source pair can be represented directly.
+        // Multiple IW3 pairs are packed below into one target lightmap, which
+        // matches the one-atlas GfxWorld contract used by shipped 1.20 maps.
+        // The generated material remains the rendering consumer until the
+        // target precompiled layout is fully matched.
+        if (lightmapDimensions.size() == 1)
+        {
+            const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+            std::vector<std::uint8_t> maskValues(pixelCount), directionX(pixelCount),
+                directionY(pixelCount), irradiance(pixelCount * sizeof(std::uint32_t));
+            for (std::size_t index = 0; index < pixelCount; ++index)
+            {
+                maskValues[index] = mask.rgba[index * 4];
+                const auto *a = secondBytes.data() + index * 4;
+                const auto *b = secondBytes.data() + half + index * 4;
+                directionX[index] = a[3];
+                directionY[index] = b[3];
+                const std::uint32_t packed = EncodeR11G11B10(a[2], a[1], a[0]);
+                std::memcpy(irradiance.data() + index * sizeof(packed), &packed,
+                            sizeof(packed));
+            }
+            NativeLightmapPlan native;
+            native.width = width;
+            native.height = height;
+            native.files = {map + "_native_lightmap_0.bc4",
+                            map + "_native_lightmap_0.r11g11b10f",
+                            map + "_native_lightmap_0.bc5"};
+            WriteBytes(mapDirectory / native.files[0], EncodeBc4(width, height, maskValues));
+            WriteBytes(mapDirectory / native.files[1], irradiance);
+            WriteBytes(mapDirectory / native.files[2],
+                       EncodeBc5(width, height, directionX, directionY));
+            plan.nativeLightmaps.push_back(std::move(native));
+        }
         Paste(atlases[0], color, rectangle.x, rectangle.y);
         Paste(atlases[1], normal, rectangle.x, rectangle.y);
         Paste(atlases[2], response, rectangle.x, rectangle.y);
+    }
+
+    if (lightmapDimensions.size() > 1)
+    {
+        constexpr unsigned nativeWidth = 4096;
+        constexpr unsigned nativeHeight = 4096;
+        constexpr std::size_t nativePixelCount =
+            static_cast<std::size_t>(nativeWidth) * nativeHeight;
+        NativeLightmapPlan native;
+        native.width = nativeWidth;
+        native.height = nativeHeight;
+        native.files = {map + "_native_lightmap_0.bc4",
+                        map + "_native_lightmap_0.r11g11b10f",
+                        map + "_native_lightmap_0.bc5"};
+
+        {
+            std::vector<std::uint8_t> maskValues(nativePixelCount);
+            for (std::size_t index = 0; index < nativePixelCount; ++index)
+                maskValues[index] = atlases[0].rgba[index * 4 + 3];
+            WriteBytes(mapDirectory / native.files[0],
+                       EncodeBc4(nativeWidth, nativeHeight, maskValues));
+        }
+        {
+            std::vector<std::uint8_t> irradiance(nativePixelCount * sizeof(std::uint32_t));
+            for (std::size_t index = 0; index < nativePixelCount; ++index)
+            {
+                const auto *color = atlases[0].rgba.data() + index * 4;
+                const std::uint32_t packed = EncodeR11G11B10(color[0], color[1], color[2]);
+                std::memcpy(irradiance.data() + index * sizeof(packed), &packed,
+                            sizeof(packed));
+            }
+            WriteBytes(mapDirectory / native.files[1], irradiance);
+        }
+        {
+            std::vector<std::uint8_t> directionX(nativePixelCount),
+                directionY(nativePixelCount);
+            for (std::size_t index = 0; index < nativePixelCount; ++index)
+            {
+                directionX[index] = atlases[1].rgba[index * 4 + 0];
+                directionY[index] = atlases[1].rgba[index * 4 + 1];
+            }
+            WriteBytes(mapDirectory / native.files[2],
+                       EncodeBc5(nativeWidth, nativeHeight, directionX, directionY));
+        }
+        plan.nativeLightmaps.push_back(std::move(native));
     }
 
     const unsigned mipCount = static_cast<unsigned>(std::log2(cell)) - 1;
@@ -2170,6 +2425,37 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     const std::string stem = map + ".d3dbsp";
     plan.material = "w/mw120r_" + map;
     plan.materialDefinition = stem + ".material.json";
+    std::set<std::string> writtenResidentImages;
+    const auto residentImage = [&](Json &definition, const unsigned channel, Image source,
+                                   const std::array<float, 4> &tint,
+                                   const std::string_view domain) {
+        if (channel == 0)
+            source = Resize(source, source.width, source.height, true, tint);
+        unsigned levels = 1, width = source.width, height = source.height;
+        while (width > 1 || height > 1)
+        {
+            width = std::max(1u, width / 2);
+            height = std::max(1u, height / 2);
+            ++levels;
+        }
+        const unsigned sourceWidth = source.width, sourceHeight = source.height;
+        auto pixels = MipChain(std::move(source), levels, channel == 0);
+        const auto digest = Sha256(pixels);
+        const std::string id = Hex(std::span(digest).first(8));
+        const std::string filename = map + "_" + std::string(domain) + "_" +
+                                     std::to_string(channel) + "_" + id + ".rgba";
+        const std::string name = "mw120r/" + map + "_" + std::string(domain) + "_" +
+                                 std::to_string(channel) + "_" + id;
+        if (writtenResidentImages.insert(filename).second)
+            WriteBytes(mapDirectory / filename, pixels);
+        definition["textures"][channel]["image"] = name;
+        definition["imageDefinitions"].push_back({{"name", name},
+                                                  {"width", sourceWidth},
+                                                  {"height", sourceHeight},
+                                                  {"rgba8", filename},
+                                                  {"format", channel == 0 ? 7 : 6},
+                                                  {"mipCount", levels}});
+    };
     material["techsetDefinition"] = stem + ".techset.json";
     material["imageDefinitions"] = Json::array();
     for (unsigned channel = 0; channel < 3; ++channel)
@@ -2204,6 +2490,70 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         plan.additionalMaterials.push_back({{"schema", 1},
                                             {"material", plan.material + "_" + kind},
                                             {"materialDefinition", variant.at("definition")}});
+    }
+
+    // Baked opaque BSP surfaces use Replay's shipped world shader family and
+    // the native lightmap table. Keep the generated shader for surfaces whose
+    // source semantics are not yet represented by that family.
+    const std::set<std::string> neededWorldMaterials(worldMaterials.begin(),
+                                                     worldMaterials.end());
+    const Json nativeWorldTemplate = Json::parse(ResourceText(IDR_IW3_TECHSET_TEMPLATE));
+    std::map<unsigned, std::pair<std::string, std::string>> nativeWorldTechsets;
+    for (const SourceMaterial &source : materials)
+    {
+        if (!neededWorldMaterials.contains(source.name) || source.kind != SurfaceKind::opaque)
+            continue;
+        auto [entry, inserted] = nativeWorldTechsets.try_emplace(source.cullMode);
+        if (inserted)
+        {
+            Json nativeTechset = nativeWorldTemplate;
+            const std::string suffix = "_cull" + std::to_string(source.cullMode);
+            nativeTechset["name"] = "tw/mw120r_" + map + "_native_world" + suffix;
+            nativeTechset["nativeReplayFixture"] = true;
+            for (auto &technique : nativeTechset.at("techniques"))
+            {
+                auto header = Unhex(technique.at("header").get<std::string>());
+                unsigned cull = source.cullMode;
+                if (At<std::uint32_t>(header, 8) == 28 && cull)
+                    cull = 3 - cull;
+                Put<std::uint64_t>(header, 0xA0,
+                                   (At<std::uint64_t>(header, 0xA0) & ~3ull) | cull);
+                technique["header"] = Hex(header);
+                technique["name"] = technique.at("name").get<std::string>() + "_mw120r_" +
+                                    map + suffix;
+                PatchStateIdentity(technique, header);
+            }
+            const std::string file = stem + ".native_world" + suffix + ".techset.json";
+            entry->second = {nativeTechset.at("name").get<std::string>(), file};
+            WriteJson(mapDirectory / file, nativeTechset);
+        }
+
+        const auto sourceBytes = std::span(
+            reinterpret_cast<const std::uint8_t *>(source.name.data()), source.name.size());
+        const auto nameDigest = Sha256(sourceBytes);
+        const std::string id = Hex(std::span(nameDigest).first(8));
+        const std::string materialName = "w/mw120r_" + map + "_world_" + id;
+        const std::string materialFile = stem + ".world." + id + ".material.json";
+        Json direct = Json::parse(ResourceText(IDR_IW3_MATERIAL_TEMPLATE));
+        direct["source"] = source.name;
+        direct["techset"] = entry->second.first;
+        direct["techsetDefinition"] = entry->second.second;
+        direct["imageDefinitions"] = Json::array();
+        residentImage(direct, 0, image(source.color).front(), source.tint, "world");
+        residentImage(direct, 1,
+                      source.normal.empty()
+                          ? Image{1, 1, std::vector<std::uint8_t>{128, 128, 255, 255}}
+                          : image(source.normal).front(),
+                      {1, 1, 1, 1}, "world");
+        residentImage(direct, 2,
+                      source.response.empty() ? Image{1, 1, std::vector<std::uint8_t>{0, 0, 0, 0}}
+                                              : image(source.response).front(),
+                      {1, 1, 1, 1}, "world");
+        WriteJson(mapDirectory / materialFile, direct);
+        const unsigned index = static_cast<unsigned>(plan.additionalMaterials.size() + 1);
+        plan.additionalMaterials.push_back(
+            {{"schema", 1}, {"material", materialName}, {"materialDefinition", materialFile}});
+        plan.materials.at(source.name).worldMaterialIndex = index;
     }
 
     // FxGlassSystem supplies its own vertices. A BSP glass variant cannot be
@@ -2291,38 +2641,6 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
 
     std::set<std::string> neededModelMaterials(modelMaterials.begin(), modelMaterials.end());
     std::map<std::pair<unsigned, unsigned>, std::pair<std::string, std::string>> modelTechsetFiles;
-    std::set<std::string> writtenResidentImages;
-    const auto residentImage = [&](Json &definition, const unsigned channel, Image source,
-                                   const std::array<float, 4> &tint,
-                                   const std::string_view domain) {
-        if (channel == 0)
-            source = Resize(source, source.width, source.height, true, tint);
-        unsigned levels = 1, width = source.width, height = source.height;
-        while (width > 1 || height > 1)
-        {
-            width = std::max(1u, width / 2);
-            height = std::max(1u, height / 2);
-            ++levels;
-        }
-        const unsigned sourceWidth = source.width, sourceHeight = source.height;
-        auto pixels = MipChain(std::move(source), levels, channel == 0);
-        const auto digest = Sha256(pixels);
-        const std::string id = Hex(std::span(digest).first(8));
-        const std::string filename = map + "_" + std::string(domain) + "_" +
-                                     std::to_string(channel) + "_" + id + ".rgba";
-        const std::string name = "mw120r/" + map + "_" + std::string(domain) + "_" +
-                                 std::to_string(channel) + "_" + id;
-        if (writtenResidentImages.insert(filename).second)
-            WriteBytes(mapDirectory / filename, pixels);
-        definition["textures"][channel]["image"] = name;
-        definition["imageDefinitions"].push_back({{"name", name},
-                                                  {"width", sourceWidth},
-                                                  {"height", sourceHeight},
-                                                  {"rgba8", filename},
-                                                  {"format", channel == 0 ? 7 : 6},
-                                                  {"mipCount", levels}});
-    };
-
     for (const SourceMaterial &source : materials)
     {
         if (!neededModelMaterials.contains(source.name) || source.kind == SurfaceKind::skipped)

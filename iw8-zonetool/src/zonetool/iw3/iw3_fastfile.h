@@ -200,6 +200,7 @@ struct PreparedMap
     std::vector<PreparedFx> fxEffects;
     std::unordered_map<std::string, std::string> fxMaterialAliases;
     std::vector<iw8::vfx::Effect> vfxEffects;
+    std::string vfxLightDef;
     std::string smallGlassEffect;
     iw8::impact::EffectOverrides impactOverrides;
     replayrender::StaticModels staticModels;

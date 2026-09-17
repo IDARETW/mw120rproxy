@@ -1760,17 +1760,18 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
     // The CRCs and cardinalities below match shipped Replay 1.20 one-body assets.
     // DynEnt models use simulation category 1; the glass dummy uses custom category 9.
     // The two event name arrays contain one empty hkStringPtr, as shipped assets do.
-    constexpr std::uint32_t kDefaultBodyQualityNameCrc = 0x7923E35Cu;
-    constexpr std::uint32_t kDefaultMaterialNameCrc = 0x4B02BC9Du;
-    constexpr std::uint32_t kDefaultMotionPropertiesNameCrc = 0xE9D0CCAFu;
+    const bool glass = useCategory == 7 && simulationCategory == 9;
+    const std::uint32_t bodyQualityNameCrc = glass ? 0x98996C20u : 0x7923E35Cu;
+    const std::uint32_t materialNameCrc = glass ? 0xF728E572u : 0x4B02BC9Du;
+    const std::uint32_t motionPropertiesNameCrc = glass ? 0x8B8AA36Fu : 0xE9D0CCAFu;
     constexpr std::uint32_t kServerUsageDefault = 0;
     constexpr std::uint32_t kBodyDriverNone = 0;
 
     auto *emptyEventName = static_cast<char *>(havok.Allocate(1));
     const auto emptyString = reinterpret_cast<std::uintptr_t>(emptyEventName);
-    WriteArray(havok, root, 0x10, std::vector<std::uint32_t>{kDefaultBodyQualityNameCrc});
-    WriteArray(havok, root, 0x20, std::vector<std::uint32_t>{kDefaultMaterialNameCrc});
-    WriteArray(havok, root, 0x30, std::vector<std::uint32_t>{kDefaultMotionPropertiesNameCrc});
+    WriteArray(havok, root, 0x10, std::vector<std::uint32_t>{bodyQualityNameCrc});
+    WriteArray(havok, root, 0x20, std::vector<std::uint32_t>{materialNameCrc});
+    WriteArray(havok, root, 0x30, std::vector<std::uint32_t>{motionPropertiesNameCrc});
     WriteArray(havok, root, 0x40, std::vector<std::uintptr_t>{emptyString});
     WriteArray(havok, root, 0x50, std::vector<std::uintptr_t>{emptyString});
     WriteArray(havok, root, 0x60, std::vector<std::uint32_t>{kServerUsageDefault});
@@ -1793,10 +1794,16 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
     auto *body = static_cast<std::uint8_t *>(havok.Allocate(192));
     havok.Function<void(void *, void *, int)>(0x1E64350)(body, nullptr, 1);
     Write(body, reinterpret_cast<std::uintptr_t>(shape));
+    // Replay ray-hit conversion interns HavokPhysics_GetRigidBodyName without
+    // a null check. Preserve a native body name, including on falling glass.
+    const std::string_view bodyName = glass ? "fxglassdummy" : "tag_origin";
+    auto *bodyNameData = static_cast<char *>(havok.Allocate(bodyName.size() + 1));
+    std::memcpy(bodyNameData, bodyName.data(), bodyName.size());
+    Write(body + 0x18, reinterpret_cast<std::uintptr_t>(bodyNameData));
     Write(body + 0x14, std::uint16_t{0});
     Write(body + 0x16, std::uint8_t{0});
     Write(body + 0x88, std::uint16_t{0});
-    if (useCategory == 7 && simulationCategory == 9)
+    if (glass)
     {
         // FxGlass creates a dynamic body from this asset at break time.  The
         // shipped glasschunkdummydefault keeps the body collision filter and
@@ -1827,7 +1834,12 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
     if (!loadedSystem || Read<std::uint32_t>(reinterpret_cast<void *>(loadedSystem + 64)) != 1 ||
         !loadedBodies || !Read<std::uintptr_t>(reinterpret_cast<void *>(loadedBodies)))
         throw std::runtime_error("Native model physics round trip lost its body or shape");
-    if (useCategory == 7 && simulationCategory == 9)
+    const auto loadedName = Read<std::uintptr_t>(reinterpret_cast<void *>(loadedBodies + 0x18)) &
+                            ~std::uintptr_t{1};
+    if (!loadedName || std::memcmp(reinterpret_cast<void *>(loadedName), bodyNameData,
+                                   bodyName.size() + 1) != 0)
+        throw std::runtime_error("Native physics round trip lost its trace body name");
+    if (glass)
     {
         const auto *loadedBody = reinterpret_cast<const std::uint8_t *>(loadedBodies);
         if (Read<std::uint32_t>(loadedBody + 0x10) != source.contents ||
@@ -1845,9 +1857,9 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
         if (!data || size != 1 || Read<std::uint32_t>(reinterpret_cast<void *>(data)) != expected)
             throw std::runtime_error(std::string("Native model physics round trip lost ") + field);
     };
-    requireLoadedOne(0x10, kDefaultBodyQualityNameCrc, "body quality lookup");
-    requireLoadedOne(0x20, kDefaultMaterialNameCrc, "material lookup");
-    requireLoadedOne(0x30, kDefaultMotionPropertiesNameCrc, "motion-properties lookup");
+    requireLoadedOne(0x10, bodyQualityNameCrc, "body quality lookup");
+    requireLoadedOne(0x20, materialNameCrc, "material lookup");
+    requireLoadedOne(0x30, motionPropertiesNameCrc, "motion-properties lookup");
     requireLoadedOne(0x60, kServerUsageDefault, "body server usage");
     requireLoadedOne(0x80, kBodyDriverNone, "body driver");
     requireLoadedOne(0x90, simulationCategory, "simulation category");
@@ -1923,9 +1935,9 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
             throw std::runtime_error(std::string("Native model physics compact string invalid: ") +
                                      field);
     };
-    requireWireInt(0x10, kDefaultBodyQualityNameCrc, "body quality lookup");
-    requireWireInt(0x20, kDefaultMaterialNameCrc, "material lookup");
-    requireWireInt(0x30, kDefaultMotionPropertiesNameCrc, "motion-properties lookup");
+    requireWireInt(0x10, bodyQualityNameCrc, "body quality lookup");
+    requireWireInt(0x20, materialNameCrc, "material lookup");
+    requireWireInt(0x30, motionPropertiesNameCrc, "motion-properties lookup");
     requireWireInt(0x60, kServerUsageDefault, "body server usage");
     requireWireInt(0x80, kBodyDriverNone, "body driver");
     requireWireInt(0x90, simulationCategory, "simulation category");
@@ -1956,6 +1968,21 @@ PhysicsAsset BakePhysicsAsset(std::string name, const PhysicsMesh &source,
         requirePatch(9, offset);
     for (const auto offset : {0x40u, 0x50u})
         requirePatch(10, offset);
+
+    const auto bodyItem = std::ranges::find_if(items, [](const CompactItem &item) {
+        return item.type == 39 && item.count == 1;
+    });
+    if (bodyItem == items.end() || bodyItem->offset + 192 > compactData.size - 8)
+        throw std::runtime_error("Native physics compact body is missing");
+    const auto nameReference = Read<std::uint64_t>(wireRoot + bodyItem->offset + 0x18);
+    if (!nameReference || nameReference >= items.size())
+        throw std::runtime_error("Native physics compact trace body name is missing");
+    const auto &nameItem = items[static_cast<std::size_t>(nameReference)];
+    if (nameItem.type != 163 || nameItem.count != bodyName.size() + 1 ||
+        nameItem.offset + nameItem.count > compactData.size - 8 ||
+        std::memcmp(wireRoot + nameItem.offset, bodyNameData, bodyName.size() + 1) != 0)
+        throw std::runtime_error("Native physics compact trace body name is invalid");
+    requirePatch(15, bodyItem->offset + 0x18);
 
     const std::array<std::uint8_t, 4> typeChunk{'T', 'Y', 'P', 'E'};
     const std::array<std::uint8_t, 4> compendiumChunk{'T', 'C', 'R', 'F'};

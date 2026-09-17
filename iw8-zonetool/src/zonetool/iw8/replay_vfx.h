@@ -20,6 +20,8 @@ struct Module
     std::vector<Curve> curves;
     std::vector<std::string> models;
     std::vector<std::string> materials;
+    std::vector<std::string> lightDefs;
+    // INIT_RUNNER and TEST_* modules both serialize ParticleSystemDef aliases.
     std::vector<std::string> childEffects;
     std::vector<std::array<std::string, 3>> decalMaterials;
 };
@@ -47,4 +49,5 @@ struct Effect
 // Source graph creation is separate. The writer accepts only selector payloads
 // whose Replay 1.20 pointer layout is pinned in iw8_focus_structs.h.
 void Register(ZoneWriter &writer, Effect effect);
+void RegisterLightDef(ZoneWriter &writer, std::string name);
 } // namespace iw8::vfx

@@ -17,6 +17,19 @@ inline constexpr size_t SceneDynModel = 0x3F00;
 inline constexpr size_t SceneDynBrush = 0x3F08;
 inline constexpr size_t DynEntMotionBitsEntries = 0x3F48;
 inline constexpr size_t DynEntMotionBits = 0x3F50;
+// GfxWorldDpvsStatic begins at +0x3F98. Replay clears these four resident
+// visibility families from the owning world counts during client startup.
+// A nonzero owner count paired with a null pointer reaches the unguarded
+// fill calls at 0x18EC679/0x18EC6A1/0x18EC6C9/0x18EC6F1.
+inline constexpr size_t DpvsStatic = 0x3F98;
+inline constexpr size_t PrimaryLightVisDataCount = DpvsStatic + 0x08;
+inline constexpr size_t ReflectionProbeVisDataCount = DpvsStatic + 0x0C;
+inline constexpr size_t VolumetricVisDataCount = DpvsStatic + 0x10;
+inline constexpr size_t DecalVisDataCount = DpvsStatic + 0x14;
+inline constexpr size_t PrimaryLightVisData = 0x41C0;
+inline constexpr size_t ReflectionProbeVisData = 0x41C8;
+inline constexpr size_t VolumetricVisData = 0x41D0;
+inline constexpr size_t DecalVisData = 0x41D8;
 // Load_GfxWorld's DPVS-dynamic child starts at +0x4210. Loader D93BB0
 // allocates dynEntCellBits[basis] as wordCount[basis] * cellCount dwords,
 // then each present dynEntVisData slot as 32 * wordCount[basis] bytes.

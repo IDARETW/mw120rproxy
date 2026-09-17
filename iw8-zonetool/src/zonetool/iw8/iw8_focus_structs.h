@@ -424,6 +424,7 @@ enum class ParticleModuleType : uint16_t
     initAttributes = 1,
     initCloud = 4,
     initDecal = 5,
+    initLightOmni = 9,
     initMaterial = 11,
     initMirrorTexture = 12,
     initModel = 13,
@@ -433,14 +434,18 @@ enum class ParticleModuleType : uint16_t
     initRotation3D = 20,
     initRunner = 21,
     initSpawn = 23,
+    initSpawnShapeBox = 24,
     initSpawnShapeCylinder = 25,
     initSpawnShapeSphere = 28,
     initTail = 29,
     colorGraph = 34,
     forceDragGraph = 40,
     gravity = 41,
+    physicsRayCast = 46,
     sizeGraph = 51,
     velocityGraph = 53,
+    testDeath = 57,
+    testImpact = 59,
 };
 
 // INIT_MODEL (selector 13) has a 0x10 linked-asset list at +0x10 of its
@@ -512,6 +517,28 @@ struct ParticleModuleInitMaterial
     uint32_t shaderGraphOptions;
     ParticleLinkedAssetListDef linkedAssets;
     uint8_t materialData[0xC0];
+};
+struct ParticleModuleInitLightOmni
+{
+    ParticleModuleBase base;
+    ParticleLinkedAssetListDef linkedAssets;
+    float fovOuter;
+    float fovInner;
+    float bulbRadius;
+    float bulbLength;
+    float distanceFalloff;
+    float brightness;
+    float intensityUV;
+    float intensityIR;
+    float intensityHeat;
+    float shadowSoftness;
+    float shadowBias;
+    float shadowArea;
+    float toneMappingScaleFactor;
+    uint8_t disableVolumetric;
+    uint8_t disableShadowMap;
+    uint8_t disableDynamicShadows;
+    uint8_t scriptScale;
 };
 struct ParticleModuleInitDecal
 {
@@ -627,8 +654,60 @@ struct ParticleModuleGravity
     ParticleModuleBase base;
     ParticleFloatRange percentage;
 };
+struct ParticleBounds
+{
+    vec3_t midPoint;
+    vec3_t halfSize;
+};
+struct ParticleModulePhysicsRayCast
+{
+    ParticleModuleBase base;
+    ParticleFloatRange bounce;
+    ParticleBounds bounds;
+    uint8_t useItemClip;
+    uint8_t useSurfaceType;
+    uint8_t collideWithWater;
+    uint8_t ignoreContentItem;
+    uint8_t pad[4];
+};
+struct ParticleModifier
+{
+    vec4_t min;
+    vec4_t max;
+};
+struct ParticleModuleTestEventHandlerData
+{
+    uint32_t nextState;
+    uint32_t pad0;
+    ParticleLinkedAssetListDef linkedAssets;
+    uint8_t kill;
+    uint8_t pad1[3];
+    uint32_t pad2;
+};
+struct ParticleModuleTest
+{
+    ParticleModuleBase base;
+    uint16_t moduleIndex;
+    uint8_t orientationOptions;
+    uint8_t scaleOptions;
+    uint8_t velocityOptions;
+    uint8_t pad[3];
+    ParticleModifier scaleModifier;
+    ParticleModifier velocityModifier;
+    ParticleModuleTestEventHandlerData eventHandlerData;
+};
+struct ParticleModuleTestImpact
+{
+    ParticleModuleTest test;
+    uint32_t impactDirection;
+    uint8_t pad[12];
+};
 static_assert(sizeof(ParticleModuleInitMaterial) == 0xE0);
 static_assert(offsetof(ParticleModuleInitMaterial, linkedAssets) == 0x10);
+static_assert(sizeof(ParticleModuleInitLightOmni) == 0x50);
+static_assert(offsetof(ParticleModuleInitLightOmni, linkedAssets) == 0x08);
+static_assert(offsetof(ParticleModuleInitLightOmni, fovOuter) == 0x18);
+static_assert(offsetof(ParticleModuleInitLightOmni, toneMappingScaleFactor) == 0x48);
 static_assert(sizeof(ParticleModuleInitDecal) == 0x40);
 static_assert(offsetof(ParticleModuleInitDecal, linkedAssets) == 0x10);
 static_assert(sizeof(ParticleModuleInitRunner) == 0x70);
@@ -651,6 +730,17 @@ static_assert(offsetof(ParticleModuleInitRotation, rotationAngle) == 0x10);
 static_assert(sizeof(ParticleModuleInitRotation3D) == 0x50);
 static_assert(offsetof(ParticleModuleInitRotation3D, rotationAngleMin) == 0x10);
 static_assert(sizeof(ParticleModuleGravity) == 0x10);
+static_assert(sizeof(ParticleBounds) == 0x18);
+static_assert(sizeof(ParticleModulePhysicsRayCast) == 0x30);
+static_assert(offsetof(ParticleModulePhysicsRayCast, bounce) == 0x08);
+static_assert(offsetof(ParticleModulePhysicsRayCast, bounds) == 0x10);
+static_assert(sizeof(ParticleModifier) == 0x20);
+static_assert(sizeof(ParticleModuleTestEventHandlerData) == 0x20);
+static_assert(offsetof(ParticleModuleTestEventHandlerData, linkedAssets) == 0x08);
+static_assert(sizeof(ParticleModuleTest) == 0x70);
+static_assert(offsetof(ParticleModuleTest, eventHandlerData) == 0x50);
+static_assert(sizeof(ParticleModuleTestImpact) == 0x80);
+static_assert(offsetof(ParticleModuleTestImpact, impactDirection) == 0x70);
 
 struct ParticleModuleInitSpawnShape
 {
@@ -662,6 +752,15 @@ struct ParticleModuleInitSpawnShape
     float volumeCubeRoot;
     vec4_t calculationOffset;
     vec4_t offset;
+};
+struct ParticleModuleInitSpawnShapeBox
+{
+    ParticleModuleInitSpawnShape base;
+    uint8_t useBeamInfo;
+    uint8_t pad[15];
+    vec4_t dimensionsMin;
+    vec4_t dimensionsMax;
+    ParticleCurveDef curves[6];
 };
 struct ParticleModuleInitSpawnShapeCylinder
 {
@@ -696,6 +795,8 @@ struct ParticleModuleVelocityGraph
     vec4_t velocityEnd;
 };
 static_assert(sizeof(ParticleModuleInitSpawnShape) == 0x30);
+static_assert(sizeof(ParticleModuleInitSpawnShapeBox) == 0xC0);
+static_assert(offsetof(ParticleModuleInitSpawnShapeBox, curves) == 0x60);
 static_assert(sizeof(ParticleModuleInitSpawnShapeCylinder) == 0xA0);
 static_assert(offsetof(ParticleModuleInitSpawnShapeCylinder, curves) == 0x50);
 static_assert(sizeof(ParticleModuleInitSpawnShapeSphere) == 0x80);

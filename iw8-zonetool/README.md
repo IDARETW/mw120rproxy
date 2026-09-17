@@ -5,8 +5,9 @@ mw120rproxy. It keeps the usual ZoneTool split between common file code, source 
 conversion code, and game-specific IW8 asset writers.
 
 The compiler writes native Replay 1.20 fastfiles. Collision, footsteps, render geometry,
-materials, authored vertex occlusion, lightgrid data, sun settings, bullet-impact effects, and an optional HUD minimap are
-serialized into the zones. Direct conversion does not create a manifest, loose collision file,
+materials, authored baked lightmaps, lightgrid data, reflection probes, sun settings,
+bullet-impact effects, glass, ladders, dynamic models, and an optional HUD minimap are serialized
+into the zones. Direct conversion does not create a manifest, loose collision file,
 report, preview, or other generated sidecar. It writes the five fastfiles and one `map.json`.
 
 The converter has no Python runtime or Python package dependency. It builds as a single Windows x64 C++
@@ -102,10 +103,12 @@ consumer without dropping distant placements. When the source entities contain e
 the image and world bounds. It also
 derives native walkable-surface triangles from upward-facing IW3 world faces and bakes their
 surface types into the Replay Havok shape tags. Unclassified faces use Replay's concrete fallback.
-All IW3 multiplayer spawn classes are retained with their source origin and angles, including DM,
-Domination, Sabotage, Search and Destroy, CTF, and TDM markers. Script origins, brush models, and
-brush-backed triggers are retained as Replay `MapEnts` records. Trigger hulls and non-axis slabs
-reference the same native Havok entity shapes as their source brush models.
+IW3 spawn classes with a matched Replay `MapEnts` consumer are retained with their source origin
+and angles. Alternate-mode records such as DM and non-start Sabotage markers are projected out with
+an explicit build warning until their separate Replay game-mode consumer is proven. Script
+origins, brush models, and brush-backed triggers are retained as Replay `MapEnts` records. Trigger
+hulls and non-axis slabs reference the same native Havok entity shapes as their source brush
+models.
 
 The material adapter converts IW3 color, normal, specular, glass, foliage, and sky inputs into the
 matching Replay material and technique-set layouts. It does not copy IW3 technique-set bytes into an
@@ -118,6 +121,13 @@ and runner elements together with their supported spawn, lifetime, velocity, gra
 size, color, atlas, material, model, and child-effect data. A graph is omitted when any element,
 material, event child, or runner child lacks a complete mapping, so the fastfile never contains a
 knowingly partial graph.
+
+Baked opaque world surfaces use source-specific native Replay materials backed by a retained
+shipped world-technique contract. Their packed atlas UVs and native lightmap index feed Replay's
+three-plane BC4, R11G11B10F, and BC5 temporary lightmap atlas. Cutout, glass, sky, unbaked, model,
+and VFX families keep their explicit conversion paths. Replay's engine GTAO image and sampler are
+bound through the native `t95`/`s8` contract. The converter does not invent the target's optional
+64-byte-per-tetrahedron light-grid visibility records when the IW3 source cannot prove them.
 
 The twelve IW3 impact rows are mapped into Replay's native impact table for small/large bullets,
 shotgun, armor-piercing, grenade, rocket, and dud events. A converted source effect replaces the

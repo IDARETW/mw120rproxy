@@ -967,6 +967,8 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
                     iw8xs_dump::writeXModelSurfs(writer, lod.name, lod);
                 iw8::writeXModel(writer, model.model);
             }
+            if (!prepared->vfxLightDef.empty())
+                iw8::vfx::RegisterLightDef(writer, prepared->vfxLightDef);
             for (auto &effect : prepared->vfxEffects)
                 iw8::vfx::Register(writer, std::move(effect));
             iw8::RegisterDynamicEntityList(writer, prepared->dynamicEntities);

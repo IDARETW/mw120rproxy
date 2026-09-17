@@ -48,16 +48,30 @@ namespace
 bool nativeEffectTechset(const std::string_view name)
 {
     return name ==
+               "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100000023_0_0_2_0_0" ||
+           name ==
                "elcq/unlit_6_effect_bad_ta0_802_1004_0_1_0_0_0_100000023_0_0_2_0_0" ||
            name ==
                "elcq/unlit_6_effect_bad_tca_802_10a4_0_1_0_0_0_100060023_0_0_3_0_0" ||
            name ==
+               "elcq/unlit_6_effect_bad_tca_802_4_0_1_0_0_0_100060023_0_0_3_0_0" ||
+           name ==
                "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100020023_0_0_2_0_0";
+}
+
+bool nativeSimpleAlphaEffectTechset(const std::string_view name)
+{
+    return name == "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100000023_0_0_2_0_0";
 }
 
 bool nativeCloudEffectTechset(const std::string_view name)
 {
     return name == "elcq/unlit_6_effect_bad_ta0_802_4_0_1_0_0_0_100020023_0_0_2_0_0";
+}
+
+bool nativeSimpleAdditiveEffectTechset(const std::string_view name)
+{
+    return name == "elcq/unlit_6_effect_bad_tca_802_4_0_1_0_0_0_100060023_0_0_3_0_0";
 }
 
 std::optional<uint8_t> generatedTextureSlot(const char *name)
@@ -131,8 +145,8 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
         uint32_t techniqueType{};
         std::memcpy(&techniqueType, technique.header.data() + 8, sizeof(techniqueType));
         const bool litForwardPlus = techniqueType == 34;
-        bool gtaoImage = false;
-        bool gtaoSampler = false;
+        unsigned gtaoImageCount = 0;
+        unsigned gtaoSamplerCount = 0;
         for (unsigned resourceIndex = 0; resourceIndex < description.BoundResources;
              ++resourceIndex)
         {
@@ -146,6 +160,7 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
             const std::string resourceName = binding.Name ? binding.Name : "";
             if (resourceName == "gtaoImage")
             {
+                ++gtaoImageCount;
                 const uint8_t stageMask = staticModel ? 0x12 : 0x10;
                 if (binding.Type != D3D_SIT_TEXTURE || binding.BindPoint != 95 ||
                     binding.BindCount != 1 ||
@@ -156,11 +171,11 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
                         "Generated GTAO image is not bound to native code image 0 at t95: " +
                         technique.name);
                 }
-                gtaoImage = true;
                 continue;
             }
             if (resourceName == "gtaoSampler")
             {
+                ++gtaoSamplerCount;
                 if (binding.Type != D3D_SIT_SAMPLER || binding.BindPoint != 8 ||
                     binding.BindCount != 1)
                 {
@@ -168,7 +183,6 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
                     throw std::runtime_error("Generated GTAO sampler is not bound to s8: " +
                                              technique.name);
                 }
-                gtaoSampler = true;
                 continue;
             }
             const auto materialSlot = generatedTextureSlot(resourceName.c_str());
@@ -189,11 +203,12 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
                                          resourceName + " in " + technique.name);
             }
         }
-        if (litForwardPlus && (!gtaoImage || !gtaoSampler))
+        if (litForwardPlus && (gtaoImageCount != 1 || gtaoSamplerCount != 1))
         {
             reflection->Release();
-            throw std::runtime_error("Generated lit pass is missing its native GTAO t95/s8 bindings: " +
-                                     technique.name);
+            throw std::runtime_error(
+                "Generated lit pass must have exactly one native GTAO t95/s8 binding: " +
+                technique.name);
         }
         reflection->Release();
     }
@@ -305,10 +320,48 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
         m.constants = unhex(d.at("constants"));
         m.bufferIndices = unhex(d.at("bufferIndices"));
         m.techset = d.at("techset");
+        bool nativeReplayFixture = false;
         m.decalVolumeMaterial = d.value("decalVolumeMaterial", std::string{});
+        const bool hasOwnedDecalDefinition = d.contains("decalVolumeDefinition");
+        if (hasOwnedDecalDefinition)
+        {
+            const auto &volume = d.at("decalVolumeDefinition");
+            auto &target = m.decalVolumeDefinition;
+            target.name = volume.at("name").get<std::string>();
+            const auto &channels = volume.at("channels");
+            if (!channels.is_array() || channels.size() != target.channels.size())
+                throw std::runtime_error("Replay decal volume must define six image channels");
+            for (size_t channel = 0; channel < target.channels.size(); ++channel)
+                if (!channels[channel].is_null())
+                    target.channels[channel] = channels[channel].get<std::string>();
+            target.flags = volume.at("flags").get<uint32_t>();
+            const auto tint = volume.at("colorTint").get<std::vector<float>>();
+            if (tint.size() != target.colorTint.size())
+                throw std::runtime_error("Replay decal volume tint must contain three values");
+            std::copy(tint.begin(), tint.end(), target.colorTint.begin());
+            const unsigned rows = volume.value("rows", 1u);
+            const unsigned columns = volume.value("columns", 1u);
+            if (!rows || rows > UINT8_MAX || !columns || columns > UINT8_MAX)
+                throw std::runtime_error("Replay decal volume atlas dimensions are invalid");
+            target.rows = static_cast<uint8_t>(rows);
+            target.columns = static_cast<uint8_t>(columns);
+        }
+        constexpr std::string_view generatedDecalPrefix = "i/mw120r_fx_decal_";
+        const bool generatedDecalName = m.decalVolumeDefinition.name.starts_with(
+                                            generatedDecalPrefix) &&
+                                        m.decalVolumeDefinition.name.size() <= 96 &&
+                                        std::all_of(m.decalVolumeDefinition.name.begin() +
+                                                        generatedDecalPrefix.size(),
+                                                    m.decalVolumeDefinition.name.end(), [](char c) {
+                                            return (c >= 'a' && c <= 'z') ||
+                                                   (c >= '0' && c <= '9') || c == '_';
+                                        });
         const bool ownedDecalCarrier = ownedEffect && m.techset == "null" &&
-                                       m.decalVolumeMaterial ==
-                                           "i/vfx_decal_surface_glass_2";
+                                       (m.decalVolumeMaterial ==
+                                            "i/vfx_decal_surface_glass_2" ||
+                                        (hasOwnedDecalDefinition && generatedDecalName &&
+                                         m.decalVolumeDefinition.name ==
+                                             m.decalVolumeMaterial));
         const bool nativeEffectAlias = ownedEffect && nativeEffectTechset(m.techset) &&
                                        !d.contains("techsetDefinition");
         if (d.contains("techsetDefinition"))
@@ -318,9 +371,13 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
                 throw std::runtime_error("Techset definition must be adjacent");
             std::ifstream fts(std::filesystem::path(path).parent_path() / tf);
             const auto ts = nlohmann::json::parse(fts);
+            nativeReplayFixture = ts.value("nativeReplayFixture", false);
             m.techsetHeader = unhex(ts.at("header"));
             if (ts.at("schema") != 1 || ts.at("name") != m.techset || m.techsetHeader.size() != 64)
                 throw std::runtime_error("Invalid Replay technique set");
+            if (nativeReplayFixture &&
+                (!owned || m.techset.find("_native_world_cull") == std::string::npos))
+                throw std::runtime_error("Invalid native Replay world technique fixture");
             for (const auto &sh : ts.at("shaders"))
             {
                 Shader s{sh.at("type"), sh.at("name"), sh.at("debugName"), unhex(sh.at("header")),
@@ -435,13 +492,16 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
             if (m.materialInfo.size() != 32)
                 throw std::runtime_error("Replay effect material metadata is incomplete");
             std::memcpy(&materialType, m.materialInfo.data() + 0xC, sizeof(materialType));
-            const bool cloud = nativeCloudEffectTechset(m.techset);
+            const bool simpleAdditive = nativeSimpleAdditiveEffectTechset(m.techset);
+            const bool oneBuffer = nativeSimpleAlphaEffectTechset(m.techset) ||
+                                   nativeCloudEffectTechset(m.techset) || simpleAdditive;
             if (materialType != 0x40200Cu || m.materialInfo[0x14] != 1 ||
-                (cloud ? m.materialInfo[0x15] != 1 || m.materialInfo[0x16] != 1 ||
-                             m.materialInfo[0x1A] != 1 || m.materialInfo[0x1B] != 1
-                       : (m.materialInfo[0x15] != 3 && m.materialInfo[0x15] != 4) ||
-                             m.materialInfo[0x16] != 2 || !m.materialInfo[0x1A] ||
-                             !m.materialInfo[0x1B]))
+                (oneBuffer ? m.materialInfo[0x15] != (simpleAdditive ? 2 : 1) ||
+                                  m.materialInfo[0x16] != 1 ||
+                                  m.materialInfo[0x1A] != 1 || m.materialInfo[0x1B] != 1
+                           : (m.materialInfo[0x15] != 3 && m.materialInfo[0x15] != 4) ||
+                                 m.materialInfo[0x16] != 2 || !m.materialInfo[0x1A] ||
+                                 !m.materialInfo[0x1B]))
                 throw std::runtime_error("Replay effect material alias has invalid metadata");
         }
         if (ownedDecalCarrier)
@@ -476,6 +536,27 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
                     throw std::runtime_error("Duplicate Replay image definition");
                 m.imageDefinitions.push_back(std::move(image));
             }
+        if (hasOwnedDecalDefinition)
+        {
+            const auto &volume = m.decalVolumeDefinition;
+            if (!ownedDecalCarrier || volume.flags != 1100u || !volume.rows ||
+                !volume.columns ||
+                std::any_of(volume.colorTint.begin(), volume.colorTint.end(),
+                            [](const float value) { return !std::isfinite(value); }))
+                throw std::runtime_error("Replay decal volume definition is incompatible");
+            unsigned channelCount = 0;
+            for (const auto &channel : volume.channels)
+                if (!channel.empty())
+                {
+                    ++channelCount;
+                    if (std::none_of(m.imageDefinitions.begin(), m.imageDefinitions.end(),
+                                     [&](const Image &image) { return image.name == channel; }))
+                        throw std::runtime_error(
+                            "Replay decal volume channel has no image definition");
+                }
+            if (channelCount < 2 || volume.channels[0].empty() || volume.channels[2].empty())
+                throw std::runtime_error("Replay decal volume image closure is incomplete");
+        }
         for (const auto &t : d.at("textures"))
         {
             auto h = unhex(t.at("header"));
@@ -489,6 +570,7 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
             m.images.push_back(image);
         }
         if (!m.techniques.empty() &&
+            !nativeReplayFixture &&
             (m.techset == "tw/mw120r_graybox_v1" || m.techset.starts_with("tw/mw120r_mp_")))
         {
             uint32_t materialType{};
@@ -511,13 +593,15 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
             throw std::runtime_error("Material metadata counts do not match arrays");
         if (nativeEffectAlias)
         {
-            const bool cloud = nativeCloudEffectTechset(m.techset);
+            const bool oneBuffer = nativeSimpleAlphaEffectTechset(m.techset) ||
+                                   nativeCloudEffectTechset(m.techset) ||
+                                   nativeSimpleAdditiveEffectTechset(m.techset);
             const bool common = m.images.size() == 1 && m.textureHeaders.size() == 8 &&
                                 m.textureHeaders[0] == 18 &&
                                 std::all_of(m.textureHeaders.begin() + 1,
                                             m.textureHeaders.end(),
                                             [](const uint8_t value) { return value == 0; });
-            const bool cloudBuffers =
+            const bool oneBufferBindings =
                 m.buffers.size() == 1 && m.buffers.front()[0].empty() &&
                 m.buffers.front()[1].empty() && m.buffers.front()[2].empty() &&
                 m.buffers.front()[3].size() == 48;
@@ -527,7 +611,7 @@ Material LoadMaterial(const std::string &path, const nlohmann::json &j,
                 m.buffers.front()[3].empty() && m.buffers.back()[0].empty() &&
                 m.buffers.back()[1].empty() && m.buffers.back()[2].empty() &&
                 m.buffers.back()[3].empty();
-            if (!common || (cloud ? !cloudBuffers : !featherBuffers))
+            if (!common || (oneBuffer ? !oneBufferBindings : !featherBuffers))
                 throw std::runtime_error("Replay effect material alias has invalid bindings");
         }
         if (ownedDecalCarrier &&
@@ -735,12 +819,13 @@ Mesh Load(const std::string &path)
     const auto j = nlohmann::json::parse(f);
     static_cast<Material &>(m) = LoadMaterial(path, j);
     if (j.contains("additionalMaterials"))
+    {
+        if (!j.at("additionalMaterials").is_array() ||
+            j.at("additionalMaterials").size() > 4096)
+            throw std::runtime_error("Invalid surface material table");
         for (const auto &definition : j.at("additionalMaterials"))
-        {
-            if (m.additionalMaterials.size() >= 6)
-                throw std::runtime_error("At most six additional materials are supported");
             m.additionalMaterials.push_back(LoadMaterial(path, definition));
-        }
+    }
     if (j.contains("assetMaterials"))
     {
         const auto &definitions = j.at("assetMaterials");
@@ -867,6 +952,58 @@ Mesh Load(const std::string &path)
         LoadImageDefinition(path, j.at("reflectionProbeArrayImage"), 0x20000u);
     if (m.reflectionProbeArrayImage.numElements != m.reflectionProbes.size())
         throw std::runtime_error("Replay reflection array does not match probe count");
+    if (j.contains("nativeLightmaps"))
+    {
+        const auto &lightmaps = j.at("nativeLightmaps");
+        // The first native milestone deliberately covers the one-lightmap
+        // topology used by mp_test and mp_4doffice. Maps with larger source
+        // tables continue to use the established generated-material path
+        // until their native pack/reindex rule is recovered.
+        if (!lightmaps.is_array() || lightmaps.size() > 1)
+            throw std::runtime_error("Invalid native Replay lightmap table");
+        constexpr std::array<uint32_t, 3> expectedFormats{39u, 32u, 40u};
+        for (const auto &source : lightmaps)
+        {
+            const unsigned width = source.at("width").get<unsigned>();
+            const unsigned height = source.at("height").get<unsigned>();
+            const auto &images = source.at("images");
+            if (!width || !height || width > UINT16_MAX || height > UINT16_MAX ||
+                !images.is_array() || images.size() != expectedFormats.size())
+                throw std::runtime_error("Invalid native Replay lightmap dimensions");
+            NativeLightmap lightmap;
+            for (std::size_t channel = 0; channel < expectedFormats.size(); ++channel)
+            {
+                const auto &imageSource = images.at(channel);
+                const unsigned format = imageSource.at("format").get<unsigned>();
+                const std::string file = imageSource.at("pixels").get<std::string>();
+                if (format != expectedFormats[channel] ||
+                    std::filesystem::path(file).filename() != file ||
+                    file.find("..") != std::string::npos)
+                    throw std::runtime_error("Invalid native Replay lightmap image");
+                const std::size_t blocks = static_cast<std::size_t>((width + 3) / 4) *
+                                           ((height + 3) / 4);
+                const std::size_t expectedSize =
+                    channel == 0 ? blocks * 8
+                                 : channel == 1 ? static_cast<std::size_t>(width) * height * 4
+                                                : blocks * 16;
+                const auto pixelPath = std::filesystem::path(path).parent_path() / file;
+                std::error_code error;
+                if (expectedSize > UINT32_MAX ||
+                    !std::filesystem::is_regular_file(pixelPath, error) ||
+                    std::filesystem::file_size(pixelPath, error) != expectedSize)
+                    throw std::runtime_error("Native Replay lightmap image length mismatch");
+                auto &image = lightmap.images[channel];
+                image.format = format;
+                image.width = static_cast<uint16_t>(width);
+                image.height = static_cast<uint16_t>(height);
+                image.pixels.resize(expectedSize);
+                std::ifstream input(pixelPath, std::ios::binary);
+                if (!input.read(reinterpret_cast<char *>(image.pixels.data()), expectedSize))
+                    throw std::runtime_error("Cannot read native Replay lightmap pixels");
+            }
+            m.nativeLightmaps.push_back(std::move(lightmap));
+        }
+    }
     for (const auto &source : planes)
     {
         const auto normal = vector(source.at("normal"), 3);
@@ -992,8 +1129,14 @@ Mesh Load(const std::string &path)
         const auto &vertices = s.at("vertices");
         const auto &indices = s.at("indices");
         const unsigned material = s.value("materialIndex", 0u);
+        const unsigned surfaceLayout = s.value("atlasVertexLayout", atlasLayout);
+        const unsigned lightmapIndex = s.value("lightmapIndex", 0u);
         if (material > m.additionalMaterials.size())
             throw std::runtime_error("Invalid surface material index");
+        if (surfaceLayout < 1 || surfaceLayout > 3)
+            throw std::runtime_error("Unsupported surface vertex layout");
+        if (lightmapIndex > 511)
+            throw std::runtime_error("Invalid Replay surface lightmap index");
         const bool sky = s.value("renderClass", std::string{}) == "sky";
         if (sky)
         {
@@ -1014,7 +1157,7 @@ Mesh Load(const std::string &path)
                             std::memcpy(&type, t.header.data() + 8, sizeof(type));
                             return type == 0;
                         });
-        const bool opaque = !material || sky || maskedPrepass;
+        const bool opaque = s.value("opaque", false) || !material || sky || maskedPrepass;
         const unsigned modelRelativeSurface = i - m.brushModels[activeModel].firstSurface;
         if (opaque && opaqueInModel != modelRelativeSurface)
             throw std::runtime_error("Opaque surfaces must precede transparent surfaces");
@@ -1066,7 +1209,7 @@ Mesh Load(const std::string &path)
                     throw std::runtime_error("Nonfinite UV");
                 append(m.aux, x);
             }
-            if (atlasLayout >= 2)
+            if (surfaceLayout >= 2)
             {
                 if (!v.contains("lightmapUV") || v.at("lightmapUV").size() != 2)
                     throw std::runtime_error("Atlas metadata requires two components");
@@ -1077,7 +1220,7 @@ Mesh Load(const std::string &path)
                         throw std::runtime_error("Atlas metadata is outside supported range");
                     append(m.aux, float(std::floor(value)));
                 }
-                if (atlasLayout == 3)
+                if (surfaceLayout == 3)
                 {
                     const auto parameters =
                         s.value("materialParameters", nlohmann::json::array({.8, 4.0, 2.5, .625}));
@@ -1102,7 +1245,7 @@ Mesh Load(const std::string &path)
             {
                 double value =
                     v.contains("lightmapUV") ? v.at("lightmapUV").at(k).get<double>() : 0;
-                if (atlasLayout >= 2)
+                if (surfaceLayout >= 2)
                     value = (value - std::floor(value)) * 4 - 1;
                 const float x = float(value);
                 if (!std::isfinite(x))
@@ -1159,6 +1302,7 @@ Mesh Load(const std::string &path)
         put(sf, 12, baseIndex);
         put(sf, 16, PTR_FOLLOWS);
         put(sf, 24, i);
+        put(sf, 30, uint16_t(lightmapIndex));
         put(sf, 32, uint32_t(sky ? 0x40 : 0x41));
         auto *bounds = m.bounds.data() + 56 * i;
         for (unsigned k = 0; k < 3; ++k)
@@ -1167,7 +1311,7 @@ Mesh Load(const std::string &path)
             put(bounds, 12 + 4 * k, (maxs[k] - mins[k]) * 0.5f + 1.0f);
         }
         auto *gpu = m.surfData.data() + 88 * i;
-        put(gpu, 4, uint32_t(atlasLayout == 3 ? 4 : atlasLayout));
+        put(gpu, 4, uint32_t(surfaceLayout == 3 ? 4 : surfaceLayout));
         put(gpu, 8, posOffset);
         put(gpu, 12, normalOffset);
         put(gpu, 16, lmOffset);
@@ -1548,7 +1692,7 @@ void EmitReflectionProbes(ZoneWriter &writer, const Mesh &mesh)
         put(probe, 0x00, PTR_FOLLOWS); // livePath
         std::memcpy(probe + 0x08, source.origin.data(), sizeof(source.origin));
         put(probe, 0x20, PTR_FOLLOWS); // probeInstances[]
-        put(probe, 0x28, static_cast<uint16_t>(index ? 1 : 2));
+        put(probe, 0x28, static_cast<uint16_t>(index == 0 ? 2 : 1));
         put(probe, 0x2A, std::numeric_limits<uint16_t>::max());
         writer.write(probe, sizeof(probe));
     }
@@ -1562,9 +1706,7 @@ void EmitReflectionProbes(ZoneWriter &writer, const Mesh &mesh)
             writer.writeT<uint16_t>(1);
         }
         else
-        {
             writer.writeT(static_cast<uint16_t>(index + 1));
-        }
     }
 
     const auto emitInstance = [&](const ReflectionProbe &source, const uint16_t imageIndex,
@@ -1588,12 +1730,10 @@ void EmitReflectionProbes(ZoneWriter &writer, const Mesh &mesh)
         std::memcpy(instance + 0x4C, zAxis.data(), sizeof(zAxis));
         std::memcpy(instance + 0x58, halfSize.data(), sizeof(halfSize));
         put(instance, 0x64,
-            fallback ? std::numeric_limits<float>::lowest()
-                     : (imageIndex ? 10.0f : -1.0f));
+            fallback ? std::numeric_limits<float>::lowest() : 10.0f);
         const std::array<float, 3> feather =
             fallback ? std::array<float, 3>{8.0f, 8.0f, 8.0f}
-                     : imageIndex ? std::array<float, 3>{1.0f, 1.0f, 4.0f}
-                                  : std::array<float, 3>{4.0f, 4.0f, 4.0f};
+                     : std::array<float, 3>{1.0f, 1.0f, 4.0f};
         std::memcpy(instance + 0x68, feather.data(), sizeof(feather));
         writer.write(instance, sizeof(instance));
     };
@@ -1753,6 +1893,63 @@ void RegisterImageDefinition(ZoneWriter &w, const Image &image,
     });
 }
 
+void RegisterDecalVolumeDefinition(ZoneWriter &w, const DecalVolumeMaterial &definition,
+                                   std::set<std::pair<unsigned, std::string>> &registered)
+{
+    if (definition.name.empty() ||
+        !registered.emplace(ASSET_TYPE_DECAL_VOLUME_MATERIAL, definition.name).second)
+        return;
+    w.add(ASSET_TYPE_DECAL_VOLUME_MATERIAL, definition.name,
+          [definition](ZoneWriter &out) {
+        out.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
+        out.align(7);
+        uint8_t volume[iw8sz::DECAL_VOLUME_MATERIAL]{};
+        put(volume, 0x00, PTR_FOLLOWS);
+        for (size_t channel = 0; channel < definition.channels.size(); ++channel)
+            if (!definition.channels[channel].empty())
+                put(volume, 0x08 + channel * sizeof(uint64_t), PTR_FOLLOWS);
+        put(volume, 0x38, definition.flags);
+        std::memcpy(volume + 0x3C, definition.colorTint.data(),
+                    sizeof(definition.colorTint));
+        put(volume, 0x48, definition.alphaDissolveParms);
+        put(volume, 0x4C, definition.emissiveScale);
+        put(volume, 0x50, definition.packedDisplacementScaleAndBias);
+        put(volume, 0x54, definition.displacementCutoffDistance);
+        put(volume, 0x58, definition.displacementCutoffFalloff);
+        put(volume, 0x5C, definition.packedTemperatureBaseAndScale);
+        volume[0x60] = definition.rows;
+        volume[0x61] = definition.columns;
+        out.write(volume, sizeof(volume));
+        out.pushStream(XFILE_BLOCK_VIRTUAL);
+        out.writeStr(definition.name.c_str());
+        for (const auto &channel : definition.channels)
+            if (!channel.empty())
+            {
+                out.pushStream(XFILE_BLOCK_TEMP_PRELOAD);
+                out.align(15);
+                uint8_t image[iw8sz::IMAGE]{};
+                put(image, 0, PTR_FOLLOWS);
+                out.write(image, sizeof(image));
+                out.pushStream(XFILE_BLOCK_VIRTUAL);
+                out.writeStr(("," + channel).c_str());
+                out.popStream();
+                out.popStream();
+            }
+        out.popStream();
+        out.popStream();
+        out.pushStream(XFILE_BLOCK_TEMP_POSTLOAD);
+        out.align(7);
+        out.reserveCalc(iw8sz::DECAL_VOLUME_MATERIAL);
+        for (const auto &channel : definition.channels)
+            if (!channel.empty())
+            {
+                out.align(15);
+                out.reserveCalc(iw8sz::IMAGE);
+            }
+        out.popStream();
+    });
+}
+
 void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
                                 std::set<std::pair<unsigned, std::string>> &registered)
 {
@@ -1762,6 +1959,7 @@ void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
     // asset patch-memory frames. Techniques themselves are not XAssets.
     for (const auto &image : m.imageDefinitions)
         RegisterImageDefinition(w, image, registered);
+    RegisterDecalVolumeDefinition(w, m.decalVolumeDefinition, registered);
     for (const auto &s : m.shaders)
         if (registered.emplace(s.type, s.name).second)
             w.add(static_cast<IW8_XAssetType>(s.type), s.name, [s](ZoneWriter &out) {

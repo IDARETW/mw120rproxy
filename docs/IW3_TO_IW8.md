@@ -71,6 +71,15 @@ backticks or single-quoted path literals:
 Replace the example paths with paths that exist on your computer.
 
 The converter embeds geometry, model LODs and material bindings, collision, entities, native
-light-grid data, and a BC6H UF16 octahedral reflection-probe array in the output zones. Successful
-conversion leaves exactly five fastfiles and `map.json` in the output directory. It does not leave
-intermediate JSON, binary payloads, DDS files, or package directories.
+light-grid data, authored baked-lightmap data, a BC6H UF16 octahedral reflection-probe array,
+supported native particle systems and impacts, glass, ladders, dynamic models, and the optional HUD
+minimap in the output zones. Baked opaque world surfaces use source-specific native Replay
+materials and the Replay lightmap-atlas consumer; source IW3 technique-set bytes are never copied
+as IW8 structures. Successful conversion leaves exactly five fastfiles and `map.json` in the
+output directory. It does not leave intermediate JSON, binary payloads, DDS files, or package
+directories.
+
+The build log accounts for every declared source asset family. Unsupported gameplay, audio,
+script, alternate-mode spawn, or particle families remain explicit warnings rather than partial
+assets. This is deliberate: a native Replay consumer and verified target layout are required before
+a source family is admitted.

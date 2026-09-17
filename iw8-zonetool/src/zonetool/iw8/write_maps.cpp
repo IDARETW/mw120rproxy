@@ -36,6 +36,55 @@ static inline void stampf(uint8_t *p, size_t off, float v)
     std::memcpy(p + off, &v, 4);
 }
 
+void emitNativeLightmapTemp(ZoneWriter &zw, const replayrender::Mesh &mesh)
+{
+    if (mesh.nativeLightmaps.empty())
+        return;
+    if (mesh.nativeLightmaps.size() != 1)
+        throw std::runtime_error("native Replay lightmap packing currently requires one lightmap");
+
+    constexpr size_t rootSize = 0xF10;
+    constexpr size_t rawSize = 0x78;
+    constexpr size_t imageRawSize = 0x28;
+    std::array<uint8_t, rootSize> root{};
+    stamp32(root.data(), 0x00, 0); // resident transient zone
+    stamp32(root.data(), 0x04, 1); // numLightmaps
+    stamp32(root.data(), 0x08, 0); // firstLightmapIndex
+    stamp32(root.data(), 0x0C, 1); // REGULAR_UNCOMPRESSED
+    const auto &lightmap = mesh.nativeLightmaps.front();
+    for (size_t channel = 0; channel < lightmap.images.size(); ++channel)
+    {
+        const auto &source = lightmap.images[channel];
+        uint8_t *raw = root.data() + 0x10 + channel * imageRawSize;
+        stamp32(raw, 0x00, source.format);
+        stamp32(raw, 0x04, 3); // resident raw texture, target fixture flags
+        stamp32(raw, 0x08, static_cast<uint32_t>(source.pixels.size()));
+        stamp16(raw, 0x0C, source.width);
+        stamp16(raw, 0x0E, source.height);
+        stamp16(raw, 0x10, 1); // depth
+        stamp16(raw, 0x12, 1); // numElements
+        raw[0x14] = 1;         // levelCount
+        // textureId at +0x18 remains the native NULLID value.
+        stamp64(raw, 0x20, PTR_FOLLOWS);
+    }
+    static_assert(0x10 + 32 * rawSize == rootSize);
+
+    // Load_GfxWorldTransientZone pushes stream 5 before visiting every nested
+    // field, including tempLightmapData. The pointer loader aligns this root
+    // in that current virtual stream. Each GfxImageRaw then pushes stream 7
+    // independently and aligns its resident pixels to 16 bytes before
+    // RB_ProcessGfxLightmapAtlasData consumes it.
+    zw.align(7);
+    zw.write(root.data(), root.size());
+    for (const auto &image : lightmap.images)
+    {
+        zw.pushStream(XFILE_BLOCK_UNK7);
+        zw.align(15);
+        zw.write(image.pixels.data(), image.pixels.size());
+        zw.popStream();
+    }
+}
+
 void emitFxMapBody(ZoneWriter &zw, const char *assetName, const replayrender::Mesh &mesh)
 {
     const uint32_t pieceCount = static_cast<uint32_t>(mesh.glassPanes.size());
@@ -293,6 +342,23 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     // Zone zero is resident and required by R_ReflectionProbe_WorldStartup.
     stamp32(gw.data(), 0x648 + 0x184, 1);
     stamp64(gw.data(), 0x648 + 0x188, PTR_FOLLOWS);
+    if (!mesh.nativeLightmaps.empty())
+    {
+        if (mesh.nativeLightmaps.size() != 1)
+            throw std::runtime_error(
+                "native Replay lightmap packing currently requires one lightmap");
+        // GfxWorldLightmapReindexData at draw +0xD0. Replay's regular
+        // uncompressed atlas owns three packed channels for the one source
+        // lightmap and resolves it through resident transient zone zero.
+        stamp32(gw.data(), 0x718, 4);          // imagePixelSize
+        stamp32(gw.data(), 0x71C, 3);          // reindexCount
+        stamp64(gw.data(), 0x720, PTR_FOLLOWS); // reindexElement
+        stamp32(gw.data(), 0x728, 1);          // packedLightmapCount
+        stamp64(gw.data(), 0x730, PTR_FOLLOWS); // packedLightmap
+        stamp32(gw.data(), 0x7C4, 1);          // REGULAR_UNCOMPRESSED
+        stamp32(gw.data(), 0x7C8, 1);          // lightmapCount
+        stamp64(gw.data(), 0x37D0, PTR_FOLLOWS); // lightmapTransientIndex
+    }
     // Replay R_GpuLightGrid_DataAvailable (188E940) checks this byte before
     // sampling. A resident grid uses SINGLE, as in the shipped Shipment world.
     gw[0x7C0] = lightGrid ? 1 : 0;
@@ -304,8 +370,19 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
             PTR_FOLLOWS); // REQUIRED non-null (cellCount-gated memset, no own count)
     stamp64(gw.data(), 0x3EF8, PTR_FOLLOWS); // cellHasSunLitSurfsBits[cellWordCount]
     const uint32_t primaryLightVisDataCount = (primaryLightCount + 31u) >> 5;
-    stamp32(gw.data(), 0x3F98 + 8, primaryLightVisDataCount);
-    stamp64(gw.data(), 0x41C0, PTR_FOLLOWS);
+    // The draw table has one fallback reflection-probe instance in addition
+    // to the authored probes. R_InitWorld clears this family from the draw
+    // instance count without checking the DPVS pointer, so the count and
+    // resident stream-4 allocation must be emitted together.
+    const uint32_t reflectionProbeInstanceCount =
+        static_cast<uint32_t>(mesh.reflectionProbes.size() + 1);
+    const uint32_t reflectionProbeVisDataCount =
+        (reflectionProbeInstanceCount + 31u) >> 5;
+    stamp32(gw.data(), replaymap::PrimaryLightVisDataCount, primaryLightVisDataCount);
+    stamp32(gw.data(), replaymap::ReflectionProbeVisDataCount,
+            reflectionProbeVisDataCount);
+    stamp64(gw.data(), replaymap::PrimaryLightVisData, PTR_FOLLOWS);
+    stamp64(gw.data(), replaymap::ReflectionProbeVisData, PTR_FOLLOWS);
     // R_EntityMoved 1959A60 indexes localClient*80 + entityNum/32.
     stamp32(gw.data(), 0x3F20, 160);
     stamp64(gw.data(), 0x3F28, PTR_FOLLOWS);
@@ -410,6 +487,22 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     replayrender::EmitSurfaces(zw, mesh);
     replayrender::EmitStaticModels(zw, staticModels);
     replayrender::EmitReflectionProbes(zw, mesh);
+    if (!mesh.nativeLightmaps.empty())
+    {
+        const auto &lightmap = mesh.nativeLightmaps.front();
+        // Three native channels select the same packed image rectangle.
+        zw.align(3);
+        for (uint32_t channel = 0; channel < 3; ++channel)
+        {
+            const std::array<uint32_t, 5> reindex{
+                0u, 0u, 0u, lightmap.images[channel].width, lightmap.images[channel].height};
+            zw.write(reindex.data(), sizeof(reindex));
+        }
+        zw.align(3);
+        const std::array<uint32_t, 2> packed{lightmap.images[0].width,
+                                             lightmap.images[0].height};
+        zw.write(packed.data(), sizeof(packed));
+    }
     // Load_GfxWorldDraw D96710 loads iesLookupTexture before transient zones.
     // With no authored local lights, native white gives a neutral IES lookup.
     // Reference the existing image; no pixels or stock image data are copied.
@@ -432,6 +525,8 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     stamp32(transient, 0xD8, cellCount);   // every source cell is resident
     stamp64(transient, 0xE0, PTR_FOLLOWS); // aabbTreeCounts
     stamp64(transient, 0xE8, PTR_FOLLOWS); // one GfxCellTree pointer per cell
+    if (!mesh.nativeLightmaps.empty())
+        stamp64(transient, 0xF0, PTR_FOLLOWS);
     if (lightGrid)
         stamp64(transient, 0xF8, PTR_FOLLOWS);
     replayrender::StampTransient(transient, mesh);
@@ -478,9 +573,15 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
             for (const auto index : source.staticModelIndexes)
                 zw.writeT<uint16_t>(index);
     }
+    emitNativeLightmapTemp(zw, mesh);
     replaylightgrid::Emit(zw, lightGrid);
     zw.popStream();
     zw.popStream();
+    if (!mesh.nativeLightmaps.empty())
+    {
+        zw.align(3);
+        zw.writeT<uint32_t>(0); // lightmap 0 resides in transient zone slot 0
+    }
     zw.align(3);
     for (const auto &model : mesh.brushModels)
     {
@@ -525,6 +626,7 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     const size_t additionalSunBits = cellWordCount > 1 ? size_t(cellWordCount - 1) * 4 : 0;
     const size_t additionalPrimaryLights = size_t(primaryLightCount - 2) * 0x98;
     const size_t additionalPrimaryLightVis = size_t(primaryLightVisDataCount - 1) * 4;
+    const size_t reflectionProbeVis = size_t(reflectionProbeVisDataCount) * 4;
     const size_t smodelVisDataCount = (staticModels.instances.size() + 31) >> 5;
     const size_t additionalSmodelVis =
         smodelVisDataCount ? 24 * ((smodelVisDataCount * 4 + 127) & ~size_t(127)) : 0;
@@ -537,7 +639,8 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     const size_t dynEntMotionBytes =
         4 * size_t(dynEntWordCounts[0] + dynEntWordCounts[1]);
     zw.reserveCalc(0xD00 + additionalSceneBits + additionalCellVisBits + additionalSunBits +
-                   additionalPrimaryLights + additionalPrimaryLightVis + additionalSmodelVis +
+                    additionalPrimaryLights + additionalPrimaryLightVis + reflectionProbeVis +
+                    additionalSmodelVis +
                    dynEntCellBitsBytes + dynEntViewBitsBytes + dynEntSceneBytes +
                    dynEntMotionBytes);
     zw.popStream();
