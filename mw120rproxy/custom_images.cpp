@@ -1,5 +1,6 @@
 #include "custom_images.h"
 #include "custom_maps.h"
+#include "custom_weapons.h"
 #include "replay_bindings.h"
 #include "safemem.h"
 #include "logger.h"
@@ -321,7 +322,7 @@ void* Lookup(int type, const char* name, int allowDefault) {
                 break;
             }
     }
-    return g_find.load()(type, name, allowDefault);
+    return customweapons::ExtendAsset(type, name, g_find.load()(type, name, allowDefault));
 }
 }
 namespace customimages {

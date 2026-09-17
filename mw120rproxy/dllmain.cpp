@@ -17,6 +17,7 @@
 #include "fastfile_diagnostics.h"
 #include "developer_ui.h"
 #include "custom_map_loader.h"
+#include "custom_weapons.h"
 #include "engine_diagnostics.h"
 #include "custom_physics.h"
 #include "custom_collision.h"
@@ -74,6 +75,8 @@ bool DoInstallHooks() {
         status = fastfilediag::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customloader::Install(g_base);
+    if (status == hook::Status::Installed && g_config.customMapLoader)
+        status = customweapons::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)
         status = customphysics::Install(g_base);
     if (status == hook::Status::Installed && g_config.customMapLoader)

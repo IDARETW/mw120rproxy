@@ -21,6 +21,7 @@
 #include "iw8/replay_script.h"
 #include "iw8/replay_vfx.h"
 #include "iw8/write_xsurface.h"
+#include "iw8/write_weapon.h"
 
 #include <algorithm>
 #include <array>
@@ -68,6 +69,7 @@ void printUsage()
                 "usage:\n"
                 "  iw8-zonetool build-map <dump> <map> [-o <output>] [options]\n"
                 "  iw8-zonetool build-iw3 <map.ff> [map] [-o <output>] [options]\n"
+                "  iw8-zonetool build-weapon --project <build.json> [-o <output>]\n"
                 "  iw8-zonetool inspect-iw7 <file.ff>\n"
                 "  iw8-zonetool inspect <file.ff>\n"
                 "  iw8-zonetool validate-output <map_output> <map>\n"
@@ -1354,6 +1356,8 @@ int validate(const Args &args)
 int main(const int argc, char **argv)
 try
 {
+    if (argc > 1 && !std::strcmp(argv[1], "build-weapon"))
+        return iw8::weaponMain(argc, argv);
     Args args;
     if (!parseArgs(argc, argv, args))
     {

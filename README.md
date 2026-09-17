@@ -1,13 +1,15 @@
-# MW120R Custom Maps
+# MW120R Custom Maps and Weapons
 
 > **Proof of concept.** This repository is a source-only development snapshot for inspecting and
-> improving native map conversion and the MW120R local-play proxy. It is not a finished mod release
+> improving native map and weapon authoring and the MW120R local-play proxy. It is not a finished mod release
 > and does not promise that an arbitrary converted map will load or play correctly in Replay.
 
-The repository contains two cooperating parts:
+The repository contains three cooperating parts:
 
-- `mw120rproxy` is the Replay 1.20 XInput proxy and local custom-map support.
-- `iw8-zonetool` is the native C++ compiler that writes the five Replay map fastfiles.
+- `mw120rproxy` is the Replay 1.20 XInput proxy with local custom-map and custom-weapon support.
+- `iw8-zonetool` is the native C++ compiler for map and custom-weapon fastfiles.
+- The **Weapon Workbench** is a local web editor with a live 3D viewport, stock weapon inspection,
+  animation playback, operator arms, native tag/rig editing, attachments, materials, and SFX/VFX data.
 
 No game executable, stock asset, converted map, prebuilt DLL, or private test capture is included.
 Keep conversion and gameplay testing on a separate Replay installation.
@@ -49,6 +51,20 @@ The installer verifies the Replay executable, stages and hashes the DLL, backs u
 proxy/configuration under `.proxy\backups`, and never starts or stops the game. Omit `-SkipBuild`
 when the proxy should be rebuilt first. Use `-PreserveConfig` to keep the existing
 `mw120rproxy.ini`.
+
+## Create custom weapons
+
+Follow the **[Weapon Workbench setup and authoring guide](iw8-zonetool/docs/CUSTOM_WEAPONS.md)**.
+Build the native tools, install the Python/Three.js dependencies, build the pinned ACTS reader,
+then run setup against **your own Replay game files**. Setup generates the private reference
+library, animation cache, arms, material profile, and loadout tables on your machine.
+
+Open the editor at `http://127.0.0.1:8766/`. Import your own models, textures, and audio through
+the browser's normal file picker, or load a stock weapon from your configured game installation
+to inspect its animations and tags. No tunnel or protected session link is required. The public
+editor has no server-file browsing/import option. No game files or extracted stock library ship
+with the repository. See the guide for preview limitations, building and installing the eight
+weapon companion fastfiles, and local verification commands.
 
 ## Convert a map
 

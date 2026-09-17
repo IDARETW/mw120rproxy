@@ -53,6 +53,7 @@ target("mw120rproxy")
         "command_text.cpp",
         "noclip.cpp",
         "custom_map_loader.cpp",
+        "custom_weapons.cpp",
         "custom_physics.cpp",
         "custom_collision.cpp",
         "custom_ladders.cpp",
@@ -74,3 +75,13 @@ target("mw120rproxy")
         "trigger.cpp",
         "utils.cpp")
     add_files("thirdparty/minhook/src/*.c", "thirdparty/minhook/src/hde/hde64.c")
+
+-- Local game-data fixtures are intentionally not distributed.
+target("custom-weapon-tests")
+    set_kind("binary")
+    set_default(false)
+    add_files("tests/custom_weapon_tests.cpp")
+    add_includedirs("sdk_shim")
+    add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS")
+    add_cxflags("/EHsc", {tools = "cl"})
+    add_syslinks("kernel32")

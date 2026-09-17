@@ -1,0 +1,8 @@
+{
+  "name": "replay-weapon-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Replay weapon authoring workbench",
+  "dependencies": { "three": "0.186.0" }
+}

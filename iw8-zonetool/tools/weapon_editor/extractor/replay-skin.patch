@@ -1,0 +1,175 @@
+diff --git a/src/core/acts/tools/fastfile/handlers/handler_game_mw19_replay.cpp b/src/core/acts/tools/fastfile/handlers/handler_game_mw19_replay.cpp
+index d2eedb64..983f031f 100644
+--- a/src/core/acts/tools/fastfile/handlers/handler_game_mw19_replay.cpp
++++ b/src/core/acts/tools/fastfile/handlers/handler_game_mw19_replay.cpp
+@@ -529,6 +529,8 @@ namespace fastfile::handlers::mw19_replay {
+                             item["filename_encoded"] = true;
+                         }
+                         path += "." + std::to_string(state.report.at("tested").get<size_t>()) + payload.extension;
++                        // Extended Windows paths do not accept slash-separated asset names.
++                        path.make_preferred();
+                         std::filesystem::create_directories(path.parent_path());
+                         if (!utils::WriteFile(path, payload.data.data(), payload.data.size()))
+                             throw std::runtime_error("Cannot write Replay asset");
+diff --git a/src/core/acts/tools/mw19/mw19_mesh.cpp b/src/core/acts/tools/mw19/mw19_mesh.cpp
+index 9cd229ad..5341cfcc 100644
+--- a/src/core/acts/tools/mw19/mw19_mesh.cpp
++++ b/src/core/acts/tools/mw19/mw19_mesh.cpp
+@@ -154,6 +154,100 @@ namespace tool::mw19::schema {
+             const auto vertexOffset = Get<uint32_t>(h, 36), indexOffset = Get<uint32_t>(h, 40);
+             const auto colorOffset = Get<uint32_t>(h, 48), uvOffset = Get<uint32_t>(h, 52);
+             const bool colors = colorOffset != UINT32_MAX, secondUv = uvOffset != UINT32_MAX;
++            std::vector<std::array<uint16_t, 4>> skinJoints(vertices);
++            std::vector<std::array<float, 4>> skinWeights(vertices);
++            Json sourceBlendCounts = Json::array();
++            Json firstBlendWords = Json::array();
++            Json tierFirstWords = Json::array();
++            bool skin = false;
++            size_t skinnedVertices = 0;
++            size_t blendWords = 0;
++            for (size_t tier = 0; tier < 8; ++tier) {
++                const auto tierVertices = Get<uint16_t>(h, 16 + tier * 2);
++                sourceBlendCounts.push_back(tierVertices);
++                skinnedVertices += tierVertices;
++                blendWords += static_cast<size_t>(tierVertices) * (tier + 1) * 2;
++            }
++            const auto blendSize = Get<uint32_t>(h, 32);
++            const auto blendAddress = Get<uint64_t>(h, 96);
++            if (skinnedVertices) {
++                if (skinnedVertices != vertices || !blendAddress || blendWords * 2 != (blendSize & 0xfffffffeu))
++                    throw std::runtime_error("Mesh blend stream does not match its vertex counts");
++                const auto blend = bytes(blendAddress, blendWords * 2);
++                for (size_t word = 0; word < std::min<size_t>(blendWords, 128); ++word)
++                    firstBlendWords.push_back(Get<uint16_t>(blend, word * 2));
++                size_t debugCursor = 0;
++                for (size_t tier = 0; tier < 8; ++tier) {
++                    Json words = Json::array();
++                    const auto tierVertices = Get<uint16_t>(h, 16 + tier * 2);
++                    const size_t debugWords = std::min<size_t>(tierVertices, 4) * (tier + 1) * 2;
++                    for (size_t word = 0; word < debugWords; ++word)
++                        words.push_back(Get<uint16_t>(blend, (debugCursor + word) * 2));
++                    tierFirstWords.push_back(std::move(words));
++                    debugCursor += static_cast<size_t>(tierVertices) * (tier + 1) * 2;
++                }
++                size_t cursor = 0, vertex = 0;
++                for (size_t tier = 0; tier < 8; ++tier) {
++                    const auto tierVertices = Get<uint16_t>(h, 16 + tier * 2);
++                    const size_t influenceCount = tier + 1;
++                    for (size_t item = 0; item < tierVertices; ++item, ++vertex) {
++                        std::vector<std::pair<float, uint16_t>> influences;
++                        influences.reserve(influenceCount);
++                        uint32_t explicitWeight = 0;
++                        std::vector<uint16_t> bones(influenceCount), weights(influenceCount > 0 ? influenceCount - 1 : 0);
++                        bones[0] = Get<uint16_t>(blend, (cursor + item * 2) * 2);
++                        for (size_t influence = 1; influence < influenceCount; ++influence) {
++                            const size_t at = cursor + influence * static_cast<size_t>(tierVertices) * 2 + item * 2;
++                            bones[influence] = Get<uint16_t>(blend, at * 2);
++                            weights[influence - 1] = Get<uint16_t>(blend, (at + 1) * 2);
++                            explicitWeight += weights[influence - 1];
++                        }
++                        if (explicitWeight > 65535)
++                            throw std::runtime_error("Mesh blend weights exceed one");
++                        influences.emplace_back(static_cast<float>(65535 - explicitWeight) / 65535.0f, bones[0]);
++                        for (size_t influence = 1; influence < influenceCount; ++influence)
++                            influences.emplace_back(static_cast<float>(weights[influence - 1]) / 65535.0f, bones[influence]);
++                        std::stable_sort(influences.begin(), influences.end(), [](const auto& left, const auto& right) {
++                            return left.first > right.first;
++                        });
++                        if (influences.size() > 4)
++                            influences.resize(4);
++                        float retained = 0;
++                        for (const auto& influence : influences)
++                            retained += influence.first;
++                        if (retained <= 0)
++                            throw std::runtime_error("Mesh blend vertex has no retained weight");
++                        for (size_t influence = 0; influence < influences.size(); ++influence) {
++                            skinJoints[vertex][influence] = influences[influence].second;
++                            skinWeights[vertex][influence] = influences[influence].first / retained;
++                        }
++                    }
++                    cursor += static_cast<size_t>(tierVertices) * influenceCount * 2;
++                }
++                skin = true;
++            } else {
++                const auto rigidCount = Get<uint8_t>(h, 8);
++                const auto rigidAddress = Get<uint64_t>(h, 88);
++                if (rigidCount) {
++                    if (!rigidAddress)
++                        throw std::runtime_error("Mesh rigid stream is unavailable");
++                    const auto rigid = bytes(rigidAddress, static_cast<size_t>(rigidCount) * 8);
++                    size_t vertex = 0;
++                    for (size_t run = 0; run < rigidCount; ++run) {
++                        const auto bone = Get<uint16_t>(rigid, run * 8);
++                        const auto count = Get<uint16_t>(rigid, run * 8 + 2);
++                        if (!count || count > vertices - vertex)
++                            throw std::runtime_error("Mesh rigid stream exceeds its vertex count");
++                        for (size_t item = 0; item < count; ++item, ++vertex) {
++                            skinJoints[vertex][0] = bone;
++                            skinWeights[vertex][0] = 1.0f;
++                        }
++                    }
++                    if (vertex != vertices)
++                        throw std::runtime_error("Mesh rigid stream leaves vertices unassigned");
++                    skin = true;
++                }
++            }
+             Range(sharedData, vertexOffset, vertices * 20);
+             Range(sharedData, indexOffset, triangles * 6);
+             if (colors)
+@@ -171,9 +265,10 @@ namespace tool::mw19::schema {
+             const size_t stride = 32 + (secondUv ? 8 : 0) + (colors ? 4 : 0);
+             const size_t vertexBytes = vertices * stride, indexBytes = triangles * 6;
+             // Reserve the complete expanded surface before appending any data.
+-            if (vertexBytes + indexBytes + 3 > remaining)
++            const size_t skinBytes = skin ? vertices * (sizeof(std::array<uint16_t, 4>) + sizeof(std::array<float, 4>)) : 0;
++            if (vertexBytes + indexBytes + skinBytes + 3 > remaining)
+                 throw std::runtime_error("Expanded geometry exceeds output budget");
+-            remaining -= vertexBytes + indexBytes + 3;
++            remaining -= vertexBytes + indexBytes + skinBytes + 3;
+             std::array<float, 3> low{}, high{};
+             low.fill(std::numeric_limits<float>::infinity());
+             high.fill(-std::numeric_limits<float>::infinity());
+@@ -217,6 +312,18 @@ namespace tool::mw19::schema {
+             if (colors)
+                 attributes["COLOR_0"] =
+                     accessor(start, vertexBytes, stride, stride - 4, vertices, 5121, "VEC4", true, 34962);
++            if (skin) {
++                const auto jointsStart = bin.size();
++                for (const auto& value : skinJoints)
++                    Append(bin, value);
++                const auto weightsStart = bin.size();
++                for (const auto& value : skinWeights)
++                    Append(bin, value);
++                attributes["JOINTS_0"] = accessor(jointsStart, vertices * sizeof(std::array<uint16_t, 4>),
++                                                  sizeof(std::array<uint16_t, 4>), 0, vertices, 5123, "VEC4", false, 34962);
++                attributes["WEIGHTS_0"] = accessor(weightsStart, vertices * sizeof(std::array<float, 4>),
++                                                   sizeof(std::array<float, 4>), 0, vertices, 5126, "VEC4", false, 34962);
++            }
+             const auto indexStart = bin.size();
+             for (size_t i = 0; i < triangles * 3; ++i) {
+                 const auto index = Get<uint16_t>(sharedData, indexOffset + i * 2);
+@@ -231,7 +338,10 @@ namespace tool::mw19::schema {
+                 Json{ { "attributes", std::move(attributes) },
+                       { "indices", indices },
+                       { "mode", 4 },
+-                      { "extras", { { "sourceSurface", s }, { "sourceFlags", Get<uint16_t>(h, 0) } } } }
++                      { "extras", { { "sourceSurface", s }, { "sourceFlags", Get<uint16_t>(h, 0) },
++                                      { "skinWeights", skin }, { "sourceInfluences", skinnedVertices ? "blend" : "rigid" },
++                                      { "sourceBlendCounts", sourceBlendCounts }, { "firstBlendWords", firstBlendWords },
++                                      { "tierFirstWords", tierFirstWords } } } }
+             );
+             ++result.surfaces;
+             result.vertices += vertices;
+diff --git a/src/core/acts/tools/mw19/mw19_payload.cpp b/src/core/acts/tools/mw19/mw19_payload.cpp
+index 43afdd1f..64372df3 100644
+--- a/src/core/acts/tools/mw19/mw19_payload.cpp
++++ b/src/core/acts/tools/mw19/mw19_payload.cpp
+@@ -132,7 +132,7 @@ namespace tool::mw19::schema {
+             "rawfile",         "scriptfile",  "luafile",       "stringtable",       "localize",
+             "netconststrings", "ttf",         "soundbanklist", "computeshader",     "libshader",
+             "vertexshader",    "hullshader",  "domainshader",  "pixelshader",       "image",
+-            "streamkey",       "xmodelsurfs", "soundbank",     "soundbanktransient"
++            "streamkey",       "xmodelsurfs"
+         };
+         return supported.contains(pool);
+     }

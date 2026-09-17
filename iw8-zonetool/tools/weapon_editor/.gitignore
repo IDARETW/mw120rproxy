@@ -1,0 +1,7 @@
+node_modules/
+config*.json
+!config.example.json
+workspace/
+output/
+__pycache__/
+*.pyc

@@ -71,7 +71,7 @@ target("custom_map_tests")
     add_includedirs("..", "../sdk_shim")
     add_syslinks("kernel32", "user32")
     set_targetdir("../../test-out")
-    add_files("custom_map_tests.cpp", "../command_text.cpp", "../custom_maps.cpp", "../custom_map_loader.cpp", "../custom_physics.cpp", "../custom_collision.cpp", "../custom_images.cpp", "../custom_audio.cpp", "../custom_surfaces.cpp", "../custom_omnvars.cpp",
+    add_files("custom_map_tests.cpp", "../command_text.cpp", "../custom_maps.cpp", "../custom_map_loader.cpp", "../custom_weapons.cpp", "../custom_physics.cpp", "../custom_collision.cpp", "../custom_images.cpp", "../custom_audio.cpp", "../custom_surfaces.cpp", "../custom_omnvars.cpp",
               "../developer_ui.cpp", "../noclip.cpp", "../custom_map_ui.cpp", "../custom_ladders.cpp", "../custom_glass.cpp", "../custom_doors.cpp", "../inline_hook.cpp", "../log.cpp")
     add_files("../thirdparty/minhook/src/*.c", "../thirdparty/minhook/src/hde/hde64.c")
 

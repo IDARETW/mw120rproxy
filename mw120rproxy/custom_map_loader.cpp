@@ -1,5 +1,6 @@
 #include "custom_map_loader.h"
 #include "custom_maps.h"
+#include "custom_weapons.h"
 #include "replay_bindings.h"
 #include "logger.h"
 #include "safemem.h"
@@ -72,7 +73,8 @@ uintptr_t __fastcall ResetSelectedReader(uintptr_t reader) {
             if (count && count < sizeof(name) - 1 && zone.ends_with(".ff")) {
                 zone.resize(zone.size() - 3);
                 std::wstring path;
-                selectedStored = custommaps::ActiveZonePath(zone.c_str(), path);
+                selectedStored = customweapons::IsZone(zone.c_str()) ||
+                                 custommaps::ActiveZonePath(zone.c_str(), path);
             }
         } catch (...) {
             selectedStored = false;
@@ -100,7 +102,8 @@ HANDLE __fastcall OpenSelected(const char* filename, unsigned flags) {
     bool redirect = false;
     try {
         redirect = length && length < sizeof(request) - 1 &&
-                   custommaps::ResolveDiskRead(request, replacement);
+                   (customweapons::ResolveDiskRead(request, replacement) ||
+                    custommaps::ResolveDiskRead(request, replacement));
     } catch (...) {
         LOG_ERR("Maps", "selected package path resolution failed; native request retained");
     }

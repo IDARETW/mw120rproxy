@@ -6,8 +6,8 @@
 
 The public checkout contains two native C++ targets:
 
-- 'mw120rproxy' — the Replay 1.20 XInput proxy and local custom-map support.
-- 'iw8-zonetool' — the native compiler for Replay's five-map-fastfile package.
+- 'mw120rproxy' — the Replay 1.20 XInput proxy and local custom-map and custom-weapon support.
+- 'iw8-zonetool' — the native compiler for Replay map and weapon fastfile packages.
 
 The repository intentionally does not contain game binaries, stock assets, converted maps, prebuilt
 DLLs, private research captures, or deployment evidence.
@@ -87,3 +87,23 @@ Offline tests and parser/serializer checks answer whether a known input or packa
 specific structural contract. They do not prove that a live Replay installation loads the map,
 renders every asset, or behaves correctly in Local Play. Keep live testing, game-folder deployment,
 and release decisions as separate owner-run gates.
+
+## Weapon editor
+
+The Python/Three.js editor lives in `iw8-zonetool/tools/weapon_editor`. The
+[weapon guide](../iw8-zonetool/docs/CUSTOM_WEAPONS.md) documents reproducible local
+setup and the pinned ACTS source patch. Run setup against your own supported Replay
+installation; do not commit the resulting library, exports, projects, cache, or
+`config.local.json`. The public editor uses browser uploads and has no host filesystem
+browsing routes. Keep native layout evidence scoped to the checked executable hash.
+
+`write_weapon.cpp` emits the native asset graph and companion fastfiles. The proxy's
+`custom_weapons.cpp` registers packages and extends loadout tables/DDL while preserving
+stock ordinals. Asset extension caches keep repeated Gunsmith lookups cheap. The
+shared map loader also accepts registered weapon packages; weapon changes must retain
+the existing map paths and shader authentication behavior.
+
+Run `check_public.py` against a prepared local configuration, `check_registration.py`
+against the generated library, and `check_native.py` with the built compiler. Test
+UI behavior in a browser and authored assets in Replay separately: source checks,
+native compilation, package validation, and gameplay are distinct gates.
