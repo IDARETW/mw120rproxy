@@ -22,7 +22,8 @@ const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>'
 
 const pretty=s=>String(s).replace(/^weapon_/,'').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
 
-const state={boot:null,project:null,page:'overview',view:'view_model',fields:[],asset:'weapon',layout:null,selectedType:'WeaponCompleteDef',job:null,selectedBone:null,expandedSlots:new Set(),showHands:preferences.getItem('arsenal-view-hands')==='1'};
+const transformSnap=JSON.parse(preferences.getItem('arsenal-transform-snap')||'{"enabled":true,"translate":0.1,"rotate":15,"scale":0.1}');
+const state={boot:null,project:null,page:'overview',view:'view_model',fields:[],asset:'weapon',layout:null,selectedType:'WeaponCompleteDef',job:null,selectedBone:null,expandedSlots:new Set(),showHands:preferences.getItem('arsenal-view-hands')==='1',transformSnap};
 
 let toastTimer,queue=Promise.resolve(),fileChoice=null;
 
@@ -52,7 +53,19 @@ const viewer=new WeaponViewer($('#viewport'),async action=>{
     return;
   }
   const bone=state.selectedBone;await viewer.load(state.project,state.view);if(bone)viewer.selectBone(bone);
-},(name,object)=>{state.selectedBone=name;if(state.page==='rig')renderRigInspector(object);});
+},(name,object)=>{state.selectedBone=name;if(state.page==='rig')renderRigInspector(object);},()=>syncTransformFields());
+
+function transformFields(){
+  const values=viewer.transformValues()||{position:[0,0,0],rotation:[0,0,0],scale:[1,1,1]},field=(label,kind,values,step)=>`<div class="section-label" style="margin-top:14px">${label}</div><div class="field-row three">${['X','Y','Z'].map((axis,i)=>`<label class="field"><span>${axis}</span><input type="number" step="${step}" data-transform="${kind}:${i}" value="${values[i].toFixed(kind==='rotation'?2:3)}"></label>`).join('')}</div>`;
+  return `<label class="toggle-row"><input type="checkbox" id="transform-step-enabled" ${state.transformSnap.enabled?'checked':''}> Snap gizmo to increments</label><div class="field-row three">${['Move step','Rotate °','Scale step'].map((label,i)=>`<label class="field"><span>${label}</span><input type="number" min=".001" step="${i===1?'1':'.01'}" data-transform-snap="${['translate','rotate','scale'][i]}" value="${state.transformSnap[['translate','rotate','scale'][i]]}"></label>`).join('')}</div>${field('POSITION · NATIVE UNITS','position',values.position,'.001')}${field('ROTATION · DEGREES','rotation',values.rotation,'.01')}${field('SCALE','scale',values.scale,'.001')}`;
+}
+
+function applyTransformSnap(){viewer.setTransformSnap(state.transformSnap);preferences.setItem('arsenal-transform-snap',JSON.stringify(state.transformSnap));}
+
+function syncTransformFields(values=viewer.transformValues()){
+  if(!values)return;
+  $$('[data-transform]').forEach(input=>{const [kind,axis]=input.dataset.transform.split(':');const value=values[kind][Number(axis)];if(document.activeElement!==input)input.value=value.toFixed(kind==='rotation'?2:3);});
+}
 
 async function setHands(value){
   await viewer.setArms(value);
@@ -127,7 +140,7 @@ async function renderPage(){
 
   }else if(state.page==='model'){
 
-    $('#inspector').innerHTML=panel('Model & material',`<div class="section-label">GEOMETRY</div><p class="helper">${escape(p.model?.split('/').pop()||'Reference model')}</p><button class="button full-width" data-action="import-model">Import OBJ, FBX, GLB or glTF</button><div class="divider"></div><div class="section-label">PLACEMENT</div><div class="toolbar-row"><button class="button" data-mode="translate">Move</button><button class="button" data-mode="rotate">Rotate</button><button class="button" data-mode="scale">Scale</button></div><small class="helper">Gizmo edits save the native model transform.</small><div class="divider"></div><div class="section-label">SURFACE</div><div class="field-row"><label class="field"><span>Base color</span><input type="color" data-material="color" value="${p.material.color}"></label><label class="field"><span>Preview metalness</span><input type="number" min="0" max="1" step=".05" data-material="metalness" value="${p.material.metalness??.35}"></label></div><div class="field-row"><label class="field"><span>Native roughness</span><input type="number" min="0" max="1" step=".05" data-material="roughness" value="${p.material.roughness??.45}"></label><label class="field"><span>Native specular</span><input type="number" min="0" max="1" step=".05" data-material="specular" value="${p.material.specular??.22}"></label></div><button class="button full-width" data-action="texture">Import color texture</button><div class="toolbar-row" style="margin-top:8px"><button class="button" data-action="normal">Normal map</button><button class="button" data-action="emissive">Emissive map</button></div><p class="helper">UVs come from the imported model. Specular is packed into color alpha, roughness into normal alpha, and emissive uses the native material profile.</p>`);
+    $('#inspector').innerHTML=panel('Model & material',`<div class="section-label">GEOMETRY</div><p class="helper">${escape(p.model?.split('/').pop()||'Reference model')}</p><button class="button full-width" data-action="import-model">Import OBJ, FBX, GLB or glTF</button><div class="divider"></div><div class="section-label">PLACEMENT</div><div class="toolbar-row"><button class="button" data-mode="translate">Move</button><button class="button" data-mode="rotate">Rotate</button><button class="button" data-mode="scale">Scale</button></div><small class="helper">Gizmo and numeric edits save the native model transform.</small>${transformFields()}<div class="divider"></div><div class="section-label">SURFACE</div><div class="field-row"><label class="field"><span>Base color</span><input type="color" data-material="color" value="${p.material.color}"></label><label class="field"><span>Preview metalness</span><input type="number" min="0" max="1" step=".05" data-material="metalness" value="${p.material.metalness??.35}"></label></div><div class="field-row"><label class="field"><span>Native roughness</span><input type="number" min="0" max="1" step=".05" data-material="roughness" value="${p.material.roughness??.45}"></label><label class="field"><span>Native specular</span><input type="number" min="0" max="1" step=".05" data-material="specular" value="${p.material.specular??.22}"></label></div><button class="button full-width" data-action="texture">Import color texture</button><div class="toolbar-row" style="margin-top:8px"><button class="button" data-action="normal">Normal map</button><button class="button" data-action="emissive">Emissive map</button></div><p class="helper">UVs come from the imported model. Specular is packed into color alpha, roughness into normal alpha, and emissive uses the native material profile.</p>`);
 
     content.innerHTML=`<div class="card">${panel('Source assets',p.files.length?p.files.map(f=>property(f.name,`${(f.bytes/1024).toFixed(1)} KB`)).join(''):'<p class="helper">Imported source files stay with this project.</p>')}</div>`;
 
@@ -203,7 +216,7 @@ function renderParts(){
 
   const p=state.project,rig=p.rig?.[state.view];if(!rig)return '';
 
-  return `<div class="card">${panel('Moving parts','<p class="helper">Assign each named mesh part to a bone. Imported skin weights remain active until you assign an override.</p>')}<table><thead><tr><th>MESH PART</th><th>BONE ASSIGNMENT</th></tr></thead><tbody>${(p.model_parts||[]).map(part=>`<tr><td>${escape(part)}</td><td><select class="form-control" data-part-bone="${escape(part)}"><option value="">${rig.vertex_weights?.length?'Imported skin weights':'Default: '+escape(rig.bones[rig.rigid_bone])}</option>${rig.bones.map(n=>`<option value="${escape(n)}" ${rig.part_bones?.[part]===n?'selected':''}>${escape(n)}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="card">${panel('Moving parts','<p class="helper">Assign each named mesh part to a bone. New model imports use rigid parts so the viewport and Replay share the same bind space.</p>')}<table><thead><tr><th>MESH PART</th><th>BONE ASSIGNMENT</th></tr></thead><tbody>${(p.model_parts||[]).map(part=>`<tr><td>${escape(part)}</td><td><select class="form-control" data-part-bone="${escape(part)}"><option value="">Default: ${escape(rig.bones[rig.rigid_bone])}</option>${rig.bones.map(n=>`<option value="${escape(n)}" ${rig.part_bones?.[part]===n?'selected':''}>${escape(n)}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>`;
 
 }
 
@@ -567,6 +580,12 @@ document.addEventListener('change',async e=>{const input=e.target;try{
 
   if(input.dataset.material){const k=input.dataset.material;await mutation({op:'material',material:{[k]:k==='color'?input.value:Number(input.value)}},{render:false,reloadModel:true});return;}
 
+  if(input.id==='transform-step-enabled'){state.transformSnap.enabled=input.checked;applyTransformSnap();return;}
+
+  if(input.dataset.transformSnap){const value=Number(input.value);if(!Number.isFinite(value)||value<=0)throw new Error('Transform increments must be greater than zero.');state.transformSnap[input.dataset.transformSnap]=value;applyTransformSnap();return;}
+
+  if(input.dataset.transform){const [kind,axis]=input.dataset.transform.split(':');const value=Number(input.value);if(!Number.isFinite(value))throw new Error('Transform values must be numeric.');if(viewer.selected!==viewer.model)viewer.selectModel();viewer.setTransformComponent(kind,Number(axis),value);await viewer.commit();syncTransformFields();return;}
+
   if(input.id==='preview-package'){fillPreviewClips();return;}
   if(input.id==='preview-speed'){viewer.setAnimationSpeed(Number(input.value));return;}
   if(input.id==='preview-loop'){viewer.setAnimationLoop(input.checked);return;}
@@ -589,7 +608,7 @@ document.addEventListener('change',async e=>{const input=e.target;try{
 
 document.addEventListener('input',e=>{if(e.target.id==='preview-filter')fillPreviewClips();if(e.target.id==='preview-seek')viewer.seekAnimation(Number(e.target.value));if(e.target.id==='test-bone')viewer.previewBone(state.selectedBone,0,Number(e.target.value));if(e.target.id==='field-search')renderFieldTable();if(e.target.id==='reference-search')renderReferences();if(e.target.id==='type-search')$$('[data-type-name]').forEach(b=>b.hidden=!b.textContent.toLowerCase().includes(e.target.value.toLowerCase()));});
 
-$('#projects').onclick=async()=>{state.boot.projects=await api('/api/projects');projectDialog();};$('#new-project').onclick=newDialog;$('#load-stock').onclick=()=>newDialog('stock');$('#build').onclick=()=>startBuild().catch(e=>toast(e.message,true));$('#undo').onclick=()=>mutation({op:'undo'},{reloadModel:true}).catch(()=>{});$('#redo').onclick=()=>mutation({op:'redo'},{reloadModel:true}).catch(()=>{});$('#layout-shortcut').onclick=()=>navigate('layout');$('#empty-import').onclick=()=>chooseModelFiles();$('#toggle-hands').onclick=()=>setHands(!state.showHands).catch(e=>toast(e.message,true));$('#toggle-wire').onclick=e=>{viewer.setWireframe(!viewer.wireframe);e.currentTarget.classList.toggle('active',viewer.wireframe);};$('#toggle-bones').onclick=e=>{viewer.setBones(!viewer.showBones);e.currentTarget.classList.toggle('active',viewer.showBones);};$('#frame-model').onclick=()=>viewer.frame();$('#capture-model').onclick=()=>viewer.capture();
+$('#projects').onclick=async()=>{state.boot.projects=await api('/api/projects');projectDialog();};$('#new-project').onclick=newDialog;$('#load-stock').onclick=()=>newDialog('stock');$('#build').onclick=()=>startBuild().catch(e=>toast(e.message,true));$('#undo').onclick=()=>mutation({op:'undo'},{reloadModel:true}).catch(()=>{});$('#redo').onclick=()=>mutation({op:'redo'},{reloadModel:true}).catch(()=>{});$('#layout-shortcut').onclick=()=>navigate('layout');$('#empty-import').onclick=()=>chooseModelFiles();$('#toggle-hands').onclick=()=>setHands(!state.showHands).catch(e=>toast(e.message,true));$('#toggle-wire').onclick=e=>{viewer.setWireframe(!viewer.wireframe);e.currentTarget.classList.toggle('active',viewer.wireframe);};$('#toggle-template').onclick=async e=>{try{if(!viewer.hasTemplate()){e.currentTarget.disabled=true;toast('Loading reference wireframe…');await mutation({op:'template'},{render:false,reloadModel:true});}const visible=viewer.setTemplate(!viewer.showTemplate);e.currentTarget.classList.toggle('active',visible);e.currentTarget.setAttribute('aria-pressed',String(visible));}finally{e.currentTarget.disabled=false;}};$('#toggle-bones').onclick=e=>{viewer.setBones(!viewer.showBones);e.currentTarget.classList.toggle('active',viewer.showBones);};$('#frame-model').onclick=()=>viewer.frame();$('#capture-model').onclick=()=>viewer.capture();
 
 $('#help').onclick=()=>showModal('<h2>At your fingertips</h2><p class="lead">Work in native coordinates, with a live view of your model.</p>'+property('Undo','Ctrl + Z')+property('Redo','Ctrl + Shift + Z')+property('Frame model','F')+property('Move / rotate / scale','W / E / R')+property('Orbit / pan / zoom','Left drag / Right drag / Scroll')+'<p class="helper">The local workspace saves each successful edit. Builds capture a complete project revision. Game testing remains a separate step.</p>');
 
@@ -597,4 +616,4 @@ document.addEventListener('keydown',e=>{const editing=['INPUT','TEXTAREA','SELEC
 
 
 
-try{state.boot=initialBootstrap;$('#connection-label').textContent='Local workspace';const saved=preferences.getItem('arsenal-project');const id=state.boot.projects.find(p=>p.id===saved)?.id||state.boot.projects[0]?.id;if(id)await openProject(id);else newDialog();if(state.showHands)setHands(true).catch(e=>{state.showHands=false;preferences.removeItem('arsenal-view-hands');toast(e.message,true);});}catch(e){toast(e.message,true);$('#subtitle').textContent=e.message;console.error(e);}
+try{state.boot=initialBootstrap;applyTransformSnap();$('#connection-label').textContent='Local workspace';const saved=preferences.getItem('arsenal-project');const id=state.boot.projects.find(p=>p.id===saved)?.id||state.boot.projects[0]?.id;if(id)await openProject(id);else newDialog();if(state.showHands)setHands(true).catch(e=>{state.showHands=false;preferences.removeItem('arsenal-view-hands');toast(e.message,true);});}catch(e){toast(e.message,true);$('#subtitle').textContent=e.message;console.error(e);}

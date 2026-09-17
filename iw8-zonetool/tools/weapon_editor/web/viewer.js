@@ -22,8 +22,8 @@ export async function readResource(url,onProgress){
 }
 
 export class WeaponViewer {
-  constructor(element, onChange, onSelect) {
-    this.element=element; this.onChange=onChange; this.onSelect=onSelect;
+  constructor(element, onChange, onSelect, onTransform) {
+    this.element=element; this.onChange=onChange; this.onSelect=onSelect; this.onTransform=onTransform;
     this.scene=new THREE.Scene(); this.scene.background=new THREE.Color('#f1f3f6');
     this.camera=new THREE.PerspectiveCamera(33,1,.01,5000); this.camera.up.set(0,0,1);
     this.renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
@@ -42,13 +42,14 @@ export class WeaponViewer {
     this.grid.material.transparent=true; this.grid.material.opacity=.65; this.scene.add(this.grid);
     this.ground=new THREE.Mesh(new THREE.PlaneGeometry(1000,1000),new THREE.ShadowMaterial({opacity:.1}));
     this.ground.receiveShadow=true; this.scene.add(this.ground);
-    this.model=new THREE.Group();this.scene.add(this.model);this.attachments=new THREE.Group();this.scene.add(this.attachments);this.bones=new THREE.Group();this.scene.add(this.bones);
+    this.model=new THREE.Group();this.scene.add(this.model);this.template=new THREE.Group();this.template.name='reference_template';this.template.visible=false;this.scene.add(this.template);this.attachments=new THREE.Group();this.scene.add(this.attachments);this.bones=new THREE.Group();this.scene.add(this.bones);
     this.arms=new THREE.Group();this.arms.name='operator_viewhands';this.arms.visible=false;this.scene.add(this.arms);
     this.skeletonRoot=new THREE.Group();this.scene.add(this.skeletonRoot);
     this.gizmo=new TransformControls(this.camera,this.renderer.domElement);this.gizmo.setSize(.7);
     this.scene.add(this.gizmo.getHelper());
     this.gizmo.addEventListener('dragging-changed',e=>{this.controls.enabled=!e.value;if(!e.value)this.commit();});
-    this.gizmo.addEventListener('objectChange',()=>{if(this.selected?.userData.bone)this.onSelect?.(this.selected.userData.bone,this.selected);});
+    this.gizmo.addEventListener('objectChange',()=>{if(this.selected?.userData.bone)this.onSelect?.(this.selected.userData.bone,this.selected);this.onTransform?.(this.transformValues());});
+    this.setTransformSnap({enabled:false,translate:.1,rotate:15,scale:.1});
     this.renderer.domElement.addEventListener('pointerdown',e=>this.down=[e.clientX,e.clientY]);
     this.renderer.domElement.addEventListener('pointerup',e=>{
       if(!this.down||Math.hypot(e.clientX-this.down[0],e.clientY-this.down[1])>4||this.gizmo.dragging)return;
@@ -68,7 +69,7 @@ export class WeaponViewer {
     const previousStats=stats.textContent;stats.textContent='Loading model…';
     const stage=Object.create(WeaponViewer.prototype);
     Object.assign(stage,{project,view,generation,assetCache:this.assetCache||(this.assetCache=new Map()),
-      model:new THREE.Group(),attachments:new THREE.Group(),bones:new THREE.Group(),skeletonRoot:new THREE.Group()});
+      model:new THREE.Group(),template:new THREE.Group(),attachments:new THREE.Group(),bones:new THREE.Group(),skeletonRoot:new THREE.Group()});
     let installed=false;
     const appearance=project.material||{};
     const material=new THREE.MeshPhysicalMaterial({color:appearance.color||'#8793a6',metalness:appearance.metalness??.35,roughness:appearance.roughness??.42,specularIntensity:appearance.specular??.22});
@@ -105,28 +106,36 @@ export class WeaponViewer {
       if(rig)stage.skinModel(object,text,rig,sourceVertices);
       object.traverse(mesh=>{if(mesh.isMesh){mesh.material=material;mesh.castShadow=true;mesh.receiveShadow=true;}});
     }
+    const template=project.template_views?.[view]||project.stock_views?.[view];
+    if(template?.model){
+      const {object}=await stage.loadGeometry(project.id,template.model,template.source);
+      const wire=new THREE.MeshBasicMaterial({color:0x4b78bf,wireframe:true,transparent:true,opacity:.38,depthTest:false,depthWrite:false});
+      object.traverse(mesh=>{if(mesh.isMesh){mesh.material=wire;mesh.renderOrder=2;}});
+      stage.template.add(object);stage.template.visible=!!this.showTemplate;
+    }
     if(rig)stage.drawRig(rig);
     await stage.loadAttachments(project,view,generation,material);
     if(this.generation!==generation)return;
     const selection=this.project?.id===project.id&&this.view===view?this.selected?.userData:null;
     const selectedModel=this.selected===this.model&&this.project?.id===project.id&&this.view===view;
     this.resetPose();this.gizmo.detach();this.selected=null;
-    for(const key of ['model','attachments','bones','skeletonRoot']){
+    for(const key of ['model','template','attachments','bones','skeletonRoot']){
       this.scene.remove(this[key]);this.clearGroup(this[key]);this[key]=stage[key];this.scene.add(this[key]);
     }
     this.skeleton?.dispose();this.skeleton=stage.skeleton;this.project=project;this.view=view;installed=true;
     this.setWireframe(this.wireframe||false);
+    this.setTemplate(this.showTemplate||false);
     if(selectedModel)this.selectModel();else if(selection?.attachment)this.selectAttachment(selection.attachment);else if(selection?.bone)this.selectBone(selection.bone);
     let triangles=0;
     for(const group of [this.model,this.attachments])group.traverse(mesh=>{if(mesh.isMesh)triangles+=(mesh.geometry.index?.count||mesh.geometry.attributes.position.count)/3;});
     stats.textContent=`${triangles.toLocaleString()} triangles  ·  ${rig?.bones.length||0} bones  ·  Native units`;
     document.querySelector('#viewport-empty').hidden=triangles>0||this.showArms||!!(project.stock_reference&&rig);
     this.bones.visible=this.showBones||false;
-    const bounds=new THREE.Box3().setFromObject(this.model);bounds.union(new THREE.Box3().setFromObject(this.attachments));
+    const bounds=new THREE.Box3().setFromObject(this.model);bounds.union(new THREE.Box3().setFromObject(this.attachments));if(this.template.visible)bounds.union(new THREE.Box3().setFromObject(this.template));
     if(!bounds.isEmpty()){this.grid.position.z=bounds.min.z-.07;this.ground.position.z=bounds.min.z-.04;}
     if(frame)this.frame();
     }catch(error){if(this.generation===generation)stats.textContent=previousStats;throw error;}
-    finally{if(!installed){for(const key of ['model','attachments','bones','skeletonRoot'])stage.clearGroup(stage[key]);stage.skeleton?.dispose();stage.disposeMaterial(material);}}
+    finally{if(!installed){for(const key of ['model','template','attachments','bones','skeletonRoot'])stage.clearGroup(stage[key]);stage.skeleton?.dispose();stage.disposeMaterial(material);}}
   }
   async readAsset(url,type){
     const cache=this.assetCache||(this.assetCache=new Map()),key=type+':'+url;
@@ -220,12 +229,13 @@ export class WeaponViewer {
     if(run.length)runs.push(run);
     const meshes=[];object.traverse(m=>{if(m.isMesh)meshes.push(m);});
     let vertexOffset=0;
+    const useNativeWeights=rig.native_skin_weights||!!this.project?.stock_reference;
     meshes.forEach((mesh,index)=>{
       const count=mesh.geometry.attributes.position.count,indices=[],weights=[];
       const assigned=rig.part_bones?.[mesh.name||'default'];
       const fallback=assigned||rig.bones[rig.rigid_bone];
       for(let v=0;v<count;v++){
-        const influences=assigned?[{bone:assigned,weight:1}]:rig.vertex_weights?.[sourceVertices?vertexOffset+v:runs[index]?.[v]]||[{bone:fallback,weight:1}];
+        const influences=assigned?[{bone:assigned,weight:1}]:(useNativeWeights?rig.vertex_weights?.[sourceVertices?vertexOffset+v:runs[index]?.[v]]:null)||[{bone:fallback,weight:1}];
         const sum=influences.reduce((total,w)=>total+w.weight,0);
         for(let k=0;k<4;k++){const w=influences[k];indices.push(w?rig.bones.indexOf(w.bone):0);weights.push(w?w.weight/sum:0);}
       }
@@ -338,6 +348,9 @@ export class WeaponViewer {
   selectModel(){this.resetPose();this.gizmo.detach();this.selected=this.model;this.model.matrix.decompose(this.model.position,this.model.quaternion,this.model.scale);this.model.matrixAutoUpdate=true;this.gizmo.attach(this.model);}
   selectAttachment(name){this.gizmo.detach();const group=this.attachments.children.find(x=>x.userData.attachment===name);if(!group)return false;this.selected=group;group.matrix.decompose(group.position,group.quaternion,group.scale);group.matrixAutoUpdate=true;this.gizmo.attach(group);return true;}
   setMode(mode){this.gizmo.setMode(mode);}
+  setTransformSnap({enabled,translate,rotate,scale}){this.transformSnap={enabled:!!enabled,translate:Number(translate),rotate:Number(rotate),scale:Number(scale)};this.gizmo.translationSnap=enabled&&translate>0?Number(translate):null;this.gizmo.rotationSnap=enabled&&rotate>0?THREE.MathUtils.degToRad(Number(rotate)):null;this.gizmo.scaleSnap=enabled&&scale>0?Number(scale):null;}
+  transformValues(){const target=this.selected?.userData.attachment?this.selected:this.model;if(!target)return null;const position=new THREE.Vector3(),quaternion=new THREE.Quaternion(),scale=new THREE.Vector3();target.matrix.decompose(position,quaternion,scale);const rotation=new THREE.Euler().setFromQuaternion(quaternion);return {position:position.toArray(),rotation:[rotation.x,rotation.y,rotation.z].map(THREE.MathUtils.radToDeg),scale:scale.toArray()};}
+  setTransformComponent(kind,axis,value){const target=this.selected?.userData.attachment?this.selected:this.model;if(!target||!Number.isFinite(value))return;target.matrix.decompose(target.position,target.quaternion,target.scale);target.matrixAutoUpdate=true;if(kind==='position')target.position.setComponent(axis,value);else if(kind==='scale')target.scale.setComponent(axis,value);else if(kind==='rotation'){const rotation=new THREE.Euler().setFromQuaternion(target.quaternion);rotation.setComponent(axis,THREE.MathUtils.degToRad(value));target.quaternion.setFromEuler(rotation);}target.updateMatrix();this.onTransform?.(this.transformValues());}
   async commit(){
     if(!this.selected)return;
     if(this.selected.userData.bone){await this.onChange({op:'bone',view:this.view,bone:this.selected.userData.bone,translation:this.selected.position.toArray(),quaternion:this.selected.quaternion.toArray()});}
@@ -351,15 +364,18 @@ export class WeaponViewer {
   }
   frame(){
     this.scene.updateMatrixWorld(true);
-    for(const group of [this.model,this.attachments,this.arms])group.traverse(object=>{if(object.isSkinnedMesh)object.computeBoundingBox();});
+    for(const group of [this.model,this.template,this.attachments,this.arms])group.traverse(object=>{if(object.isSkinnedMesh)object.computeBoundingBox();});
     const bounds=new THREE.Box3().setFromObject(this.model);
     bounds.union(new THREE.Box3().setFromObject(this.attachments));
+    if(this.template.visible)bounds.union(new THREE.Box3().setFromObject(this.template));
     if(this.showArms&&this.arms.visible)bounds.union(new THREE.Box3().setFromObject(this.arms));
     if(bounds.isEmpty())return;
     const center=bounds.getCenter(new THREE.Vector3()),size=bounds.getSize(new THREE.Vector3()).length();
     this.controls.target.copy(center);this.camera.position.copy(center).add(new THREE.Vector3(.65,-1,.6).normalize().multiplyScalar(size*1.8));this.camera.near=Math.max(.01,size/1000);this.camera.far=Math.max(1000,size*100);this.camera.updateProjectionMatrix();this.controls.update();
   }
   setWireframe(value){this.wireframe=value;for(const group of [this.model,this.attachments])group.traverse(o=>{if(o.isMesh)o.material.wireframe=value;});}
+  hasTemplate(){return !!this.template.children.length;}
+  setTemplate(value){this.showTemplate=!!value;this.template.visible=this.showTemplate&&this.hasTemplate();return this.template.visible;}
   setBones(value){this.showBones=value;this.bones.visible=value;if(!value)this.gizmo.detach();}
   capture(){this.renderer.render(this.scene,this.camera);const a=document.createElement('a');a.download=this.project.base+'-preview.png';a.href=this.renderer.domElement.toDataURL('image/png');a.click();}
 }
@@ -395,7 +411,7 @@ export async function importModel(file,resources=[]){
 
 export function sceneToModel(object,clips=[]){
   object.updateMatrixWorld(true);
-  const rows=['# Imported by Replay Weapon Workbench'],parts=[],weights=[],sourceBones=[];
+  const rows=['# Imported by Replay Weapon Workbench'],parts=[],sourceBones=[];
   object.traverse(node=>{if(node.isBone)sourceBones.push(node);});
   const nativeNames=new Map(),used=new Set(['j_import_root']);
   for(const bone of sourceBones){
@@ -422,7 +438,7 @@ export function sceneToModel(object,clips=[]){
       parents:sorted.map((b,i)=>i+1-(boneParents.get(b)?sorted.indexOf(boneParents.get(b))+1:0)),
       quats:poses.map(p=>p.quat.map(v=>Math.round(v*32767))),translations:poses.map(p=>p.translation),
       classification:Array(sorted.length+1).fill(0),bind_pose:[],rigid_bone:0,material:'',
-      transform:[[1,0,0,0],[0,1,0,0],[0,0,1,0]],replace:[],part_bones:{}};
+      transform:[[1,0,0,0],[0,1,0,0],[0,0,1,0]],replace:[],part_bones:{},native_skin_weights:false};
   }
   let offset=1;
   object.traverse(mesh=>{
@@ -441,27 +457,12 @@ export function sceneToModel(object,clips=[]){
       v.fromBufferAttribute(position,i).applyMatrix4(mesh.matrixWorld);rows.push(`v ${v.x} ${v.y} ${v.z}`);
       rows.push(`vt ${uv?.getX(i)||0} ${uv?.getY(i)||0}`);
       normal.fromBufferAttribute(normals,i).applyMatrix3(normalMatrix).normalize();rows.push(`vn ${normal.x} ${normal.y} ${normal.z}`);
-      if(rig){
-        const influence=new Map();
-        if(mesh.isSkinnedMesh){
-          const indices=geometry.attributes.skinIndex,values=geometry.attributes.skinWeight;
-          if(!indices||!values)throw new Error('Skinned mesh has no joint/weight attributes');
-          for(let k=0;k<4;k++){
-            const weight=values.getComponent(i,k),bone=mesh.skeleton.bones[indices.getComponent(i,k)],target=nativeNames.get(bone);
-            if(weight>0){if(!target)throw new Error('Skin references a bone outside the scene');influence.set(target,(influence.get(target)||0)+weight);}
-          }
-        }else{let parent=mesh.parent;while(parent&&!nativeNames.has(parent))parent=parent.parent;influence.set(nativeNames.get(parent)||'j_import_root',1);}
-        if(!influence.size)influence.set('j_import_root',1);
-        const sum=[...influence.values()].reduce((a,b)=>a+b,0);
-        weights.push([...influence].map(([bone,weight])=>({bone,weight:weight/sum})));
-      }
     }
     const mirrored=mesh.matrixWorld.determinant()<0;
     for(let i=0;i<cornerCount;i+=3){const t=[0,1,2].map(k=>offset+(indices?indices.getX(i+k):i+k));if(mirrored)[t[1],t[2]]=[t[2],t[1]];rows.push('f '+t.map(x=>`${x}/${x}/${x}`).join(' '));}
     offset+=position.count;
   });
   if(offset===1)throw new Error('No mesh geometry found in this scene');
-  if(rig)rig.vertex_weights=weights;
   const animations=[];
   if(rig&&clips.length){
     const mixer=new THREE.AnimationMixer(object),rest=sorted.map(b=>({p:b.position.clone(),q:b.quaternion.clone(),s:b.scale.clone()}));

@@ -858,7 +858,11 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
     };
     using Weights = std::vector<std::pair<unsigned, float>>;
     std::vector<Weights> vertexWeights;
-    for (const auto &weights : j.value("vertex_weights", Json::array()))
+    // Interchange skeletons do not carry a Replay-native bind-space contract.
+    // Imported weapon geometry therefore uses the rigid named-part path unless
+    // an author has explicitly supplied native-space blend weights.
+    const auto nativeSkinWeights = j.value("native_skin_weights", false);
+    for (const auto &weights : nativeSkinWeights ? j.value("vertex_weights", Json::array()) : Json::array())
     {
         if (!weights.is_array() || weights.empty() || weights.size() > 4)
             throw std::runtime_error("a skinned vertex requires one to four bone influences");

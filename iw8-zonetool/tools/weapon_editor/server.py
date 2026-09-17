@@ -431,6 +431,26 @@ class Workbench:
                 if not p['material'].get('definition'):
                     p['material']['definition'] = generate_material(self.project_path(pid),p['material'],
                         self.library/'material/material.json')
+            elif op == 'template':
+                descriptor = next((weapon for weapon in self.catalog['weapons']
+                                   if weapon['name'] == p['reference_name']), None)
+                if not descriptor:
+                    raise ValueError('The reference weapon is unavailable')
+                source, _ = self.stock.load(descriptor, self.tables)
+                dest = self.project_path(pid)/'assets/template'
+                dest.mkdir(parents=True, exist_ok=True)
+                p['template_views'] = {}
+                known = {item['path'] for item in p['files']}
+                for view in ('view_model','world_model'):
+                    source_file = source/(view+'.obj')
+                    if not source_file.is_file():
+                        raise ValueError('The reference weapon has no '+view+' geometry')
+                    target = dest/source_file.name
+                    shutil.copy2(source_file, target)
+                    relative = 'assets/template/'+source_file.name
+                    p['template_views'][view] = {'model':relative}
+                    if relative not in known:
+                        p['files'].append({'path':relative,'name':source_file.name,'bytes':target.stat().st_size})
             elif op == 'animation':
                 index = action.get('index')
                 if not isinstance(index,int) or index<0 or index>=len(p.get('source_clips',[])):

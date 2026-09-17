@@ -93,17 +93,21 @@ materials are displayed with a neutral preview material, not reconstructed shade
 1. Create a weapon and choose the closest stock reference. The catalog covers all 167 stock
    multiplayer weapon definitions and every weapon family represented by them.
 2. Import an OBJ, FBX, GLB, or glTF model. The editor converts exchange formats to the native
-   OBJ/rig inputs used by the writer. Assign rigid parts or vertex weights to Replay bones.
+   OBJ/rig inputs used by the writer. External skin weights are not assumed to use Replay's
+   native bind space, so assign named rigid parts to Replay bones for moving components.
 3. Enable the operator-arms button in the viewport. This is one persistent toggle shared by
    model, rig, attachment, and animation views, so the same hands remain visible while placing
    the grip, IK locators, moving parts, and animated bones.
-4. Create a material, import its images, and tune the live PBR preview. The viewport reads the
+4. Use the placement controls for exact position, rotation, and scale values; optional snapping
+   makes repeated gizmo edits deterministic. The toolbar's reference-wireframe button loads the
+   selected stock weapon as a non-exported placement guide.
+5. Create a material, import its images, and tune the live PBR preview. The viewport reads the
    same color/specular, normal/gloss, and emissive payloads that the build owns as native material
    and image assets.
-5. Add compatible stock attachments or clone an attachment package. A cloned attachment can
+6. Add compatible stock attachments or clone an attachment package. A cloned attachment can
    own custom view/world geometry, its bone, and an independent placement matrix. The assembled
    weapon and custom attachments are visible and selectable in the same viewport.
-6. Import animated FBX or GLB clips, clone the relevant animation package, and bind each clip to
+7. Import animated FBX or GLB clips, clone the relevant animation package, and bind each clip to
    one of that package's native XAnim event slots. The editor replaces the package's stock source
    wherever the weapon used it and retains the displaced animation for undo or remapping. Configure
    looping, notetracks, IK type, and finger pose, then preview the result on the weapon and visible
@@ -157,7 +161,8 @@ loadout ordinal.
 - View and world models are separate native XModels generated from the same source unless the
   project supplies different transforms.
 - The rig stores Replay bone names, parent-relative bind transforms, optional per-part rigid
-  assignments, per-vertex weights, material references, and view/world placement matrices.
+  assignments, native-space per-vertex weights when explicitly authored, material references,
+  and view/world placement matrices.
 - Imported attachment geometry is emitted as `<attachment>/custom_vm` and
   `<attachment>/custom_wm`. The owned attachment's native model-variation dependencies are
   rewritten to those assets; attachments without model dependencies are rejected rather than
@@ -214,8 +219,8 @@ embedded in GLB materials are not automatically assigned to the native material:
 import color, normal, and emissive images through the material controls. Source files
 are limited to 128 MiB (512 MiB for the canonical OBJ), with chunked uploads.
 
-Native animation clips drive matching weapon and operator bones. Rigid imported
-geometry needs part assignments or weights to move its magazine, bolt, and other
+Native animation clips drive matching weapon and operator bones. Imported
+geometry needs named-part assignments to move its magazine, bolt, and other
 parts. Missing native clip payloads are disabled in the picker. Additive clips are
 previewed alone, root-motion deltas are omitted, and notetracks do not yet trigger
 sound or effect playback. SFX/VFX package editing and native serialization are
