@@ -26,7 +26,6 @@ def main():
         assert app.list_projects() == [], 'Fresh installs must not depend on a private sample'
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         server.app = app
-        server.access_token = ''
         threading.Thread(target=server.serve_forever, daemon=True).start()
         base = 'http://127.0.0.1:' + str(server.server_port)
 
@@ -75,7 +74,9 @@ def main():
             assert available, 'No local native animation payloads'
             clip = app.animation_preview(project, available[0])
             assert clip['tracks'], 'Native clip has no decoded tracks'
-            job = app.start_build(project['id'])
+            status, body = request('/api/projects/'+project['id']+'/build', {})
+            assert status == 200, body
+            job = app.jobs[json.loads(body)['id']]
             deadline = time.monotonic()+620
             while job['status'] not in ('succeeded', 'failed') and time.monotonic()<deadline:
                 time.sleep(.1)
