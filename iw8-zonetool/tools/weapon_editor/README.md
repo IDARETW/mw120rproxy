@@ -13,6 +13,11 @@ configuration must exist before running `server.py`.
 - `stock.py`, `animation.py`, `build_viewhands.py`: native stock inspection and playback.
 - `material.py`, `sound.py`: owned native material and sound inputs.
 
+On the Animation page, play a stock clip, pause it, and enable **paused pose
+editing** to select any imported bone or tag. The gizmo and numeric position or
+rotation fields update the frozen frame immediately; saving keeps the adjustment
+in the selected view rig so the next fastfile build uses the same alignment.
+
 Do not commit local configuration, generated libraries, exports, or projects. No
 server-directory picker, private sample project, stock game data, or prebuilt game
 modification is included. Use the main guide for requirements, limits, and checks.

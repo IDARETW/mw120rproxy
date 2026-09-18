@@ -73,6 +73,18 @@ def validate_obj_faces(path):
         raise ValueError('Model has no polygon faces')
 
 
+def normalize_import_roots(project, rig):
+    """Use the reference weapon's native attachment roots for imported geometry."""
+    if not isinstance(rig, dict):
+        return
+    view_root = 'tag_accessory' if (project.get('reference_name') == 'iw8_knife_mp' or
+                                    project.get('category') == 'weapon_melee2') else 'j_gun'
+    for view, root in (('view_model', view_root), ('world_model', 'j_gun')):
+        view_rig = rig.get(view)
+        if view_rig and view_rig.get('bones') and view_rig['bones'][0] == 'j_import_root':
+            view_rig['bones'][0] = root
+
+
 def asset_fixup(record, field, asset_type=None):
     """Return one named asset relocation from a prepared native record."""
     for _, fixup in walk(record):
@@ -428,6 +440,9 @@ class Workbench:
                     for view in ('view_model','world_model'):
                         rebuild_bind_pose(action['rig'][view])
                     p['rig'] = action['rig']
+                    normalize_import_roots(p, p['rig'])
+                    for view in ('view_model','world_model'):
+                        rebuild_bind_pose(p['rig'][view])
                 if not p['material'].get('definition'):
                     p['material']['definition'] = generate_material(self.project_path(pid),p['material'],
                         self.library/'material/material.json')
@@ -781,7 +796,9 @@ class Workbench:
                     manifest['sounds'] = generate_sound_bank(root, p['sound_sources'], bank_path)
                     manifest['sound_bank'] = str(bank_path)
                 if p['model'] and not p.get('stock_reference'):
-                    atomic(folder/'rig.json',p['rig'])
+                    build_rig = copy.deepcopy(p['rig'])
+                    normalize_import_roots(p, build_rig)
+                    atomic(folder/'rig.json',build_rig)
                     manifest.update(model=str(safe(root,p['model'])),rig=str(folder/'rig.json'))
                 if p['material'].get('definition') and (p['model'] and not p.get('stock_reference') or any(a.get('geometry') for a in owned_assets)):
                     manifest['material']=str(safe(root,p['material']['definition']))

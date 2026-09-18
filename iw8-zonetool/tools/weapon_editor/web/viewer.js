@@ -48,8 +48,8 @@ export class WeaponViewer {
     this.gizmo=new TransformControls(this.camera,this.renderer.domElement);this.gizmo.setSize(.7);
     this.scene.add(this.gizmo.getHelper());
     this.gizmo.addEventListener('dragging-changed',e=>{this.controls.enabled=!e.value;if(!e.value)this.commit();});
-    this.gizmo.addEventListener('objectChange',()=>{if(this.selected?.userData.bone)this.onSelect?.(this.selected.userData.bone,this.selected);this.onTransform?.(this.transformValues());});
-    this.setTransformSnap({enabled:false,translate:.1,rotate:15,scale:.1});
+    this.gizmo.addEventListener('objectChange',()=>{if(this.selected?.userData.bone&&this.animationEdit)this.syncBoneFromMarker();if(this.selected?.userData.bone)this.onSelect?.(this.selected.userData.bone,this.selected);this.onTransform?.(this.transformValues());});
+    this.animationEdit=false;this.setTransformSnap({enabled:false,translate:.1,rotate:15,scale:.1});
     this.renderer.domElement.addEventListener('pointerdown',e=>this.down=[e.clientX,e.clientY]);
     this.renderer.domElement.addEventListener('pointerup',e=>{
       if(!this.down||Math.hypot(e.clientX-this.down[0],e.clientY-this.down[1])>4||this.gizmo.dragging)return;
@@ -344,8 +344,21 @@ export class WeaponViewer {
     const geometry=new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(lines,3));
     const line=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:0x83a0c7,transparent:true,opacity:.5,depthTest:false}));line.renderOrder=9;this.bones.add(line);
   }
-  selectBone(name){this.resetPose();this.showBones=true;this.bones.visible=true;this.selected=this.bones.children.find(x=>x.userData.bone===name);if(!this.selected)return;this.gizmo.attach(this.selected);this.onSelect?.(name,this.selected);}
-  selectModel(){this.resetPose();this.gizmo.detach();this.selected=this.model;this.model.matrix.decompose(this.model.position,this.model.quaternion,this.model.scale);this.model.matrixAutoUpdate=true;this.gizmo.attach(this.model);}
+  setAnimationEdit(enabled){this.animationEdit=!!enabled;if(this.animationEdit&&this.action)this.action.paused=true;if(!this.animationEdit)this.gizmo.detach();this.updateAnimationPose();}
+  selectBone(name,{preserveAnimation=false}={}){if(!preserveAnimation&&!(this.animationEdit&&this.action))this.resetPose();this.showBones=true;this.bones.visible=true;this.selected=this.bones.children.find(x=>x.userData.bone===name);if(!this.selected)return;this.gizmo.attach(this.selected);this.onSelect?.(name,this.selected);}
+  selectModel({preserveAnimation=false}={}){if(!preserveAnimation&&!(this.animationEdit&&this.action))this.resetPose();this.gizmo.detach();this.selected=this.model;this.model.matrix.decompose(this.model.position,this.model.quaternion,this.model.scale);this.model.matrixAutoUpdate=true;this.gizmo.attach(this.model);}
+  syncBoneFromMarker(){
+    if(!this.animationEdit||!this.selected?.userData.bone||!this.skeleton)return;
+    const bone=this.skeleton.bones.find(item=>item.name===this.selected.userData.bone);if(!bone)return;
+    this.bones.updateMatrixWorld(true);const parent=bone.parent||this.skeletonRoot,local=parent.matrixWorld.clone().invert().multiply(this.selected.matrixWorld);
+    local.decompose(bone.position,bone.quaternion,bone.scale);bone.updateMatrixWorld(true);this.updateBoneMarkers();
+  }
+  setBoneComponent(kind,axis,value){
+    const target=this.selected;if(!target?.userData.bone||!Number.isFinite(value))return;
+    if(kind==='position')target.position.setComponent(axis,value);
+    else{const rotation=new THREE.Euler().setFromQuaternion(target.quaternion);rotation.setComponent(axis,THREE.MathUtils.degToRad(value));target.quaternion.setFromEuler(rotation);}
+    target.updateMatrix();if(this.animationEdit)this.syncBoneFromMarker();this.onTransform?.(this.transformValues());
+  }
   selectAttachment(name){this.gizmo.detach();const group=this.attachments.children.find(x=>x.userData.attachment===name);if(!group)return false;this.selected=group;group.matrix.decompose(group.position,group.quaternion,group.scale);group.matrixAutoUpdate=true;this.gizmo.attach(group);return true;}
   setMode(mode){this.gizmo.setMode(mode);}
   setTransformSnap({enabled,translate,rotate,scale}){this.transformSnap={enabled:!!enabled,translate:Number(translate),rotate:Number(rotate),scale:Number(scale)};this.gizmo.translationSnap=enabled&&translate>0?Number(translate):null;this.gizmo.rotationSnap=enabled&&rotate>0?THREE.MathUtils.degToRad(Number(rotate)):null;this.gizmo.scaleSnap=enabled&&scale>0?Number(scale):null;}
@@ -353,7 +366,7 @@ export class WeaponViewer {
   setTransformComponent(kind,axis,value){const target=this.selected?.userData.attachment?this.selected:this.model;if(!target||!Number.isFinite(value))return;target.matrix.decompose(target.position,target.quaternion,target.scale);target.matrixAutoUpdate=true;if(kind==='position')target.position.setComponent(axis,value);else if(kind==='scale')target.scale.setComponent(axis,value);else if(kind==='rotation'){const rotation=new THREE.Euler().setFromQuaternion(target.quaternion);rotation.setComponent(axis,THREE.MathUtils.degToRad(value));target.quaternion.setFromEuler(rotation);}target.updateMatrix();this.onTransform?.(this.transformValues());}
   async commit(){
     if(!this.selected)return;
-    if(this.selected.userData.bone){await this.onChange({op:'bone',view:this.view,bone:this.selected.userData.bone,translation:this.selected.position.toArray(),quaternion:this.selected.quaternion.toArray()});}
+    if(this.selected.userData.bone){const bone=this.animationEdit?this.skeleton?.bones.find(item=>item.name===this.selected.userData.bone):null;await this.onChange({op:'bone',view:this.view,bone:this.selected.userData.bone,translation:(bone||this.selected).position.toArray(),quaternion:(bone||this.selected).quaternion.toArray()});}
     else if(this.selected.userData.attachment){
       this.selected.updateMatrix();const e=this.selected.matrix.elements;
       await this.onChange({op:'attachment_transform',asset:this.selected.userData.attachment,view:this.view,matrix:[[e[0],e[4],e[8],e[12]],[e[1],e[5],e[9],e[13]],[e[2],e[6],e[10],e[14]]]});
