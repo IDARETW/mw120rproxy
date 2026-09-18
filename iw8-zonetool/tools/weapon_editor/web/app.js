@@ -279,10 +279,11 @@ function fillAnimationBoneList(){
 function renderAnimationPoseFields(){
   const root=$('#animation-pose-fields'),rig=state.project?.rig?.[state.view],name=$('#animation-bone')?.value||state.selectedBone;
   if(!root||!rig||!name){if(root)root.innerHTML='<p class="helper">No weapon rig is available for live pose editing.</p>';return;}
-  const index=rig.bones.indexOf(name),object=viewer.selected?.userData.bone===name?viewer.selected:null,pose=object||rig.bind_pose[index];
+  const index=rig.bones.indexOf(name),editable=index>=rig.root_bones,object=viewer.selected?.userData.bone===name?viewer.selected:null,pose=object||rig.bind_pose[index];
   if(!pose){root.innerHTML='<p class="helper">Select a bone or tag to edit.</p>';return;}
   const position=object?object.position.toArray():pose.translation,quaternion=object?object.quaternion:new THREE.Quaternion().fromArray(pose.quat),rotation=new THREE.Euler().setFromQuaternion(quaternion);
-  root.innerHTML=`<div class="section-label">POSITION · CURRENT POSE</div><div class="field-row three">${['X','Y','Z'].map((axis,i)=>`<label class="field"><span>${axis}</span><input type="number" step=".01" data-bone-coordinate="${i}" value="${position[i].toFixed(3)}" ${viewer.animationEdit?'':'disabled'}></label>`).join('')}</div><div class="section-label">ROTATION · CURRENT POSE</div><div class="field-row three">${['X','Y','Z'].map((axis,i)=>`<label class="field"><span>${axis}</span><input type="number" step=".1" data-bone-rotation="${i}" value="${THREE.MathUtils.radToDeg(rotation.toArray()[i]).toFixed(2)}" ${viewer.animationEdit?'':'disabled'}></label>`).join('')}</div>`;
+  const disabled=!viewer.animationEdit||!editable;
+  root.innerHTML=`<div class="section-label">POSITION · CURRENT POSE</div><div class="field-row three">${['X','Y','Z'].map((axis,i)=>`<label class="field"><span>${axis}</span><input type="number" step=".01" data-bone-coordinate="${i}" value="${position[i].toFixed(3)}" ${disabled?'disabled':''}></label>`).join('')}</div><div class="section-label">ROTATION · CURRENT POSE</div><div class="field-row three">${['X','Y','Z'].map((axis,i)=>`<label class="field"><span>${axis}</span><input type="number" step=".1" data-bone-rotation="${i}" value="${THREE.MathUtils.radToDeg(rotation.toArray()[i]).toFixed(2)}" ${disabled?'disabled':''}></label>`).join('')}</div>${editable?'':'<p class="helper">The root is fixed by the native model transform. Select a child bone or tag, or use Model placement.</p>'}`;
 }
 function syncAnimationPoseFields(){
   const root=$('#animation-pose-fields');if(!root||!viewer.selected?.userData.bone)return;
