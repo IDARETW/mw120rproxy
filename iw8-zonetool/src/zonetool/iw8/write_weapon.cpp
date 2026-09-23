@@ -836,8 +836,8 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
               bool textured = false,
               const std::map<std::string, std::string> &surfaceMaterials = {})
 {
-    if (fs::file_size(obj) > 40 * 1024 * 1024)
-        throw std::runtime_error("weapon OBJ exceeds 40 MiB");
+    if (fs::file_size(obj) > 128 * 1024 * 1024)
+        throw std::runtime_error("weapon OBJ exceeds 128 MiB");
     auto model = modelRecord(j, name);
     const unsigned bone = j.at("rigid_bone");
     if (model.numBones == 0 || model.numBones > 128 || bone >= model.numBones)
@@ -1719,6 +1719,7 @@ int weaponMain(int argc, char **argv)
     }
     std::vector<replayrender::Mesh> importedMaterials;
     std::map<std::string, std::string> importedMaterialNames;
+    std::map<std::string, std::map<std::string, std::string>> attachmentMaterialNames;
     if (customModels && !project.is_null())
         for (const auto &entry : project.value("surface_materials", Json::array()))
         {
@@ -1734,6 +1735,33 @@ int weaponMain(int argc, char **argv)
             importedMaterialNames.emplace(key, authored.material);
             importedMaterials.push_back(std::move(authored));
         }
+    if (customAttachmentModels && !project.is_null())
+    {
+        size_t attachmentIndex = 0;
+        for (const auto &asset : owned)
+        {
+            if (!asset.contains("geometry"))
+                continue;
+            const auto assetName = text(asset.at("name"));
+            auto &surfaceNames = attachmentMaterialNames[assetName];
+            for (const auto &entry : asset.at("geometry").value("surface_materials", Json::array()))
+            {
+                const auto key = text(entry.at("key"));
+                if (key.empty() || key.size() > 52 ||
+                    key.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos ||
+                    surfaceNames.contains(key))
+                    throw std::runtime_error("invalid or duplicate attachment material key");
+                const auto definition = fs::path(text(entry.at("definition")));
+                if (!fs::is_regular_file(definition))
+                    throw std::runtime_error("imported attachment material definition is missing: " + key);
+                const auto variant = "a" + std::to_string(attachmentIndex) + "_" + key;
+                auto authored = weaponMaterial(definition, base, variant);
+                surfaceNames.emplace(key, authored.material);
+                importedMaterials.push_back(std::move(authored));
+            }
+            ++attachmentIndex;
+        }
+    }
     if (customModels && material.material.empty())
         for (const char *kind : {"view_model", "world_model"})
             {
@@ -1935,9 +1963,14 @@ int weaponMain(int argc, char **argv)
                 attachmentRig["transform"] = geometry.at(kind).at("matrix");
                 if (!material.material.empty())
                     attachmentRig["material"] = material.material;
+                const auto surfaceNames = attachmentMaterialNames.find(text(asset.at("name")));
+                const auto materials = surfaceNames == attachmentMaterialNames.end()
+                    ? std::map<std::string, std::string>{} : surfaceNames->second;
+                if (material.material.empty() && !materials.empty())
+                    attachmentRig["material"] = materials.begin()->second;
                 addModel(writer, fs::path(text(geometry.at("model"))), attachmentRig,
                          text(asset.at("name")) + (std::string(kind) == "view_model" ? "/custom_vm" : "/custom_wm"),
-                         !material.material.empty());
+                         !material.material.empty() || !materials.empty(), materials);
             }
         }
     for (const auto &asset : owned)

@@ -171,11 +171,16 @@ class StockLibrary:
         if not primitives:warnings.append('This stock asset has no weapon render surfaces; its native skeleton is available.')
         root_count=sum(p<0 for p in parents)
         if any(p<0 for p in parents[root_count:]):raise ValueError('Stock roots are not ordered before child bones')
+        fallback_fields = (('gunXModel','defaultViewModel') if view=='view_model' else
+                           ('worldModel','defaultWorldModel'))
+        replace = descriptor.get('model_slots',{}).get(view) or [
+            descriptor.get('models',{}).get(field) for field in fallback_fields]
+        replace = list(dict.fromkeys(name for name in replace if name))
         # bind_pose is rebuilt by the existing native rig helper from these local transforms.
         rig={'bones':names,'root_bones':root_count,'parents':[i-parents[i] for i in range(root_count,len(names))],
              'translations':[t for t,q in locals_[root_count:]],'quats':[[round(v*32767) for v in q] for t,q in locals_[root_count:]],
              'classification':[0]*len(names),'bind_pose':[], 'rigid_bone':0,'material':'','part_bones':{},'vertex_weights':vertex_weights,
-             'transform':[[1,0,0,0],[0,1,0,0],[0,0,1,0]],'replace':[descriptor['models']['gunXModel' if view=='view_model' else 'worldModel']]}
+             'transform':[[1,0,0,0],[0,1,0,0],[0,0,1,0]],'replace':replace}
         from graph import rebuild_bind_pose
         rebuild_bind_pose(rig)
         folder.mkdir(parents=True,exist_ok=True);(folder/(view+'.obj')).write_text('\n'.join(obj)+'\n',encoding='utf-8')

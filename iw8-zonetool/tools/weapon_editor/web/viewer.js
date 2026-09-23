@@ -107,14 +107,15 @@ export class WeaponViewer {
     const rig=project.rig?.[view];
     if(project.model){
       const stock=project.stock_views?.[view];
-      const {object,text,sourceVertices}=await stage.loadGeometry(project.id,stock?.model||project.model,stock?.source||project.model_source);
+      const stockModel=stage.isStockModel();
+      const {object,text,sourceVertices}=await stage.loadGeometry(project.id,stockModel?stock.model:project.model,stockModel?stock.source:project.model_source);
       stage.model.add(object);
       stage.model.matrixAutoUpdate=false;
       if(rig?.transform)stage.model.matrix.copy(mat4(rig.transform));
       if(rig)stage.skinModel(object,text,rig,sourceVertices);
       object.traverse(mesh=>{if(mesh.isMesh){const sourceMaterial=(project.surface_materials||[]).find(item=>(item.parts||[]).includes(mesh.name));mesh.material=sourceMaterial?previewMaterials.get(sourceMaterial.key)||material:material;mesh.castShadow=true;mesh.receiveShadow=true;}});
     }
-    const template=project.template_views?.[view]||project.stock_views?.[view];
+    const template=stage.isStockModel()?null:(project.template_views?.[view]||project.stock_views?.[view]);
     if(template?.model){
       const {object}=await stage.loadGeometry(project.id,template.model,template.source);
       const wire=new THREE.MeshBasicMaterial({color:0x4b78bf,wireframe:true,transparent:true,opacity:.38,depthTest:false,depthWrite:false});
@@ -122,7 +123,7 @@ export class WeaponViewer {
       stage.template.add(object);stage.template.visible=!!this.showTemplate;
     }
     if(rig)stage.drawRig(rig);
-    await stage.loadAttachments(project,view,generation,material);
+    await stage.loadAttachments(project,view,generation,material,materialsToDispose);
     if(this.generation!==generation)return;
     const selection=this.project?.id===project.id&&this.view===view?this.selected?.userData:null;
     const selectedModel=this.selected===this.model&&this.project?.id===project.id&&this.view===view;
@@ -176,6 +177,10 @@ export class WeaponViewer {
       material.emissiveMap=emissive;material.emissive.set('#ffffff');material.color.set('#ffffff');material.needsUpdate=true;
     }catch(error){console.warn('Imported material preview:',error.message);}
   }
+  isStockModel(){
+    const stock=this.project?.stock_views?.[this.view];
+    return !!this.project?.stock_reference&&!!stock&&this.project.model===stock.model;
+  }
   async loadGeometry(pid,model,source){
     if(!/\.glb$/i.test(source||'')){
       const text=await this.readAsset(`/project-files/${pid}/${model}`,'text');
@@ -226,14 +231,26 @@ export class WeaponViewer {
       });
       this.armSkeletons.forEach(skeleton=>skeleton.pose());
   }
-  async loadAttachments(project,view,generation,material){
+  async loadAttachments(project,view,generation,material,materialsToDispose=[]){
     for(const asset of project.owned_assets||[]){
       const geometry=asset.pool===42&&asset.geometry;if(!geometry)continue;
       const {object}=await this.loadGeometry(project.id,geometry.model,geometry.source);if(this.generation!==generation)return;
       const group=new THREE.Group();group.name=asset.name;group.userData.attachment=asset.name;group.add(object);
       const matrix=geometry[view]?.matrix||[[1,0,0,0],[0,1,0,0],[0,0,1,0]];
       group.matrixAutoUpdate=false;group.matrix.copy(mat4(matrix));
-      object.traverse(mesh=>{if(mesh.isMesh){mesh.material=material.clone();mesh.castShadow=true;mesh.receiveShadow=true;mesh.userData.attachment=asset.name;}});
+      const previews=new Map();
+      for(const sourceMaterial of geometry.surface_materials||[]){
+        const preview=new THREE.MeshPhysicalMaterial({color:sourceMaterial.color||'#ffffff',
+          metalness:sourceMaterial.metalness??0,roughness:sourceMaterial.roughness??.45,
+          specularIntensity:sourceMaterial.specular??.22});
+        materialsToDispose.push(preview);previews.set(sourceMaterial.key,preview);
+        if(sourceMaterial.definition)await this.loadMaterialDefinition(project,preview,sourceMaterial.definition);
+      }
+      object.traverse(mesh=>{if(mesh.isMesh){
+        const mapped=(geometry.surface_materials||[]).find(item=>(item.parts||[]).includes(mesh.name));
+        mesh.material=mapped?previews.get(mapped.key)||material.clone():material.clone();
+        mesh.castShadow=true;mesh.receiveShadow=true;mesh.userData.attachment=asset.name;
+      }});
       this.attachments.add(group);
     }
   }
@@ -259,7 +276,7 @@ export class WeaponViewer {
     if(run.length)runs.push(run);
     const meshes=[];object.traverse(m=>{if(m.isMesh)meshes.push(m);});
     let vertexOffset=0;
-    const useNativeWeights=rig.native_skin_weights||!!this.project?.stock_reference;
+    const useNativeWeights=rig.native_skin_weights||this.isStockModel();
     meshes.forEach((mesh,index)=>{
       const count=mesh.geometry.attributes.position.count,indices=[],weights=[];
       const assigned=rig.part_bones?.[mesh.name||'default'];
@@ -305,7 +322,7 @@ export class WeaponViewer {
     this.resetPose();const tracks=[];
     this.gizmo.detach();this.previewSource=source;this.nativePreview=!!source.native;
     // The arms export and authored model share tag_weapon as their alignment origin.
-    this.nativeDriver=this.armBones?.find(b=>b.name===(this.project?.stock_reference?'j_gun':'tag_weapon'));
+    this.nativeDriver=this.armBones?.find(b=>b.name===(this.isStockModel()?'j_gun':'tag_weapon'));
     this.nativeDriverBindInverse=this.nativeDriver?.matrixWorld.clone().invert();
     const mapped=new Set(),unmapped=[];
     for(const t of source.tracks){
@@ -341,7 +358,7 @@ export class WeaponViewer {
   updateAnimationPose(){
     if(!this.nativePreview||!this.nativeDriver)return;
     this.arms.updateMatrixWorld(true);
-    const motion=this.project?.stock_reference?this.nativeDriver.matrixWorld:new THREE.Matrix4().multiplyMatrices(this.nativeDriver.matrixWorld,this.nativeDriverBindInverse);
+    const motion=this.isStockModel()?this.nativeDriver.matrixWorld:new THREE.Matrix4().multiplyMatrices(this.nativeDriver.matrixWorld,this.nativeDriverBindInverse);
     this.skeletonRoot.matrix.copy(motion);this.skeletonRoot.updateMatrixWorld(true);
     this.attachments.matrix.copy(motion);this.attachments.updateMatrixWorld(true);
     this.updateBoneMarkers();

@@ -5,6 +5,7 @@ import copy
 from datetime import datetime, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import math
 import mimetypes
@@ -26,6 +27,7 @@ from sound import generate as generate_sound_bank
 from tables import registration
 from animation import AnimationLibrary
 from stock import StockLibrary
+from weapon_models import model_slots_from_record
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -77,12 +79,63 @@ def normalize_import_roots(project, rig):
     """Use the reference weapon's native attachment roots for imported geometry."""
     if not isinstance(rig, dict):
         return
+    for view, names in model_slots_from_record(project.get('reference', {}).get('root', {})).items():
+        if isinstance(rig.get(view), dict) and names:
+            rig[view]['replace'] = names
     view_root = 'tag_accessory' if (project.get('reference_name') == 'iw8_knife_mp' or
                                     project.get('category') == 'weapon_melee2') else 'j_gun'
     for view, root in (('view_model', view_root), ('world_model', 'j_gun')):
         view_rig = rig.get(view)
         if view_rig and view_rig.get('bones') and view_rig['bones'][0] == 'j_import_root':
             view_rig['bones'][0] = root
+
+
+def import_surface_materials(project_root, imported_materials, parts, profile,
+                             folder_prefix='surface'):
+    """Pack imported per-surface maps into Replay's native weapon material profile."""
+    if not isinstance(imported_materials, list) or len(imported_materials) > 128:
+        raise ValueError('A model can contain at most 128 imported materials')
+    image_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tga'}
+    roles = {'color_texture', 'normal_texture', 'roughness_texture', 'metallic_texture',
+             'ao_texture', 'specular_texture', 'emissive_texture'}
+    result = []
+    for index, source_material in enumerate(imported_materials):
+        if not isinstance(source_material, dict):
+            raise ValueError('Imported material descriptors must be objects')
+        key = str(source_material.get('key', ''))
+        if not re.fullmatch(r'[a-z0-9_]{1,52}', key) or any(item['key'] == key for item in result):
+            raise ValueError('Imported material keys must be unique lowercase identifiers')
+        material_parts = source_material.get('parts', [])
+        if (not isinstance(material_parts, list) or not material_parts or
+                any(part not in parts for part in material_parts)):
+            raise ValueError('Imported material references an unknown model part')
+        maps = source_material.get('maps', {})
+        if not isinstance(maps, dict) or set(maps) - roles:
+            raise ValueError('Imported material contains an unsupported texture role')
+        normalized_maps = {}
+        for role, relative in maps.items():
+            if not relative:
+                continue
+            image = safe(project_root, str(relative))
+            if image.suffix.lower() not in image_extensions or not image.is_file():
+                raise ValueError('Imported material textures must be uploaded project images')
+            normalized_maps[role] = Path(relative).as_posix()
+        color = str(source_material.get('color', '#ffffff'))
+        if not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
+            raise ValueError('Imported material color must be a six-digit hex color')
+        settings = {'source_definition': None, 'color': color, 'metalness': 0,
+                    'roughness': .45, 'specular': .22, 'maps': normalized_maps}
+        for field in ('metalness', 'roughness', 'specular'):
+            value = float(source_material.get(field, settings[field]))
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f'Imported material {field} must be between 0 and 1')
+            settings[field] = value
+        settings['definition'] = generate_material(
+            project_root, settings, profile, folder_name=f'{folder_prefix}-{key}')
+        result.append({'key': key,
+                       'name': str(source_material.get('name') or f'Material {index+1}')[:128],
+                       'parts': material_parts, **settings})
+    return result
 
 
 def asset_fixup(record, field, asset_type=None):
@@ -224,6 +277,7 @@ class Workbench:
             p['model_parts']=assembly['view_model']['parts'];p['stock_reference']=name
             p['description']='Stock Replay model, native tags, skin weights, and weapon data.'
             p['stock_components']={view:data['components'] for view,data in assembly.items()}
+            normalize_import_roots(p, p['rig'])
             p['stock_warnings']=list(dict.fromkeys(warning for data in assembly.values() for warning in data['warnings']))
         with self.lock:
             allocated={self.load(item['id'])['loadout_slot'] for item in self.list_projects()}
@@ -340,15 +394,33 @@ class Workbench:
                 if path.suffix.lower() != '.obj' or not path.is_file():
                     raise ValueError('Compiled attachment model must be a project OBJ')
                 validate_obj_faces(path)
+                parts, group = [], 'default'
+                for line in path.read_text(encoding='utf-8-sig').splitlines():
+                    command = line.strip().split(maxsplit=1)
+                    if not command:
+                        continue
+                    if command[0] in ('g', 'o'):
+                        group = command[1] if len(command) == 2 else 'default'
+                    elif command[0] == 'f' and group not in parts:
+                        parts.append(group)
+                if not parts:
+                    raise ValueError('Attachment model has no polygon faces')
                 rig = action['rig']
                 if rig.get('format') != 'replay-weapon-rig-v1':
                     raise ValueError('Expected a Replay weapon rig for the attachment')
                 for view in ('view_model','world_model'):
                     rebuild_bind_pose(rig[view])
                 identity = [[1,0,0,0],[0,1,0,0],[0,0,1,0]]
+                source = action.get('source')
+                if source and not safe(self.project_path(pid), source).is_file():
+                    raise ValueError('Original attachment model source is missing')
+                prefix = 'attachment-'+hashlib.sha256(asset['name'].encode('utf-8')).hexdigest()[:12]
                 asset['geometry']={'model':action['path'],'source':action.get('source'),
                     'rig':rig,'view_model':{'bone':'tag_weapon','matrix':copy.deepcopy(identity)},
-                    'world_model':{'bone':'tag_weapon','matrix':copy.deepcopy(identity)}}
+                    'world_model':{'bone':'tag_weapon','matrix':copy.deepcopy(identity)},
+                    'surface_materials':import_surface_materials(
+                        self.project_path(pid), action.get('materials', []), parts,
+                        self.library/'material/material.json', prefix)}
                 if not p['material'].get('definition'):
                     p['material']['definition'] = generate_material(self.project_path(pid),p['material'],
                         self.library/'material/material.json')
@@ -408,50 +480,9 @@ class Workbench:
                 if not parts:
                     raise ValueError('Model has no polygon faces')
                 p['model_parts'] = parts
-                imported_materials = action.get('materials', [])
-                if not isinstance(imported_materials, list) or len(imported_materials) > 128:
-                    raise ValueError('A model can contain at most 128 imported materials')
-                image_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tga'}
-                material_roles = {'color_texture', 'normal_texture', 'roughness_texture',
-                                  'metallic_texture', 'ao_texture', 'specular_texture', 'emissive_texture'}
-                surface_materials = []
-                for index, source_material in enumerate(imported_materials):
-                    if not isinstance(source_material, dict):
-                        raise ValueError('Imported material descriptors must be objects')
-                    key = str(source_material.get('key', ''))
-                    if not re.fullmatch(r'[a-z0-9_]{1,52}', key) or any(item['key'] == key for item in surface_materials):
-                        raise ValueError('Imported material keys must be unique lowercase identifiers')
-                    material_parts = source_material.get('parts', [])
-                    if not isinstance(material_parts, list) or not material_parts or any(part not in parts for part in material_parts):
-                        raise ValueError('Imported material references an unknown model part')
-                    maps = source_material.get('maps', {})
-                    if not isinstance(maps, dict) or set(maps) - material_roles:
-                        raise ValueError('Imported material contains an unsupported texture role')
-                    normalized_maps = {}
-                    for role, relative in maps.items():
-                        if not relative:
-                            continue
-                        image = safe(self.project_path(pid), str(relative))
-                        if image.suffix.lower() not in image_extensions or not image.is_file():
-                            raise ValueError('Imported material textures must be uploaded project images')
-                        normalized_maps[role] = Path(relative).as_posix()
-                    color = str(source_material.get('color', '#ffffff'))
-                    if not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
-                        raise ValueError('Imported material color must be a six-digit hex color')
-                    settings = {'source_definition': None, 'color': color, 'metalness': 0,
-                                'roughness': .45, 'specular': .22, 'maps': normalized_maps}
-                    for field in ('metalness', 'roughness', 'specular'):
-                        value = float(source_material.get(field, settings[field]))
-                        if not math.isfinite(value) or not 0 <= value <= 1:
-                            raise ValueError(f'Imported material {field} must be between 0 and 1')
-                        settings[field] = value
-                    settings['definition'] = generate_material(
-                        self.project_path(pid), settings, self.library/'material/material.json',
-                        folder_name='surface-'+key)
-                    surface_materials.append({'key': key,
-                        'name': str(source_material.get('name') or f'Material {index+1}')[:128],
-                        'parts': material_parts, **settings})
-                p['surface_materials'] = surface_materials
+                p['surface_materials'] = import_surface_materials(
+                    self.project_path(pid), action.get('materials', []), parts,
+                    self.library/'material/material.json')
                 if action.get('source'):
                     source = safe(self.project_path(pid),action['source'])
                     if not source.is_file():
@@ -658,7 +689,16 @@ class Workbench:
                     self.library/'material/material.json')
             elif op == 'surface_material':
                 key = str(action.get('key', ''))
-                item = next((material for material in p.get('surface_materials', [])
+                surface_owner = action.get('asset')
+                if surface_owner:
+                    owned = next((a for a in p.get('owned_assets', [])
+                                  if a.get('pool') == 42 and a.get('name') == surface_owner), None)
+                    if not owned or not owned.get('geometry'):
+                        raise ValueError('Unknown attachment material set')
+                    materials = owned['geometry'].setdefault('surface_materials', [])
+                else:
+                    materials = p.setdefault('surface_materials', [])
+                item = next((material for material in materials
                              if material.get('key') == key), None)
                 update = action.get('update')
                 allowed = {'color', 'metalness', 'roughness', 'specular', 'maps'}
@@ -690,9 +730,11 @@ class Workbench:
                         if image.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.tga'} or not image.is_file():
                             raise ValueError('Imported material textures must be uploaded project images')
                         item['maps'][role] = Path(relative).as_posix()
+                folder = 'surface-'+key
+                if surface_owner:
+                    folder = 'attachment-'+hashlib.sha256(surface_owner.encode('utf-8')).hexdigest()[:12]+'-'+key
                 item['definition'] = generate_material(
-                    self.project_path(pid), item, self.library/'material/material.json',
-                    folder_name='surface-'+key)
+                    self.project_path(pid), item, self.library/'material/material.json', folder_name=folder)
             else:
                 raise ValueError('Unknown project operation')
             p['revision'] += 1
@@ -861,10 +903,13 @@ class Workbench:
                 reference = copy.deepcopy(p['reference'])
                 set_attachment_slots(reference['root'],p['attachment_slots'])
                 atomic(folder/'reference.json',reference)
+                root = self.project_path(p['id'])
                 owned_assets = copy.deepcopy(p['owned_assets'])
                 for asset in owned_assets:
                     if asset.get('geometry'):
-                        asset['geometry']['model'] = str(safe(self.project_path(p['id']), asset['geometry']['model']))
+                        asset['geometry']['model'] = str(safe(root, asset['geometry']['model']))
+                        for material in asset['geometry'].get('surface_materials', []):
+                            material['definition'] = str(safe(root, material['definition']))
                 manifest = {'format':'replay-weapon-build-v1','reference':str(folder/'reference.json'),
                     'name':p['base'],'display_name':p['title'],'description':p['description'],
                     'loadout_slot':p['loadout_slot'],'attachments':any(p['attachment_slots']),
@@ -872,7 +917,6 @@ class Workbench:
                     'animations':p.get('source_clips',[])}
                 if self.tables:
                     manifest.update(registration(p,self.tables))
-                root = self.project_path(p['id'])
                 if p.get('sound_sources'):
                     bank_path = folder/'custom.sabl'
                     manifest['sounds'] = generate_sound_bank(root, p['sound_sources'], bank_path)

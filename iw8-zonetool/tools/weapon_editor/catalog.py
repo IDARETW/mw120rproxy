@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from prepare_melee_reference import prepare
 from layout import load_schema
+from weapon_models import model_slots_from_definition
 
 
 def fields(record):
@@ -78,6 +79,7 @@ def import_library(schema_path, weapon_dir, common_dir, attachment_dir, output, 
                           'file': f'templates/{name}.json', 'field_count': len(fields(root)) + (len(fields(sfx)) if sfx else 0),
                           'models': {k: ((definition.get(k) or {}).get('name') or '').lstrip(',') for k in
                                      ('gunXModel', 'worldModel', 'defaultViewModel', 'defaultWorldModel')},
+                          'model_slots': model_slots_from_definition(definition),
                           'attachment_slots': [v['attachmentCount'] for v in native['attachments']]}
             (output/descriptor['file']).write_text(json.dumps(reference), encoding='utf-8')
             catalog['weapons'].append(descriptor)

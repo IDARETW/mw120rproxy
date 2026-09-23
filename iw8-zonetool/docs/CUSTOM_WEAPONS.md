@@ -108,8 +108,9 @@ materials are displayed with a neutral preview material, not reconstructed shade
    .jpg/.jpeg extension mismatch, and every map can be reassigned manually. The live preview
    uses the same packed textures that the native weapon materials own.
 6. Add compatible stock attachments or clone an attachment package. A cloned attachment can
-   own custom view/world geometry, its bone, and an independent placement matrix. The assembled
-   weapon and custom attachments are visible and selectable in the same viewport.
+   own custom view/world geometry, per-surface PBR maps, its bone, and an independent placement
+   matrix. The assembled weapon and custom attachments are visible and selectable in the same
+   viewport; attachment texture maps can be reassigned in the attachment inspector.
 7. Import animated FBX or GLB clips, clone the relevant animation package, and bind each clip to
    one of that package's native XAnim event slots. The editor replaces the package's stock source
    wherever the weapon used it and retains the displaced animation for undo or remapping. Configure
@@ -163,6 +164,10 @@ loadout ordinal.
 
 - View and world models are separate native XModels generated from the same source unless the
   project supplies different transforms.
+- Custom geometry redirects every base-weapon render slot in `WeaponDef` to the authored view or
+  world XModel, including streamed defaults and left/right or censorship variants. The stock
+  inspection model remains an editor-only wireframe alignment aid and is hidden when viewing the
+  stock model alone.
 - The rig stores Replay bone names, parent-relative bind transforms, optional per-part rigid
   assignments, native-space per-vertex weights when explicitly authored, material references,
   and view/world placement matrices.
@@ -170,6 +175,9 @@ loadout ordinal.
   `<attachment>/custom_wm`. The owned attachment's native model-variation dependencies are
   rewritten to those assets; attachments without model dependencies are rejected rather than
   silently producing unused geometry.
+- Custom attachment materials use the same channel conversion and native techset registration as
+  the main weapon. Material and image names are unique per attachment, so cloned attachments can
+  reuse source material keys without collisions.
 - Operator arms are editor preview data. They provide the stock viewhands skeleton and mesh for
   placement and animation review; they are not duplicated into every custom weapon package.
 - A source reference may still require weapon-specific animation or attachment tuning. Choosing
@@ -202,7 +210,8 @@ python .\iw8-zonetool\tools\weapon_editor\check_registration.py --help
 
 The native checks build fastfiles and reload them through the matching ACTS `mw19replay` reader.
 They cover short/long animation indices, a weapon-to-owned-package-to-custom-XAnim gameplay
-binding, attachment-owned view/world XModels, resident SAB decode, SndBank aliases, SFX event
+binding, replacement of every populated base view/world `WeaponDef` model slot, attachment-owned
+view/world XModels and per-surface materials, resident SAB decode, SndBank aliases, SFX event
 mapping, every stock weapon reference, and custom package graphs.
 `check_all_weapon_reload.py` also reloads every generated stock-reference weapon zone
 and verifies its weapon, NetConstStrings, and StringTable asset counts. This establishes
@@ -224,7 +233,8 @@ images. During packing, ambient occlusion is multiplied into base color, roughne
 into the gloss channel, and metallic values contribute to the available specular channel; Replay's
 profile does not expose a separate metallic image slot. If an external texture is absent or
 incorrectly linked, choose its correct image in **Imported material maps**. Source files are
-limited to 128 MiB (512 MiB for the canonical OBJ), with chunked uploads.
+limited to 128 MiB, with canonical OBJ uploads accepted up to 512 MiB; native weapon-mesh
+compilation is capped at 128 MiB per OBJ.
 
 Native animation clips drive matching weapon and operator bones. Imported
 geometry needs named-part assignments to move its magazine, bolt, and other
