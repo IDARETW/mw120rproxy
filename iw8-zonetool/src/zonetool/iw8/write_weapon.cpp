@@ -901,6 +901,7 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
         std::vector<Weights> weights;
     };
     std::vector<Part> parts;
+    std::map<std::string, size_t> activeSurfaceByMaterial;
     std::string group = "default", materialKey;
     std::vector<Vec> positions, normals;
     std::vector<std::array<float, 2>> texcoords;
@@ -1020,14 +1021,20 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
                 throw std::runtime_error("OBJ face has fewer than three corners");
             for (size_t i = 1; i + 1 < face.size(); ++i)
             {
-                if (parts.empty() || parts.back().name != group || parts.back().material != materialKey ||
-                    parts.back().surface.verticies.size() >= 30000)
+                auto activeSurface = activeSurfaceByMaterial.find(materialKey);
+                if (activeSurface == activeSurfaceByMaterial.end() ||
+                    parts[activeSurface->second].surface.verticies.size() >= 30000)
                 {
                     if (parts.size() >= 128)
                         throw std::runtime_error("weapon model exceeds 128 native surfaces");
                     parts.push_back({group, materialKey, {}, {}});
+                    activeSurfaceByMaterial[materialKey] = parts.size() - 1;
+                    activeSurface = activeSurfaceByMaterial.find(materialKey);
                 }
-                auto &meshPart = parts.back();
+                // OBJ object/group changes do not require a new native surface.
+                // The material key keeps texture assignment intact, and weights
+                // below retain per-part bone placement when groups are combined.
+                auto &meshPart = parts[activeSurface->second];
                 auto &surface = meshPart.surface;
                 const Vec tri[] = {positions[face[0]], positions[face[i]], positions[face[i + 1]]};
                 Vec a{}, b{};

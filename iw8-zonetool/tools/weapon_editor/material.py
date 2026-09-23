@@ -1,10 +1,38 @@
 """Pack source PBR maps into Replay's verified single-UV weapon profile."""
 import copy
+import gzip
 import json
 from pathlib import Path
 import uuid
 
 from PIL import Image, ImageChops, ImageOps
+
+
+def ensure_previews(definition_path, max_dimension=1024):
+    """Add small, losslessly transported editor textures; native RGBA stays intact."""
+    definition_path = Path(definition_path)
+    definition = json.loads(definition_path.read_text(encoding='utf-8'))
+    if definition.get('format') != 'replay-weapon-material-v1':
+        return
+    previews = []
+    for image in definition['images']:
+        source = definition_path.parent / image['file']
+        target = source.with_name(source.name + '.preview.gz')
+        width, height = image['width'], image['height']
+        scale = min(1, max_dimension / max(width, height))
+        preview_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+        if not target.is_file() or target.stat().st_mtime_ns < source.stat().st_mtime_ns:
+            pixels = Image.frombytes('RGBA', (width, height), source.read_bytes())
+            if pixels.size != preview_size:
+                pixels = pixels.resize(preview_size, Image.Resampling.BOX)
+            target.write_bytes(gzip.compress(pixels.tobytes(), compresslevel=6, mtime=0))
+        previews.append({'file': target.name, 'width': preview_size[0],
+                         'height': preview_size[1], 'encoding': 'gzip'})
+    if definition.get('preview_images') != previews:
+        definition['preview_images'] = previews
+        temporary = definition_path.with_name(definition_path.name + '.tmp')
+        temporary.write_text(json.dumps(definition, indent=2), encoding='utf-8')
+        temporary.replace(definition_path)
 
 
 def generate(root, settings, profile, folder_name=None):
@@ -91,4 +119,5 @@ def generate(root, settings, profile, folder_name=None):
         (folder/(name+'.rgba')).write_bytes(image.tobytes())
         definition['images'][index]={'file':name+'.rgba','width':image.width,'height':image.height}
     (folder/'material.json').write_text(json.dumps(definition,indent=2))
+    ensure_previews(folder/'material.json')
     return (folder/'material.json').relative_to(root).as_posix()

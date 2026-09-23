@@ -2,8 +2,25 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { CCDIKSolver } from 'three/addons/animation/CCDIKSolver.js';
 
 const mat4 = rows => new THREE.Matrix4().set(...rows[0],...rows[1],...rows[2],0,0,0,1);
+
+async function materialImages(viewer,folder,definition){
+  const read=images=>Promise.all(images.slice(0,3).map(async image=>{
+    const packed=await viewer.readAsset(folder+image.file,'arrayBuffer');
+    const pixels=image.encoding==='gzip'
+      ?await new Response(new Blob([packed]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
+      :packed;
+    const data=new Uint8Array(pixels);
+    if(data.length!==image.width*image.height*4)throw new Error(`${image.file} has an invalid RGBA payload`);
+    return {data,width:image.width,height:image.height};
+  }));
+  if(definition.preview_images?.length>=3&&typeof DecompressionStream==='function'){
+    try{return await read(definition.preview_images);}catch(error){console.warn('Preview textures:',error.message);}
+  }
+  return read(definition.images);
+}
 
 export async function readResource(url,onProgress){
   const chunks=[];let offset=0,total=0;
@@ -48,13 +65,24 @@ export class WeaponViewer {
     this.gizmo=new TransformControls(this.camera,this.renderer.domElement);this.gizmo.setSize(.7);
     this.scene.add(this.gizmo.getHelper());
     this.gizmo.addEventListener('dragging-changed',e=>{this.controls.enabled=!e.value;if(!e.value)this.commit();});
-    this.gizmo.addEventListener('objectChange',()=>{if(this.selected?.userData.bone&&this.animationEdit)this.syncBoneFromMarker();if(this.selected?.userData.bone)this.onSelect?.(this.selected.userData.bone,this.selected);this.onTransform?.(this.transformValues());});
-    this.animationEdit=false;this.setTransformSnap({enabled:false,translate:.1,rotate:15,scale:.1});
+    this.gizmo.addEventListener('objectChange',()=>{if(this.selected?.userData.bone)this.syncBoneFromMarker();if(this.selected?.userData.bone)this.onSelect?.(this.selected.userData.bone,this.selected);this.onTransform?.(this.transformValues());});
+    this.animationEdit=false;this.handPlacementMode=false;this.setTransformSnap({enabled:false,translate:.1,rotate:15,scale:.1});
     this.renderer.domElement.addEventListener('pointerdown',e=>this.down=[e.clientX,e.clientY]);
     this.renderer.domElement.addEventListener('pointerup',e=>{
       if(!this.down||Math.hypot(e.clientX-this.down[0],e.clientY-this.down[1])>4||this.gizmo.dragging)return;
       const r=element.getBoundingClientRect(),mouse=new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);
       const ray=new THREE.Raycaster();ray.setFromCamera(mouse,this.camera);
+      if(this.surfacePickBone&&this.selected?.userData.bone){
+        const surface=ray.intersectObject(this.model,true).find(hit=>hit.object.isMesh);
+        if(surface){
+          this.surfacePickBone=false;this.renderer.domElement.style.cursor='';
+          this.selected.position.copy(this.bones.worldToLocal(surface.point.clone()));
+          this.selected.updateMatrix();this.syncBoneFromMarker();
+          this.onSelect?.(this.selected.userData.bone,this.selected);
+          this.commit().catch(error=>console.error('Could not save tag placement:',error));
+        }
+        return;
+      }
       const hit=ray.intersectObjects(this.bones.children).find(x=>x.object.userData.bone);
       if(hit)this.selectBone(hit.object.userData.bone);
     });
@@ -69,6 +97,7 @@ export class WeaponViewer {
     const previousStats=stats.textContent;stats.textContent='Loading model…';
     const stage=Object.create(WeaponViewer.prototype);
     Object.assign(stage,{project,view,generation,assetCache:this.assetCache||(this.assetCache=new Map()),
+      geometryCache:this.geometryCache||(this.geometryCache=new Map()),
       model:new THREE.Group(),template:new THREE.Group(),attachments:new THREE.Group(),bones:new THREE.Group(),skeletonRoot:new THREE.Group()});
     let installed=false;
     const appearance=project.material||{};
@@ -81,11 +110,7 @@ export class WeaponViewer {
         const definition=JSON.parse(await stage.readAsset(base,'text'));
         if(definition.format!=='replay-weapon-material-v1'||!Array.isArray(definition.images)||definition.images.length<3)throw new Error('Material definition is incomplete');
         const folder=base.slice(0,base.lastIndexOf('/')+1);
-        const images=await Promise.all(definition.images.slice(0,3).map(async image=>{
-          const data=new Uint8Array(await stage.readAsset(folder+image.file,'arrayBuffer'));
-          if(data.length!==image.width*image.height*4)throw new Error(`${image.file} has an invalid RGBA payload`);
-          return {data,width:image.width,height:image.height};
-        }));
+        const images=await materialImages(stage,folder,definition);
         const texture=(image,colorSpace=THREE.NoColorSpace)=>{const result=new THREE.DataTexture(image.data,image.width,image.height,THREE.RGBAFormat);result.colorSpace=colorSpace;result.flipY=true;result.needsUpdate=true;return result;};
         const colorSpecular=texture(images[0],THREE.SRGBColorSpace),normalGloss=texture(images[1]);
         const roughPixels=new Uint8Array(images[1].data.length);
@@ -108,7 +133,8 @@ export class WeaponViewer {
     if(project.model){
       const stock=project.stock_views?.[view];
       const stockModel=stage.isStockModel();
-      const {object,text,sourceVertices}=await stage.loadGeometry(project.id,stockModel?stock.model:project.model,stockModel?stock.source:project.model_source);
+      const preview=!stockModel&&!rig?.native_skin_weights&&project.model_preview;
+      const {object,text,sourceVertices}=await stage.loadGeometry(project.id,stockModel?stock.model:project.model,stockModel?stock.source:preview||project.model_source);
       stage.model.add(object);
       stage.model.matrixAutoUpdate=false;
       if(rig?.transform)stage.model.matrix.copy(mat4(rig.transform));
@@ -132,26 +158,30 @@ export class WeaponViewer {
       this.scene.remove(this[key]);this.clearGroup(this[key]);this[key]=stage[key];this.scene.add(this[key]);
     }
     this.skeleton?.dispose();this.skeleton=stage.skeleton;this.project=project;this.view=view;installed=true;
+    this.updateHandIK();
     this.setWireframe(this.wireframe||false);
     this.setTemplate(this.showTemplate||false);
     if(selectedModel)this.selectModel();else if(selection?.attachment)this.selectAttachment(selection.attachment);else if(selection?.bone)this.selectBone(selection.bone);
     let triangles=0;
     for(const group of [this.model,this.attachments])group.traverse(mesh=>{if(mesh.isMesh)triangles+=(mesh.geometry.index?.count||mesh.geometry.attributes.position.count)/3;});
     stats.textContent=`${triangles.toLocaleString()} triangles  ·  ${rig?.bones.length||0} bones  ·  Native units`;
-    document.querySelector('#viewport-empty').hidden=triangles>0||this.showArms||!!(project.stock_reference&&rig);
+    document.querySelector('#viewport-empty').hidden=triangles>0||!!(project.stock_reference&&rig);
     this.bones.visible=this.showBones||false;
-    const bounds=new THREE.Box3().setFromObject(this.model);bounds.union(new THREE.Box3().setFromObject(this.attachments));if(this.template.visible)bounds.union(new THREE.Box3().setFromObject(this.template));
+    const bounds=new THREE.Box3().setFromObject(this.model);this.modelBounds=bounds.clone();bounds.union(new THREE.Box3().setFromObject(this.attachments));if(this.template.visible)bounds.union(new THREE.Box3().setFromObject(this.template));
     if(!bounds.isEmpty()){this.grid.position.z=bounds.min.z-.07;this.ground.position.z=bounds.min.z-.04;}
     if(frame)this.frame();
     }catch(error){if(this.generation===generation)stats.textContent=previousStats;throw error;}
     finally{if(!installed){for(const key of ['model','template','attachments','bones','skeletonRoot'])stage.clearGroup(stage[key]);stage.skeleton?.dispose();materialsToDispose.forEach(item=>stage.disposeMaterial(item));}}
   }
   async readAsset(url,type){
-    const cache=this.assetCache||(this.assetCache=new Map()),key=type+':'+url;
+    const geometry=/\.(?:glb|obj)(?:\?|$)/i.test(url);
+    const cache=geometry?(this.geometryCache||(this.geometryCache=new Map())):
+      (this.assetCache||(this.assetCache=new Map())),key=type+':'+url;
     if(!cache.has(key)){
       const pending=readResource(url).then(blob=>blob[type]());
       cache.set(key,pending);pending.catch(()=>{if(cache.get(key)===pending)cache.delete(key);});
-      if(cache.size>16)cache.delete(cache.keys().next().value);
+      const limit=geometry?4:128;
+      if(cache.size>limit)cache.delete(cache.keys().next().value);
     }
     return cache.get(key);
   }
@@ -161,11 +191,7 @@ export class WeaponViewer {
       const definition=JSON.parse(await this.readAsset(base,'text'));
       if(definition.format!=='replay-weapon-material-v1'||!Array.isArray(definition.images)||definition.images.length<3)throw new Error('Material definition is incomplete');
       const folder=base.slice(0,base.lastIndexOf('/')+1);
-      const images=await Promise.all(definition.images.slice(0,3).map(async image=>{
-        const data=new Uint8Array(await this.readAsset(folder+image.file,'arrayBuffer'));
-        if(data.length!==image.width*image.height*4)throw new Error(image.file+' has an invalid RGBA payload');
-        return {data,width:image.width,height:image.height};
-      }));
+      const images=await materialImages(this,folder,definition);
       const texture=(image,colorSpace=THREE.NoColorSpace)=>{const result=new THREE.DataTexture(image.data,image.width,image.height,THREE.RGBAFormat);result.colorSpace=colorSpace;result.flipY=true;result.needsUpdate=true;return result;};
       const colorSpecular=texture(images[0],THREE.SRGBColorSpace),normalGloss=texture(images[1]);
       const roughPixels=new Uint8Array(images[1].data.length);
@@ -216,6 +242,7 @@ export class WeaponViewer {
     if(this.armsLoading)await this.armsLoading;
     this.arms.visible=this.showArms;
     this.arms.updateMatrixWorld(true);
+    this.updateHandIK();
   }
   async loadArms(){
       const response=await fetch('/library-files/viewhands.glb');
@@ -224,17 +251,76 @@ export class WeaponViewer {
       const result=await new GLTFLoader().parseAsync(await response.arrayBuffer(),'');
       this.arms.add(result.scene);
       this.armBones=[];this.armSkeletons=[];
+      let skinned=null;
       result.scene.traverse(object=>{
         if(object.isBone)this.armBones.push(object);
-        if(object.isSkinnedMesh&&!this.armSkeletons.includes(object.skeleton))this.armSkeletons.push(object.skeleton);
+        if(object.isSkinnedMesh&&!this.armSkeletons.includes(object.skeleton)){this.armSkeletons.push(object.skeleton);skinned ||= object;}
         if(object.isMesh){object.castShadow=true;object.receiveShadow=true;object.frustumCulled=false;}
       });
       this.armSkeletons.forEach(skeleton=>skeleton.pose());
+      const bones=skinned?.skeleton.bones||[],index=name=>bones.findIndex(bone=>bone.name===name);
+      const origin=bones.find(bone=>bone.name==='tag_origin');
+      if(origin&&index('j_wrist_le')>=0&&index('j_wrist_ri')>=0){
+        for(const side of ['le','ri']){
+          const target=bones[index(side==='le'?'tag_weapon_left':'tag_weapon_right')];
+          origin.attach(target); // tag bones carry no vertices; keep IK targets outside the arm chain.
+        }
+        this.handIK=new CCDIKSolver(skinned,['le','ri'].map(side=>({
+          target:index(side==='le'?'tag_weapon_left':'tag_weapon_right'),
+          effector:index('j_wrist_'+side),
+          links:[{index:index('j_elbow_'+side)},{index:index('j_shoulder_'+side)}],
+          iteration:8,minAngle:0,maxAngle:.35
+        })));
+      }
+  }
+  updateHandIK(){
+    if(!this.handPlacementMode||!this.showArms||!this.handIK||!this.skeleton||!this.project?.rig?.[this.view])return;
+    if(!this.nativeArmPose)this.nativeArmPose=this.armBones.map(bone=>({bone,
+      position:bone.position.clone(),quaternion:bone.quaternion.clone(),scale:bone.scale.clone()}));
+    this.arms.updateMatrixWorld(true);this.skeletonRoot.updateMatrixWorld(true);
+    this.handOrientationOffsets ||= new Map();
+    const targets=[];
+    for(const side of ['le','ri']){
+      const tag=this.skeleton.bones.find(bone=>bone.name==='tag_ik_loc_'+side);
+      const target=this.armBones.find(bone=>bone.name===(side==='le'?'tag_weapon_left':'tag_weapon_right'));
+      const wrist=this.armBones.find(bone=>bone.name==='j_wrist_'+side);
+      if(!tag||!target||!wrist)continue;
+      const orientation=tag.getWorldQuaternion(new THREE.Quaternion());
+      const key=this.project.id+':'+this.view+':'+side;
+      if(!this.handOrientationOffsets.has(key))
+        this.handOrientationOffsets.set(key,orientation.clone().invert().multiply(
+          wrist.getWorldQuaternion(new THREE.Quaternion())));
+      targets.push({wrist,orientation,offset:this.handOrientationOffsets.get(key)});
+      const world=tag.getWorldPosition(new THREE.Vector3());
+      target.position.copy(target.parent.worldToLocal(world));target.updateMatrixWorld(true);
+    }
+    this.handIK.update();this.arms.updateMatrixWorld(true);
+    if(!this.action||this.animationEdit){
+      for(const {wrist,orientation,offset} of targets){
+        const parent=wrist.parent.getWorldQuaternion(new THREE.Quaternion());
+        wrist.quaternion.copy(parent.invert().multiply(orientation).multiply(offset));
+      }
+      this.arms.updateMatrixWorld(true);
+    }
+  }
+  setHandPlacementMode(enabled){
+    enabled=!!enabled;
+    if(this.handPlacementMode===enabled)return;
+    this.handPlacementMode=enabled;
+    if(enabled){this.updateHandIK();return;}
+    // Restore exactly the native animation pose captured before IK touched
+    // the wrists, elbows, and shoulders. Re-evaluating a paused mixer does not
+    // restore every bone because some clips omit those channels.
+    for(const item of this.nativeArmPose||[]){item.bone.position.copy(item.position);
+      item.bone.quaternion.copy(item.quaternion);item.bone.scale.copy(item.scale);}
+    this.nativeArmPose=null;
+    this.arms.updateMatrixWorld(true);
+    this.updateAnimationPose();
   }
   async loadAttachments(project,view,generation,material,materialsToDispose=[]){
     for(const asset of project.owned_assets||[]){
       const geometry=asset.pool===42&&asset.geometry;if(!geometry)continue;
-      const {object}=await this.loadGeometry(project.id,geometry.model,geometry.source);if(this.generation!==generation)return;
+      const {object}=await this.loadGeometry(project.id,geometry.model,geometry.preview||geometry.source);if(this.generation!==generation)return;
       const group=new THREE.Group();group.name=asset.name;group.userData.attachment=asset.name;group.add(object);
       const matrix=geometry[view]?.matrix||[[1,0,0,0],[0,1,0,0],[0,0,1,0]];
       group.matrixAutoUpdate=false;group.matrix.copy(mat4(matrix));
@@ -303,6 +389,8 @@ export class WeaponViewer {
   }
   resetPose(){
     this.nativePreview=false;this.previewSource=null;this.action=null;
+    this.poseEditBaseline=null;
+    this.nativeArmPose=null;
     this.mixer?.stopAllAction();this.mixer=null;
     this.skeletonRoot.matrixAutoUpdate=false;this.skeletonRoot.matrix.identity();
     this.attachments.matrixAutoUpdate=false;this.attachments.matrix.identity();
@@ -311,6 +399,7 @@ export class WeaponViewer {
     this.armSkeletons?.forEach(skeleton=>skeleton.pose());this.arms.updateMatrixWorld(true);
     const rig=this.project?.rig?.[this.view];if(!rig||!this.skeleton)return;
     for(let i=0;i<rig.bones.length;i++){const b=this.skeleton.bones[i],j=i-rig.root_bones;if(j<0){b.position.set(0,0,0);b.quaternion.identity();}else{b.position.fromArray(rig.translations[j]);b.quaternion.fromArray(rig.quats[j]).normalize();}}this.skeletonRoot.updateMatrixWorld(true);this.updateBoneMarkers();
+    this.updateHandIK();
   }
   async playClip(index){
     const source=this.project.source_clips?.[index];if(!source)throw new Error('Choose an animation clip.');
@@ -360,11 +449,12 @@ export class WeaponViewer {
     return this.previewMapping;
   }
   updateAnimationPose(){
-    if(!this.nativePreview||!this.nativeDriver)return;
+    if(!this.nativePreview||!this.nativeDriver){if(this.action)this.updateHandIK();return;}
     this.arms.updateMatrixWorld(true);
     const motion=new THREE.Matrix4().multiplyMatrices(this.nativeDriver.matrixWorld,this.nativeDriverBindInverse);
     this.skeletonRoot.matrix.copy(motion);this.skeletonRoot.updateMatrixWorld(true);
     this.attachments.matrix.copy(motion);this.attachments.updateMatrixWorld(true);
+    this.updateHandIK();
     this.updateBoneMarkers();
   }
   updateBoneMarkers(){
@@ -381,7 +471,7 @@ export class WeaponViewer {
   }
   playbackState(){return {time:this.action?.time||0,duration:this.previewSource?.duration||0,playing:!!this.action?.isRunning(),source:this.previewSource};}
   pauseAnimation(){if(!this.action)return;if(this.action.paused&&this.action.time>=this.previewSource.duration){this.action.reset().play();}else this.action.paused=!this.action.paused;}
-  seekAnimation(seconds){if(!this.action)return;this.action.enabled=true;this.action.time=Math.max(0,Math.min(this.previewSource.duration,seconds));this.mixer.update(0);this.updateAnimationPose();}
+  seekAnimation(seconds){if(!this.action)return;this.poseEditBaseline=null;this.action.enabled=true;this.action.time=Math.max(0,Math.min(this.previewSource.duration,seconds));this.mixer.update(0);this.updateAnimationPose();}
   setAnimationSpeed(speed){this.previewSpeed=speed;if(this.mixer)this.mixer.timeScale=speed;}
   setAnimationLoop(loop){this.previewLoop=loop;if(this.action)this.action.setLoop(loop?THREE.LoopRepeat:THREE.LoopOnce,loop?Infinity:1);}
   drawRig(rig){
@@ -395,20 +485,87 @@ export class WeaponViewer {
     const geometry=new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(lines,3));
     const line=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:0x83a0c7,transparent:true,opacity:.5,depthTest:false}));line.renderOrder=9;this.bones.add(line);
   }
-  setAnimationEdit(enabled){this.animationEdit=!!enabled;if(this.animationEdit&&this.action)this.action.paused=true;if(!this.animationEdit)this.gizmo.detach();this.updateAnimationPose();}
-  selectBone(name,{preserveAnimation=false}={}){if(!preserveAnimation&&!(this.animationEdit&&this.action))this.resetPose();this.showBones=true;this.bones.visible=true;this.selected=this.bones.children.find(x=>x.userData.bone===name);if(!this.selected)return;this.gizmo.attach(this.selected);this.onSelect?.(name,this.selected);}
+  setAnimationEdit(enabled){this.animationEdit=!!enabled;this.poseEditBaseline=null;if(this.animationEdit&&this.action)this.action.paused=true;if(!this.animationEdit)this.gizmo.detach();this.updateAnimationPose();}
+  selectBone(name,{preserveAnimation=false}={}){if(!preserveAnimation&&!(this.animationEdit&&this.action))this.resetPose();this.poseEditBaseline=null;this.showBones=true;this.bones.visible=true;this.selected=this.bones.children.find(x=>x.userData.bone===name);if(!this.selected)return;this.captureBoneBaseline();this.gizmo.attach(this.selected);this.onSelect?.(name,this.selected);}
+  beginSurfacePick(){
+    if(!this.selected?.userData.bone)throw new Error('Select a tag before placing it on the model');
+    const rig=this.project?.rig?.[this.view];
+    if(!rig||rig.bones.indexOf(this.selected.userData.bone)<rig.root_bones)
+      throw new Error('The root is positioned with model placement; select a child tag');
+    this.surfacePickBone=true;this.renderer.domElement.style.cursor='crosshair';
+  }
+  async captureNativeHandTargets(){
+    if(!this.action?.paused)throw new Error('Pause an animation before matching its hands');
+    const rig=this.project?.rig?.[this.view];
+    if(!rig)throw new Error('Import a weapon rig before matching hands');
+    this.setHandPlacementMode(false);
+    try{
+      this.arms.updateMatrixWorld(true);this.bones.updateMatrixWorld(true);
+      const anchors=['le','ri'].map(side=>{
+        const bone='tag_ik_loc_'+side;
+        const source=this.armBones?.find(item=>item.name==='j_wrist_'+side);
+        if(!source||!rig.bones.includes(bone))throw new Error(`Missing native ${side} wrist or weapon tag`);
+        return {bone,position:source.getWorldPosition(new THREE.Vector3()),
+          quaternion:source.getWorldQuaternion(new THREE.Quaternion())};
+      });
+      if(this.model?.children.length){
+        this.model.updateMatrixWorld(true);
+        this.model.traverse(item=>{if(item.isSkinnedMesh)item.computeBoundingBox();});
+        const bounds=new THREE.Box3().setFromObject(this.model);
+        const tolerance=Math.max(1,bounds.getSize(new THREE.Vector3()).length()*.1);
+        for(const anchor of anchors)if(bounds.distanceToPoint(anchor.position)>tolerance)
+          throw new Error('A hand is away from the custom model at this frame. Pause at an idle grip pose, then capture the hands.');
+      }
+      for(const anchor of anchors){
+        this.selectBone(anchor.bone,{preserveAnimation:true});
+        this.selected.position.copy(this.bones.worldToLocal(anchor.position));
+        const parent=this.bones.getWorldQuaternion(new THREE.Quaternion()).invert();
+        this.selected.quaternion.copy(parent.multiply(anchor.quaternion));
+        this.selected.updateMatrix();this.syncBoneFromMarker();
+        await this.commit();
+      }
+      return anchors.length;
+    }finally{
+      for(const side of ['le','ri'])this.handOrientationOffsets?.delete(this.project.id+':'+this.view+':'+side);
+      this.setHandPlacementMode(true);
+    }
+  }
   selectModel({preserveAnimation=false}={}){if(!preserveAnimation&&!(this.animationEdit&&this.action))this.resetPose();this.gizmo.detach();this.selected=this.model;this.model.matrix.decompose(this.model.position,this.model.quaternion,this.model.scale);this.model.matrixAutoUpdate=true;this.gizmo.attach(this.model);}
   syncBoneFromMarker(){
-    if(!this.animationEdit||!this.selected?.userData.bone||!this.skeleton)return;
+    if(!this.selected?.userData.bone||!this.skeleton)return;
     const bone=this.skeleton.bones.find(item=>item.name===this.selected.userData.bone);if(!bone)return;
+    this.captureBoneBaseline();
     this.bones.updateMatrixWorld(true);const parent=bone.parent||this.skeletonRoot,local=parent.matrixWorld.clone().invert().multiply(this.selected.matrixWorld);
-    local.decompose(bone.position,bone.quaternion,bone.scale);bone.updateMatrixWorld(true);this.updateBoneMarkers();
+    local.decompose(bone.position,bone.quaternion,bone.scale);bone.updateMatrixWorld(true);this.updateHandIK();this.updateBoneMarkers();
+  }
+  captureBoneBaseline(){
+    const name=this.selected?.userData.bone,rig=this.project?.rig?.[this.view];
+    if(!name||!rig||this.poseEditBaseline?.name===name)return;
+    const bone=this.skeleton?.bones.find(item=>item.name===name);if(!bone)return;
+    this.poseEditBaseline={name,position:bone.position.clone(),quaternion:bone.quaternion.clone()};
+  }
+  boneNativePose(){
+    const name=this.selected?.userData.bone,rig=this.project?.rig?.[this.view];
+    const index=rig?.bones.indexOf(name)??-1,j=index-(rig?.root_bones||0);
+    if(j<0)throw new Error('The root bone is fixed by model placement');
+    this.captureBoneBaseline();
+    const bone=this.skeleton.bones[index],baseline=this.poseEditBaseline;
+    const parent=rig.bind_pose[index-rig.parents[j]];
+    const parentQ=new THREE.Quaternion().fromArray(parent.quat);
+    const bindLocalQ=new THREE.Quaternion(...rig.quats[j]).normalize();
+    const delta=bone.quaternion.clone().multiply(baseline.quaternion.clone().invert());
+    const bindLocal= new THREE.Vector3(...rig.translations[j]).add(
+      bone.position.clone().sub(baseline.position));
+    const translation=bindLocal.applyQuaternion(parentQ).add(new THREE.Vector3(...parent.translation)).toArray();
+    const quaternion=parentQ.multiply(delta.multiply(bindLocalQ)).normalize().toArray();
+    return {translation,quaternion};
   }
   setBoneComponent(kind,axis,value){
     const target=this.selected;if(!target?.userData.bone||!Number.isFinite(value))return;
+    this.captureBoneBaseline();
     if(kind==='position')target.position.setComponent(axis,value);
     else{const rotation=new THREE.Euler().setFromQuaternion(target.quaternion);rotation.setComponent(axis,THREE.MathUtils.degToRad(value));target.quaternion.setFromEuler(rotation);}
-    target.updateMatrix();if(this.animationEdit)this.syncBoneFromMarker();this.onTransform?.(this.transformValues());
+    target.updateMatrix();this.syncBoneFromMarker();this.onTransform?.(this.transformValues());
   }
   selectAttachment(name){this.gizmo.detach();const group=this.attachments.children.find(x=>x.userData.attachment===name);if(!group)return false;this.selected=group;group.matrix.decompose(group.position,group.quaternion,group.scale);group.matrixAutoUpdate=true;this.gizmo.attach(group);return true;}
   setMode(mode){this.gizmo.setMode(mode);}
@@ -417,7 +574,11 @@ export class WeaponViewer {
   setTransformComponent(kind,axis,value){const target=this.selected?.userData.attachment?this.selected:this.model;if(!target||!Number.isFinite(value))return;target.matrix.decompose(target.position,target.quaternion,target.scale);target.matrixAutoUpdate=true;if(kind==='position')target.position.setComponent(axis,value);else if(kind==='scale')target.scale.setComponent(axis,value);else if(kind==='rotation'){const rotation=new THREE.Euler().setFromQuaternion(target.quaternion);rotation.setComponent(axis,THREE.MathUtils.degToRad(value));target.quaternion.setFromEuler(rotation);}target.updateMatrix();this.onTransform?.(this.transformValues());}
   async commit(){
     if(!this.selected)return;
-    if(this.selected.userData.bone){const bone=this.animationEdit?this.skeleton?.bones.find(item=>item.name===this.selected.userData.bone):null;await this.onChange({op:'bone',view:this.view,bone:this.selected.userData.bone,translation:(bone||this.selected).position.toArray(),quaternion:(bone||this.selected).quaternion.toArray()});}
+    if(this.selected.userData.bone){
+      const pose=this.boneNativePose();
+      await this.onChange({op:'bone',view:this.view,bone:this.selected.userData.bone,...pose});
+      this.poseEditBaseline=null;this.captureBoneBaseline();
+    }
     else if(this.selected.userData.attachment){
       this.selected.updateMatrix();const e=this.selected.matrix.elements;
       await this.onChange({op:'attachment_transform',asset:this.selected.userData.attachment,view:this.view,matrix:[[e[0],e[4],e[8],e[12]],[e[1],e[5],e[9],e[13]],[e[2],e[6],e[10],e[14]]]});

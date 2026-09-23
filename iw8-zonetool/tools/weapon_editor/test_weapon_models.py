@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 import json
+import gzip
+import struct
 
 from PIL import Image
 
@@ -11,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from server import import_surface_materials, normalize_import_roots
 from weapon_models import model_slots_from_definition, model_slots_from_record
+from preview_glb import obj_to_glb
+from material import ensure_previews
 
 
 class WeaponModelSlotTests(unittest.TestCase):
@@ -115,6 +119,46 @@ class AttachmentMaterialTests(unittest.TestCase):
             self.assertEqual(definition.parent.name, 'attachment-a1b2c3-receiver')
             self.assertTrue((definition.parent/'color_specular.rgba').is_file())
             self.assertEqual(result[0]['parts'], ['receiver_body'])
+
+
+class PreviewAssetTests(unittest.TestCase):
+    def test_obj_preview_keeps_mesh_names_and_faces(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root/'weapon.obj'
+            source.write_text(
+                'v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n'
+                'vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n'
+                'g receiver\nf 1/1 2/2 3/3 4/4\n'
+                'g trigger\nf 1/1 2/2 3/3\n', encoding='utf-8')
+            preview = root/'weapon.preview.glb'
+            result = obj_to_glb(source, preview)
+            content = preview.read_bytes()
+            self.assertEqual(content[:4], b'glTF')
+            self.assertEqual(struct.unpack_from('<I', content, 8)[0], len(content))
+            json_size = struct.unpack_from('<I', content, 12)[0]
+            scene = json.loads(content[20:20+json_size])
+            self.assertEqual([mesh['name'] for mesh in scene['meshes']],
+                             ['receiver', 'trigger'])
+            self.assertEqual(result['triangles'], 3)
+
+    def test_texture_preview_is_downsized_without_changing_native_image(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            original = bytes([12, 34, 56, 255]) * (4 * 2)
+            (root/'color.rgba').write_bytes(original)
+            definition = root/'material.json'
+            definition.write_text(json.dumps({
+                'format': 'replay-weapon-material-v1',
+                'images': [{'file': 'color.rgba', 'width': 4, 'height': 2}],
+            }), encoding='utf-8')
+            ensure_previews(definition, max_dimension=2)
+            metadata = json.loads(definition.read_text(encoding='utf-8'))
+            self.assertEqual(metadata['preview_images'][0]['width'], 2)
+            self.assertEqual(metadata['preview_images'][0]['height'], 1)
+            self.assertEqual(len(gzip.decompress(
+                (root/'color.rgba.preview.gz').read_bytes())), 2 * 1 * 4)
+            self.assertEqual((root/'color.rgba').read_bytes(), original)
 
 
 if __name__ == '__main__':

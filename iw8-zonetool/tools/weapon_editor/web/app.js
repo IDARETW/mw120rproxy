@@ -52,8 +52,8 @@ const viewer=new WeaponViewer($('#viewport'),async action=>{
     viewer.project=state.project;
     return;
   }
-  if(action.op==='bone'&&viewer.animationEdit){
-    // Keep the paused animation and live skeleton while iterating on a tag or bone.
+  if(action.op==='bone'){
+    // Keep the current skeleton and hand pose while iterating on a tag or bone.
     viewer.project=state.project;
     return;
   }
@@ -117,7 +117,7 @@ function updateHeader(){const p=state.project;$('#project-title').textContent=p.
 
 async function openProject(id){state.project=await api('/api/projects/'+id);state.asset='weapon';state.selectedBone=null;state.expandedSlots.clear();preferences.setItem('arsenal-project',id);await loadFields();await renderPage();await viewer.load(state.project,state.view,true);}
 
-async function navigate(page){if(!state.project)return;state.page=page;state.asset=page==='sound'&&state.project.reference.sfx?'sfx':'weapon';if(page==='layout'&&!state.layout)state.layout=await api('/api/layout');if(!['layout','builds'].includes(page))await loadFields();await renderPage();if(page==='rig'){viewer.setBones(true);if(state.project.rig){const name=state.project.rig[state.view].bones.find(n=>n==='tag_ik_loc_le')||state.project.rig[state.view].bones[1];if(name)viewer.selectBone(name);}}else viewer.gizmo.detach();}
+async function navigate(page){if(!state.project)return;state.page=page;state.asset=page==='sound'&&state.project.reference.sfx?'sfx':'weapon';viewer.setHandPlacementMode(['model','rig','attachments'].includes(page));if(page==='layout'&&!state.layout)state.layout=await api('/api/layout');if(!['layout','builds'].includes(page))await loadFields();await renderPage();if(page==='rig'){viewer.setBones(true);if(state.project.rig){const name=state.project.rig[state.view].bones.find(n=>n==='tag_ik_loc_le')||state.project.rig[state.view].bones[1];if(name)viewer.selectBone(name);}}else viewer.gizmo.detach();}
 
 
 
@@ -145,7 +145,7 @@ async function renderPage(){
 
   }else if(state.page==='model'){
 
-    $('#inspector').innerHTML=panel('Model & material',`<div class="section-label">GEOMETRY</div><p class="helper">${escape(p.model?.split('/').pop()||'Reference model')}</p><button class="button full-width" data-action="import-model">Import OBJ, FBX, GLB or glTF</button><p class="helper">Select the model with its companion image files in the same picker. Embedded FBX/glTF images are extracted automatically.</p><div class="divider"></div><div class="section-label">PLACEMENT</div><div class="toolbar-row"><button class="button" data-mode="translate">Move</button><button class="button" data-mode="rotate">Rotate</button><button class="button" data-mode="scale">Scale</button></div><small class="helper">Gizmo and numeric edits save the native model transform.</small>${transformFields()}<div class="divider"></div><div class="section-label">SURFACE</div><div class="field-row"><label class="field"><span>Base color</span><input type="color" data-material="color" value="${p.material.color}"></label><label class="field"><span>Preview metalness</span><input type="number" min="0" max="1" step=".05" data-material="metalness" value="${p.material.metalness??.35}"></label></div><div class="field-row"><label class="field"><span>Native roughness</span><input type="number" min="0" max="1" step=".05" data-material="roughness" value="${p.material.roughness??.45}"></label><label class="field"><span>Native specular</span><input type="number" min="0" max="1" step=".05" data-material="specular" value="${p.material.specular??.22}"></label></div><button class="button full-width" data-action="texture">Import color texture</button><div class="toolbar-row" style="margin-top:8px"><button class="button" data-action="normal">Normal map</button><button class="button" data-action="emissive">Emissive map</button></div><p class="helper">UVs come from the imported model. Specular is packed into color alpha, roughness into normal alpha, and emissive uses the native material profile.</p>`);
+    $('#inspector').innerHTML=panel('Model & material',`<div class="section-label">GEOMETRY</div><p class="helper">${escape(p.model?.split('/').pop()||'Reference model')}</p><button class="button full-width" data-action="import-model">Import OBJ, FBX, GLB or glTF</button><p class="helper">Select the model with its companion image files in the same picker. Embedded FBX/glTF images are extracted automatically.</p><div class="divider"></div><div class="section-label">PLACEMENT</div><label class="toggle-row"><input type="checkbox" id="linked-model-placement" ${p.linked_model_placement?'checked':''} ${!p.rig?'disabled':''}> Use one placement for view and world models</label><div class="toolbar-row"><button class="button" data-mode="translate">Move</button><button class="button" data-mode="rotate">Rotate</button><button class="button" data-mode="scale">Scale</button></div><small class="helper">Gizmo and numeric edits save the native model transform.</small>${transformFields()}<div class="divider"></div><div class="section-label">SURFACE</div><div class="field-row"><label class="field"><span>Base color</span><input type="color" data-material="color" value="${p.material.color}"></label><label class="field"><span>Preview metalness</span><input type="number" min="0" max="1" step=".05" data-material="metalness" value="${p.material.metalness??.35}"></label></div><div class="field-row"><label class="field"><span>Native roughness</span><input type="number" min="0" max="1" step=".05" data-material="roughness" value="${p.material.roughness??.45}"></label><label class="field"><span>Native specular</span><input type="number" min="0" max="1" step=".05" data-material="specular" value="${p.material.specular??.22}"></label></div><button class="button full-width" data-action="texture">Import color texture</button><div class="toolbar-row" style="margin-top:8px"><button class="button" data-action="normal">Normal map</button><button class="button" data-action="emissive">Emissive map</button></div><p class="helper">UVs come from the imported model. Specular is packed into color alpha, roughness into normal alpha, and emissive uses the native material profile.</p>`);
 
     content.innerHTML=`<div class="card">${panel('Source assets',p.files.length?p.files.map(f=>property(f.name,`${(f.bytes/1024).toFixed(1)} KB`)).join(''):'<p class="helper">Imported source files stay with this project.</p>')}</div>`;
 
@@ -194,17 +194,21 @@ function renderRigInspector(object){
 
   const parent=i>=rig.root_bones?rig.bones[i-rig.parents[i-rig.root_bones]]:null;
 
+  const marker=object?.getWorldPosition?.(new THREE.Vector3());
+  const modelSize=viewer.modelBounds?.getSize(new THREE.Vector3()).length()||0;
+  const outside=marker&&modelSize>0&&viewer.modelBounds.distanceToPoint(marker)>Math.max(1,modelSize*.1);
+
   const depths=rig.bones.map((_,i)=>{let depth=0;while(i>=rig.root_bones){i-=rig.parents[i-rig.root_bones];depth++;}return depth;});
 
-  $('#inspector').innerHTML=panel('Rig & hand placement',`<div class="section-label">HAND TARGETS</div><div class="toolbar-row"><button class="button" data-select-bone="tag_ik_loc_le">Left hand</button><button class="button" data-select-bone="tag_ik_loc_ri">Right hand</button></div>${pose?`
+  $('#inspector').innerHTML=panel('Rig & hand placement',`<div class="section-label">HAND TARGETS</div><div class="toolbar-row"><button class="button" data-select-bone="tag_ik_loc_le">Left hand</button><button class="button" data-select-bone="tag_ik_loc_ri">Right hand</button></div><p class="helper">Show operator arms in the viewport, then move or rotate either target with the gizmo or number fields. The arm preview follows each target live; the targets are saved as native model bones.</p>${pose?`
 
-    <span class="skeleton-tag">${escape(state.selectedBone)}</span><div class="section-label" style="margin-top:16px">POSITION · WORLD</div>
+    <span class="skeleton-tag">${escape(state.selectedBone)}</span>${outside?'<p class="helper">This tag is outside the compiled model. Pick a point on the model, then refine it with the gizmo or values.</p>':''}<div class="section-label" style="margin-top:16px">POSITION · WORLD</div>
 
     <div class="field-row three">${['X','Y','Z'].map((axis,i)=>`<label class="field"><span>${axis}</span><input type="number" step=".05" data-bone-coordinate="${i}" value="${position[i].toFixed(3)}" ${parent?'':'disabled'}></label>`).join('')}</div>
 
     <div class="section-label">ROTATION · DEGREES</div><div class="field-row three">${['X','Y','Z'].map((axis,i)=>`<label class="field"><span>${axis}</span><input type="number" step="1" data-bone-rotation="${i}" value="${THREE.MathUtils.radToDeg(rotation.toArray()[i]).toFixed(2)}" ${parent?'':'disabled'}></label>`).join('')}</div>
 
-    <div class="toolbar-row"><button class="button" data-bone-mode="translate">Move</button><button class="button" data-bone-mode="rotate">Rotate</button></div>
+    <div class="toolbar-row"><button class="button" data-bone-mode="translate">Move</button><button class="button" data-bone-mode="rotate">Rotate</button><button class="button" data-action="place-bone-on-model">Pick on model</button></div>
 
     <label class="field"><span>Parent bone</span><select id="bone-parent" ${parent?'':'disabled'}>${parent?rig.bones.filter(n=>n!==state.selectedBone).map(n=>`<option ${n===parent?'selected':''} value="${escape(n)}">${escape(n)}</option>`).join(''):'<option>Root</option>'}</select></label>
 
@@ -257,8 +261,8 @@ async function renderAnimationPreview(){
     <div class="field-row"><label class="field"><span>Playback speed</span><select id="preview-speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label><label class="toggle-row"><input id="preview-loop" type="checkbox" checked> Loop</label></div>
     <p id="preview-status" class="helper">Select a package clip and press Play. The arms toggle also applies here.</p>
     <div class="divider"></div><div class="section-label">LIVE POSE ALIGNMENT</div>
-    <p class="helper">Pause the clip, enable pose editing, then select a bone or tag. Gizmo and numeric changes update the paused animation immediately and save to the weapon rig.</p>
-    <div class="toolbar-row"><button class="button" id="animation-edit-toggle" data-action="toggle-animation-edit" aria-pressed="false">Enable paused pose editing</button></div>
+    <p class="helper">Pause at a resting grip frame to set both tags from the animated wrists. You can then adjust either tag with the gizmo or numeric fields; edits update the frozen pose and save to the weapon rig.</p>
+    <div class="toolbar-row"><button class="button" id="animation-edit-toggle" data-action="toggle-animation-edit" aria-pressed="false">Enable paused pose editing</button><button class="button" data-action="capture-native-hands">Set tags from hands</button><button class="button" data-action="place-bone-on-model">Pick on model</button></div>
     <label class="field"><span>Bone or tag</span><select id="animation-bone"></select></label>
     <div id="animation-pose-fields"></div>
     <button class="button" data-action="stop-animation">Reset pose</button>
@@ -273,7 +277,9 @@ async function renderAnimationPreview(){
 function fillAnimationBoneList(){
   const select=$('#animation-bone'),rig=state.project.rig?.[state.view];if(!select||!rig)return;
   select.innerHTML=rig.bones.map(name=>`<option value="${escape(name)}">${escape(name)}</option>`).join('');
-  const preferred=state.selectedBone&&rig.bones.includes(state.selectedBone)?state.selectedBone:rig.bones[0];if(preferred)select.value=preferred;
+  const preferred=state.selectedBone&&rig.bones.includes(state.selectedBone)?state.selectedBone:
+    rig.bones.includes('tag_ik_loc_le')?'tag_ik_loc_le':rig.bones[rig.root_bones]||rig.bones[0];
+  if(preferred)select.value=preferred;
   if(preferred&&!viewer.selected?.userData.bone)viewer.selectBone(preferred,{preserveAnimation:true});
   renderAnimationPoseFields();
 }
@@ -294,7 +300,8 @@ function syncAnimationPoseFields(){
 }
 function updateAnimationEditControls(){
   const button=$('#animation-edit-toggle');if(!button)return;button.classList.toggle('active',viewer.animationEdit);button.setAttribute('aria-pressed',String(viewer.animationEdit));button.textContent=viewer.animationEdit?'Pose editing enabled · pause locked':'Enable paused pose editing';
-  $$('[data-bone-coordinate],[data-bone-rotation]').forEach(input=>input.disabled=!viewer.animationEdit);
+  const rig=state.project.rig?.[state.view],editable=rig&&rig.bones.indexOf($('#animation-bone')?.value)>=rig.root_bones;
+  $$('[data-bone-coordinate],[data-bone-rotation]').forEach(input=>input.disabled=!viewer.animationEdit||!editable);
 }
 function fillPreviewClips(){
   const select=$('#preview-clip'),previous=select.value,filter=$('#preview-filter').value.toLowerCase();
@@ -315,7 +322,7 @@ async function playNativeAnimation(){
   const source=await api(`/api/projects/${id}/animation-preview?asset=${encodeURIComponent(asset)}`);
   if(request!==previewRequest||id!==state.project.id||state.page!=='animation')return;
   if(state.view!=='view_model'){state.view='view_model';$$('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===state.view));await viewer.load(state.project,state.view);}
-  viewer.setAnimationEdit(false);
+  viewer.setAnimationEdit(false);viewer.setHandPlacementMode(false);
   const mapping=await viewer.playSource(source);
   viewer.frame();
   const status=$('#preview-status');
@@ -452,6 +459,8 @@ async function handleModel(file,resources=[]){
   }
   const replacements=baseModelReplacements(state.boot.catalog.weapons.find(w=>w.name===state.project.reference_name));
   rig.view_model.replace=replacements.view_model;rig.world_model.replace=replacements.world_model;
+  if(state.project.linked_model_placement!==false)
+    rig.world_model.transform=structuredClone(rig.view_model.transform);
   await mutation({op:'model',path,source,clips:result.clips||[],rig,materials:importedMaterials},{reloadModel:true});
   viewer.frame();
   toast(`Model imported${result.clips?.length?` with ${result.clips.length} animation clip${result.clips.length===1?'':'s'}`:''}.`);
@@ -570,6 +579,7 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button,a')
   if(b.dataset.mode){viewer.selectModel();viewer.setMode(b.dataset.mode);return;}
 
   if(b.dataset.boneMode){viewer.setMode(b.dataset.boneMode);return;}
+  if(b.dataset.action==='place-bone-on-model'){viewer.beginSurfacePick();toast('Click the custom model surface to place the selected tag.');return;}
 
   if(b.dataset.selectBone){if(!state.project.rig[state.view].bones.includes(b.dataset.selectBone)){toast('This rig does not contain that hand target.',true);return;}viewer.selectBone(b.dataset.selectBone,{preserveAnimation:viewer.animationEdit});return;}
 
@@ -619,7 +629,7 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button,a')
 
   if(['texture','normal','emissive'].includes(b.dataset.action)){chooseFile('.png,.jpg,.jpeg,.webp,.tga',async f=>{const path=await upload(f);await mutation({op:'material',material:{[{texture:'color_texture',normal:'normal_texture',emissive:'emissive_texture'}[b.dataset.action]]:path}},{reloadModel:true});});return;}
 
-  if(b.dataset.playClip!==undefined){await viewer.playClip(Number(b.dataset.playClip));return;}
+  if(b.dataset.playClip!==undefined){viewer.setAnimationEdit(false);viewer.setHandPlacementMode(false);await viewer.playClip(Number(b.dataset.playClip));return;}
 
   if(b.dataset.editAnimation!==undefined){animationDialog(Number(b.dataset.editAnimation));return;}
 
@@ -632,8 +642,18 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button,a')
 
   if(b.dataset.action==='play-native-animation'){await playNativeAnimation();return;}
   if(b.dataset.action==='pause-animation'){viewer.pauseAnimation();return;}
-  if(b.dataset.action==='toggle-animation-edit'){viewer.setAnimationEdit(!viewer.animationEdit);viewer.setBones(true);updateAnimationEditControls();renderAnimationPoseFields();return;}
-  if(b.dataset.action==='stop-animation'){++previewRequest;viewer.setAnimationEdit(false);viewer.resetPose();updateAnimationEditControls();renderAnimationPoseFields();return;}
+  if(b.dataset.action==='toggle-animation-edit'){viewer.setAnimationEdit(!viewer.animationEdit);viewer.setHandPlacementMode(viewer.animationEdit);viewer.setBones(true);if(viewer.animationEdit&&$('#animation-bone')?.value)viewer.selectBone($('#animation-bone').value,{preserveAnimation:true});updateAnimationEditControls();renderAnimationPoseFields();return;}
+  if(b.dataset.action==='capture-native-hands'){
+    if(!viewer.action?.paused)throw new Error('Pause the clip at the frame you want to match.');
+    const wasEditing=viewer.animationEdit;
+    viewer.setAnimationEdit(true);updateAnimationEditControls();
+    try{await viewer.captureNativeHandTargets();}
+    catch(error){if(!wasEditing){viewer.setAnimationEdit(false);viewer.setHandPlacementMode(false);updateAnimationEditControls();}throw error;}
+    await setHands(true);viewer.setBones(true);
+    $('#animation-bone').value='tag_ik_loc_le';viewer.selectBone('tag_ik_loc_le',{preserveAnimation:true});
+    updateAnimationEditControls();renderAnimationPoseFields();toast('Both hand targets now match this native animation frame.');return;
+  }
+  if(b.dataset.action==='stop-animation'){++previewRequest;viewer.setAnimationEdit(false);viewer.setHandPlacementMode(false);viewer.resetPose();updateAnimationEditControls();renderAnimationPoseFields();return;}
 
   if(b.dataset.action==='start-build'){await startBuild();return;}
 
@@ -655,6 +675,12 @@ document.addEventListener('change',async e=>{const input=e.target;try{
 
   if(input.id==='transform-step-enabled'){state.transformSnap.enabled=input.checked;applyTransformSnap();return;}
 
+  if(input.id==='linked-model-placement'){
+    await mutation({op:'model_placement_link',linked:input.checked},{render:false});
+    if(input.checked&&state.view==='world_model')await viewer.load(state.project,state.view);
+    return;
+  }
+
   if(input.dataset.transformSnap){const value=Number(input.value);if(!Number.isFinite(value)||value<=0)throw new Error('Transform increments must be greater than zero.');state.transformSnap[input.dataset.transformSnap]=value;applyTransformSnap();return;}
 
   if(input.dataset.transform){const [kind,axis]=input.dataset.transform.split(':');const value=Number(input.value);if(!Number.isFinite(value))throw new Error('Transform values must be numeric.');if(viewer.selected!==viewer.model)viewer.selectModel();viewer.setTransformComponent(kind,Number(axis),value);await viewer.commit();syncTransformFields();return;}
@@ -669,9 +695,9 @@ document.addEventListener('change',async e=>{const input=e.target;try{
 
   if(input.id==='bone-parent'){await mutation({op:'hierarchy',view:state.view,operation:'parent',bone:state.selectedBone,parent:input.value},{reloadModel:true});viewer.selectBone(state.selectedBone);return;}
 
-  if(input.dataset.boneRotation!==undefined){if(state.page==='animation'){viewer.setBoneComponent('rotation',Number(input.dataset.boneRotation),Number(input.value));await viewer.commit();syncAnimationPoseFields();return;}const o=viewer.selected;if(!o)return;const rotation=new THREE.Euler().setFromQuaternion(o.quaternion),values=rotation.toArray();values[Number(input.dataset.boneRotation)]=THREE.MathUtils.degToRad(Number(input.value));o.quaternion.setFromEuler(new THREE.Euler(...values));await viewer.commit();return;}
+  if(input.dataset.boneRotation!==undefined){viewer.setBoneComponent('rotation',Number(input.dataset.boneRotation),Number(input.value));await viewer.commit();if(state.page==='animation')syncAnimationPoseFields();return;}
 
-  if(input.dataset.boneCoordinate!==undefined){if(state.page==='animation'){viewer.setBoneComponent('position',Number(input.dataset.boneCoordinate),Number(input.value));await viewer.commit();syncAnimationPoseFields();return;}const o=viewer.selected;if(!o)return;o.position.setComponent(Number(input.dataset.boneCoordinate),Number(input.value));await viewer.commit();return;}
+  if(input.dataset.boneCoordinate!==undefined){viewer.setBoneComponent('position',Number(input.dataset.boneCoordinate),Number(input.value));await viewer.commit();if(state.page==='animation')syncAnimationPoseFields();return;}
 
   if(input.id==='asset-select'){state.asset=input.value;await loadFields();renderFieldTable();return;}
 

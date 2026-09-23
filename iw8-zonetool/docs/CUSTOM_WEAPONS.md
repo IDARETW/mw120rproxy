@@ -100,30 +100,42 @@ materials are displayed with a neutral preview material, not reconstructed shade
    the grip, IK locators, moving parts, and animated bones.
 4. Use the placement controls for exact position, rotation, and scale values; optional snapping
    makes repeated gizmo edits deterministic. The toolbar's reference-wireframe button loads the
-   selected stock weapon as a non-exported placement guide.
+   selected stock weapon as a non-exported placement guide. **Use one placement for view and world
+   models** is enabled for new custom weapons; turn it off only when the two native XModels need
+   separate transforms.
 5. Import the model's companion material files and images with the model in the same file picker. Embedded FBX and glTF images are extracted before the material maps appear. OBJ materials load
    from their selected .mtl file; FBX and glTF material slots are retained separately. In
    **Imported material maps**, review each surface and select its base-color, normal, roughness,
    metallic, ambient-occlusion, specular, and emissive images. Filename matching ignores a
    .jpg/.jpeg extension mismatch, and every map can be reassigned manually. The live preview
-   uses the same packed textures that the native weapon materials own.
+   uses downsized transport previews of the same packed textures that the native weapon materials
+   own; the full-resolution native image data is preserved for the build.
+   The editor also derives a compact GLB viewport preview from the build OBJ, so opening a large
+   project does not need to transfer its full interchange mesh to the browser.
 6. Add compatible stock attachments or clone an attachment package. A cloned attachment can
    own custom view/world geometry, per-surface PBR maps, its bone, and an independent placement
    matrix. The assembled weapon and custom attachments are visible and selectable in the same
    viewport; attachment texture maps can be reassigned in the attachment inspector.
+   Importing a complete custom base model removes inherited stock attachment entries from the
+   project unless the entries refer to an attachment owned by that project. Add back the stock
+   attachments you want to support explicitly.
 7. Import animated FBX or GLB clips, clone the relevant animation package, and bind each clip to
    one of that package's native XAnim event slots. The editor replaces the package's stock source
    wherever the weapon used it and retains the displaced animation for undo or remapping. Configure
    looping, notetracks, IK type, and finger pose, then preview the result on the weapon and visible
    operator arms. Unbound clips remain available as preview-only XAnim assets and produce a build
    warning until they are mapped.
-7. Import PCM WAV files on the Sound page. Each source becomes a native alias in a resident SAB;
+   To align the grip against a stock clip, pause it at a resting frame and choose **Set tags from
+   hands**. The rig and animation views then let you move or rotate either hand target live with
+   the gizmo or number fields. **Pick on model** places the selected tag on the custom mesh before
+   fine adjustment. Play the clip again to inspect the result across its motion.
+8. Import PCM WAV files on the Sound page. Each source becomes a native alias in a resident SAB;
    map it to any exposed SFX event and set player/world/mechanical/UI defaults, volume, pitch,
    distance, and looping.
-8. Clone native animation, SFX, and VFX packages when the weapon needs owned package records.
+9. Clone native animation, SFX, and VFX packages when the weapon needs owned package records.
    The complete field inspector can change scalar, enum, string, script-string, record, and asset
    references while preserving the reference's native relocation graph.
-9. Build from the Builds page. Validation errors identify the source file, field, asset, or graph
+10. Build from the Builds page. Validation errors identify the source file, field, asset, or graph
    that cannot be emitted safely.
 
 The Data layout page documents 269 native types, 96 serialized record layouts, and 2,121 mapped
@@ -162,8 +174,8 @@ loadout ordinal.
 
 ## Model, rig, and attachment rules
 
-- View and world models are separate native XModels generated from the same source unless the
-  project supplies different transforms.
+- View and world models are separate native XModels generated from the same source. Linked
+  placement keeps their transforms equal by default; a project can opt into separate transforms.
 - Custom geometry redirects every base-weapon render slot in `WeaponDef` to the authored view or
   world XModel, including streamed defaults and left/right or censorship variants. The stock
   inspection model remains an editor-only wireframe alignment aid and is hidden when viewing the

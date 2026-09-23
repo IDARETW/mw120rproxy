@@ -22,12 +22,13 @@ import zipfile
 
 from graph import (flatten, set_value, walk, attachment_slots, set_attachment_slots,
                    set_bone_world, rebuild_bind_pose, edit_hierarchy, SLOTS)
-from material import generate as generate_material
+from material import generate as generate_material, ensure_previews as ensure_material_previews
 from sound import generate as generate_sound_bank
 from tables import registration
 from animation import AnimationLibrary
 from stock import StockLibrary
 from weapon_models import model_slots_from_record
+from preview_glb import obj_to_glb
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -198,10 +199,34 @@ class Workbench:
             raise ValueError('Invalid project id')
         return self.workspace/pid
 
-    def load(self, pid):
+    def load(self, pid, prepare_preview=False):
         p = read(self.project_path(pid)/'project.json')
         p.setdefault('sound_sources', [])
         p.setdefault('surface_materials', [])
+        if prepare_preview and p.get('model') and not p.get('stock_reference') and not p.get('model_preview'):
+            model = safe(self.project_path(pid), p['model'])
+            preview = model.with_suffix('.preview.glb')
+            if not preview.is_file():
+                obj_to_glb(model, preview)
+            p['model_preview'] = preview.relative_to(self.project_path(pid).resolve()).as_posix()
+        for asset in p.get('owned_assets', []) if prepare_preview else []:
+            geometry = asset.get('geometry') if asset.get('pool') == 42 else None
+            if geometry and geometry.get('model') and not geometry.get('preview'):
+                model = safe(self.project_path(pid), geometry['model'])
+                preview = model.with_suffix('.preview.glb')
+                if not preview.is_file():
+                    obj_to_glb(model, preview)
+                geometry['preview'] = preview.relative_to(self.project_path(pid).resolve()).as_posix()
+        if prepare_preview:
+            definitions = {p.get('material', {}).get('definition')}
+            definitions.update(item.get('definition') for item in p.get('surface_materials', []))
+            for asset in p.get('owned_assets', []):
+                definitions.update(item.get('definition') for item in
+                                   asset.get('geometry', {}).get('surface_materials', []))
+            for relative in definitions - {None, ''}:
+                path = safe(self.project_path(pid), relative)
+                if path.is_file():
+                    ensure_material_previews(path)
         if p.get('model') and 'model_parts' not in p:
             group, parts = 'default', []
             for line in safe(self.project_path(pid),p['model']).read_text(encoding='utf-8-sig').splitlines():
@@ -260,6 +285,7 @@ class Workbench:
              'reference_name': name, 'category': descriptor['category'], 'loadout_slot': slot,
              'reference': read(self.library/descriptor['file']), 'revision': 0,
              'created': stamp(), 'updated': stamp(), 'model': None, 'rig': None,
+             'linked_model_placement': True,
              'material': {'color':'#ffffff', 'metalness': 0.55, 'specular':0.22, 'roughness': 0.45},
              'owned_assets': [], 'files': [], 'surface_materials': [], 'sound_sources': [], 'animation_preview': {}, 'notes': ''}
         p['attachment_slots'] = attachment_slots(p['reference']['root'])
@@ -405,6 +431,8 @@ class Workbench:
                         parts.append(group)
                 if not parts:
                     raise ValueError('Attachment model has no polygon faces')
+                preview_path = path.with_suffix('.preview.glb')
+                obj_to_glb(path, preview_path)
                 rig = action['rig']
                 if rig.get('format') != 'replay-weapon-rig-v1':
                     raise ValueError('Expected a Replay weapon rig for the attachment')
@@ -416,6 +444,7 @@ class Workbench:
                     raise ValueError('Original attachment model source is missing')
                 prefix = 'attachment-'+hashlib.sha256(asset['name'].encode('utf-8')).hexdigest()[:12]
                 asset['geometry']={'model':action['path'],'source':action.get('source'),
+                    'preview':preview_path.relative_to(self.project_path(pid).resolve()).as_posix(),
                     'rig':rig,'view_model':{'bone':'tag_weapon','matrix':copy.deepcopy(identity)},
                     'world_model':{'bone':'tag_weapon','matrix':copy.deepcopy(identity)},
                     'surface_materials':import_surface_materials(
@@ -467,6 +496,7 @@ class Workbench:
                 if not path.is_file() or path.suffix.lower() != '.obj':
                     raise ValueError('Compiled model must be a project OBJ')
                 validate_obj_faces(path)
+                replacing_reference = not p.get('model') or bool(p.get('stock_reference'))
                 p['model'] = action['path']
                 parts, group = [], 'default'
                 for line in path.read_text(encoding='utf-8-sig').splitlines():
@@ -479,6 +509,9 @@ class Workbench:
                         parts.append(group)
                 if not parts:
                     raise ValueError('Model has no polygon faces')
+                preview_path = path.with_suffix('.preview.glb')
+                obj_to_glb(path, preview_path)
+                p['model_preview'] = preview_path.relative_to(self.project_path(pid).resolve()).as_posix()
                 p['model_parts'] = parts
                 p['surface_materials'] = import_surface_materials(
                     self.project_path(pid), action.get('materials', []), parts,
@@ -516,7 +549,17 @@ class Workbench:
                     for view in ('view_model','world_model'):
                         rebuild_bind_pose(action['rig'][view])
                     p['rig'] = action['rig']
+                if p.get('rig'):
                     normalize_import_roots(p, p['rig'])
+                    if replacing_reference:
+                        owned = {asset['name'] for asset in p['owned_assets'] if asset['pool']==42}
+                        p['attachment_slots'] = [[name for name in slot if name in owned]
+                                                 for slot in p['attachment_slots']]
+                        set_attachment_slots(p['reference']['root'], p['attachment_slots'])
+                        p['linked_model_placement'] = True
+                    if p.get('linked_model_placement'):
+                        p['rig']['world_model']['transform'] = copy.deepcopy(
+                            p['rig']['view_model']['transform'])
                     for view in ('view_model','world_model'):
                         rebuild_bind_pose(p['rig'][view])
                 if not p['material'].get('definition'):
@@ -662,8 +705,20 @@ class Workbench:
                 matrix = action['matrix']
                 if len(matrix)!=3 or any(len(row)!=4 for row in matrix):
                     raise ValueError('Expected a 3 by 4 transform')
-                p['rig'][action.get('view','view_model')]['transform'] = matrix
-                rebuild_bind_pose(p['rig'][action.get('view','view_model')])
+                views = ('view_model','world_model') if p.get('linked_model_placement') else (
+                    action.get('view','view_model'),)
+                for view in views:
+                    p['rig'][view]['transform'] = copy.deepcopy(matrix)
+                    rebuild_bind_pose(p['rig'][view])
+            elif op == 'model_placement_link':
+                linked = action.get('linked')
+                if not isinstance(linked,bool) or not p.get('rig'):
+                    raise ValueError('Model placement link requires an imported rig')
+                p['linked_model_placement'] = linked
+                if linked:
+                    p['rig']['world_model']['transform'] = copy.deepcopy(
+                        p['rig']['view_model']['transform'])
+                    rebuild_bind_pose(p['rig']['world_model'])
             elif op == 'material':
                 update = action.get('material')
                 allowed = {'color', 'metalness', 'specular', 'roughness',
@@ -1052,7 +1107,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/projects':
                 return self.app.list_projects()
             if len(parts)>=3 and parts[:2]==['api','projects']:
-                p = self.app.load(parts[2])
+                p = self.app.load(parts[2], prepare_preview=len(parts)==3)
                 if len(parts)==3:
                     return p
                 if parts[3]=='fields':
