@@ -321,9 +321,12 @@ export class WeaponViewer {
     if(!this.skeleton&&!source.native)throw new Error('Import a weapon rig before playing this clip.');
     this.resetPose();const tracks=[];
     this.gizmo.detach();this.previewSource=source;this.nativePreview=!!source.native;
-    // The arms export and authored model share tag_weapon as their alignment origin.
+    // Align the first animation pose to the authoring origin, then capture the
+    // selected driver in that aligned space. Capturing the inverse before the
+    // arms offset multiplies the bind transform twice and pulls the weapon away
+    // from the hands as soon as an animation moves the driver.
     this.nativeDriver=this.armBones?.find(b=>b.name===(this.isStockModel()?'j_gun':'tag_weapon'));
-    this.nativeDriverBindInverse=this.nativeDriver?.matrixWorld.clone().invert();
+    this.nativeDriverBindInverse=null;
     const mapped=new Set(),unmapped=[];
     for(const t of source.tracks){
       const weaponBones=(this.skeleton?.bones||[]).filter((b,i)=>!source.native||(i>=(this.project?.rig?.[this.view]?.root_bones||1)&&!['tag_weapon','j_gun'].includes(b.name)));
@@ -345,10 +348,11 @@ export class WeaponViewer {
     this.action.clampWhenFinished=true;this.setAnimationLoop(this.previewLoop??true);
     this.mixer.timeScale=this.previewSpeed||1;this.action.play();this.mixer.update(0);
     if(this.nativePreview&&this.nativeDriver){
-      // Keep the initial weapon pose at the authoring origin while preserving clip motion.
       this.arms.updateMatrixWorld(true);
       const origin=this.armBones.find(b=>b.name==='tag_weapon')||this.nativeDriver;
       this.arms.matrix.copy(origin.matrixWorld).invert();
+      this.arms.updateMatrixWorld(true);
+      this.nativeDriverBindInverse=this.nativeDriver.matrixWorld.clone().invert();
       if(this.grid)this.grid.visible=false;if(this.ground)this.ground.visible=false;
     }
     this.updateAnimationPose();
@@ -358,7 +362,7 @@ export class WeaponViewer {
   updateAnimationPose(){
     if(!this.nativePreview||!this.nativeDriver)return;
     this.arms.updateMatrixWorld(true);
-    const motion=this.isStockModel()?this.nativeDriver.matrixWorld:new THREE.Matrix4().multiplyMatrices(this.nativeDriver.matrixWorld,this.nativeDriverBindInverse);
+    const motion=new THREE.Matrix4().multiplyMatrices(this.nativeDriver.matrixWorld,this.nativeDriverBindInverse);
     this.skeletonRoot.matrix.copy(motion);this.skeletonRoot.updateMatrixWorld(true);
     this.attachments.matrix.copy(motion);this.attachments.updateMatrixWorld(true);
     this.updateBoneMarkers();
