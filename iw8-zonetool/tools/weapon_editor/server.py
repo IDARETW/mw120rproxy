@@ -30,7 +30,7 @@ from stock import StockLibrary
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 LOCAL = Path(os.environ.get('LOCALAPPDATA', HERE/'workspace'))/'ReplayWeaponEditor'
-SOURCE_EXTENSIONS = frozenset(('.obj','.glb','.gltf','.bin','.fbx','.png','.jpg','.jpeg',
+SOURCE_EXTENSIONS = frozenset(('.obj','.mtl','.glb','.gltf','.bin','.fbx','.png','.jpg','.jpeg',
                                '.webp','.tga','.wav','.ogg','.mp3','.json'))
 MAX_SOURCE_BYTES = 128*1024*1024
 MAX_OBJ_BYTES = 512*1024*1024
@@ -148,6 +148,7 @@ class Workbench:
     def load(self, pid):
         p = read(self.project_path(pid)/'project.json')
         p.setdefault('sound_sources', [])
+        p.setdefault('surface_materials', [])
         if p.get('model') and 'model_parts' not in p:
             group, parts = 'default', []
             for line in safe(self.project_path(pid),p['model']).read_text(encoding='utf-8-sig').splitlines():
@@ -207,7 +208,7 @@ class Workbench:
              'reference': read(self.library/descriptor['file']), 'revision': 0,
              'created': stamp(), 'updated': stamp(), 'model': None, 'rig': None,
              'material': {'color':'#ffffff', 'metalness': 0.55, 'specular':0.22, 'roughness': 0.45},
-             'owned_assets': [], 'files': [], 'sound_sources': [], 'animation_preview': {}, 'notes': ''}
+             'owned_assets': [], 'files': [], 'surface_materials': [], 'sound_sources': [], 'animation_preview': {}, 'notes': ''}
         p['attachment_slots'] = attachment_slots(p['reference']['root'])
         if stock:
             source,assembly=self.stock.load(descriptor,self.tables)
@@ -407,6 +408,50 @@ class Workbench:
                 if not parts:
                     raise ValueError('Model has no polygon faces')
                 p['model_parts'] = parts
+                imported_materials = action.get('materials', [])
+                if not isinstance(imported_materials, list) or len(imported_materials) > 128:
+                    raise ValueError('A model can contain at most 128 imported materials')
+                image_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tga'}
+                material_roles = {'color_texture', 'normal_texture', 'roughness_texture',
+                                  'metallic_texture', 'ao_texture', 'specular_texture', 'emissive_texture'}
+                surface_materials = []
+                for index, source_material in enumerate(imported_materials):
+                    if not isinstance(source_material, dict):
+                        raise ValueError('Imported material descriptors must be objects')
+                    key = str(source_material.get('key', ''))
+                    if not re.fullmatch(r'[a-z0-9_]{1,52}', key) or any(item['key'] == key for item in surface_materials):
+                        raise ValueError('Imported material keys must be unique lowercase identifiers')
+                    material_parts = source_material.get('parts', [])
+                    if not isinstance(material_parts, list) or not material_parts or any(part not in parts for part in material_parts):
+                        raise ValueError('Imported material references an unknown model part')
+                    maps = source_material.get('maps', {})
+                    if not isinstance(maps, dict) or set(maps) - material_roles:
+                        raise ValueError('Imported material contains an unsupported texture role')
+                    normalized_maps = {}
+                    for role, relative in maps.items():
+                        if not relative:
+                            continue
+                        image = safe(self.project_path(pid), str(relative))
+                        if image.suffix.lower() not in image_extensions or not image.is_file():
+                            raise ValueError('Imported material textures must be uploaded project images')
+                        normalized_maps[role] = Path(relative).as_posix()
+                    color = str(source_material.get('color', '#ffffff'))
+                    if not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
+                        raise ValueError('Imported material color must be a six-digit hex color')
+                    settings = {'source_definition': None, 'color': color, 'metalness': 0,
+                                'roughness': .45, 'specular': .22, 'maps': normalized_maps}
+                    for field in ('metalness', 'roughness', 'specular'):
+                        value = float(source_material.get(field, settings[field]))
+                        if not math.isfinite(value) or not 0 <= value <= 1:
+                            raise ValueError(f'Imported material {field} must be between 0 and 1')
+                        settings[field] = value
+                    settings['definition'] = generate_material(
+                        self.project_path(pid), settings, self.library/'material/material.json',
+                        folder_name='surface-'+key)
+                    surface_materials.append({'key': key,
+                        'name': str(source_material.get('name') or f'Material {index+1}')[:128],
+                        'parts': material_parts, **settings})
+                p['surface_materials'] = surface_materials
                 if action.get('source'):
                     source = safe(self.project_path(pid),action['source'])
                     if not source.is_file():
@@ -611,6 +656,43 @@ class Workbench:
                 p['material'].update(update)
                 p['material']['definition'] = generate_material(self.project_path(pid),p['material'],
                     self.library/'material/material.json')
+            elif op == 'surface_material':
+                key = str(action.get('key', ''))
+                item = next((material for material in p.get('surface_materials', [])
+                             if material.get('key') == key), None)
+                update = action.get('update')
+                allowed = {'color', 'metalness', 'roughness', 'specular', 'maps'}
+                if item is None or not isinstance(update, dict) or set(update) - allowed:
+                    raise ValueError('Unknown imported material setting')
+                if 'color' in update:
+                    color = str(update['color'])
+                    if not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
+                        raise ValueError('Imported material color must be a six-digit hex color')
+                    item['color'] = color
+                for field in ('metalness', 'roughness', 'specular'):
+                    if field in update:
+                        value = float(update[field])
+                        if not math.isfinite(value) or not 0 <= value <= 1:
+                            raise ValueError(f'Imported material {field} must be between 0 and 1')
+                        item[field] = value
+                if 'maps' in update:
+                    maps = update['maps']
+                    roles = {'color_texture', 'normal_texture', 'roughness_texture',
+                             'metallic_texture', 'ao_texture', 'specular_texture', 'emissive_texture'}
+                    if not isinstance(maps, dict) or set(maps) - roles:
+                        raise ValueError('Unsupported imported texture role')
+                    item.setdefault('maps', {}).update(maps)
+                    for role, relative in maps.items():
+                        if not relative:
+                            item['maps'].pop(role, None)
+                            continue
+                        image = safe(self.project_path(pid), str(relative))
+                        if image.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.tga'} or not image.is_file():
+                            raise ValueError('Imported material textures must be uploaded project images')
+                        item['maps'][role] = Path(relative).as_posix()
+                item['definition'] = generate_material(
+                    self.project_path(pid), item, self.library/'material/material.json',
+                    folder_name='surface-'+key)
             else:
                 raise ValueError('Unknown project operation')
             p['revision'] += 1
@@ -802,6 +884,10 @@ class Workbench:
                     manifest.update(model=str(safe(root,p['model'])),rig=str(folder/'rig.json'))
                 if p['material'].get('definition') and (p['model'] and not p.get('stock_reference') or any(a.get('geometry') for a in owned_assets)):
                     manifest['material']=str(safe(root,p['material']['definition']))
+                if p['surface_materials'] and p['model'] and not p.get('stock_reference'):
+                    manifest['surface_materials']=[{'key':item['key'],
+                        'definition':str(safe(root,item['definition']))}
+                        for item in p['surface_materials']]
                 atomic(folder/'build.json',manifest)
                 exe = Path(self.config['compiler'])
                 if not exe.is_file():

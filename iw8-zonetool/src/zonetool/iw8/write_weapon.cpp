@@ -770,13 +770,15 @@ convert::xmodel::Iw8XModelRecord modelRecord(const Json &j, const std::string &n
     return model;
 }
 
-replayrender::Mesh weaponMaterial(const fs::path &path, const std::string &base)
+replayrender::Mesh weaponMaterial(const fs::path &path, const std::string &base,
+                                  const std::string &variant = {})
 {
     const auto j = readJson(path);
     if (j.at("format") != "replay-weapon-material-v1")
         throw std::runtime_error("expected replay-weapon-material-v1");
     replayrender::Mesh material;
-    material.material = base + "/material";
+    const auto suffix = variant.empty() ? std::string() : "_" + variant;
+    material.material = base + "/material" + suffix;
     // Exact Replay stock shader profile: every depth, shadow and lit technique
     // maps VERTDECL_PACKED (2) to a valid PSO. m2o weapon shaders require 5/6.
     material.techset = "m/lit_3_lit_rpl_ta1_804040_1042000000000030_0_1_1_0_0_13814015b_0_0_1_0_0";
@@ -803,7 +805,7 @@ replayrender::Mesh weaponMaterial(const fs::path &path, const std::string &base)
     {
         const auto &source = images[index];
         replayrender::Image image;
-        image.name = base + "/image_" + std::to_string(slots[index]);
+        image.name = base + "/image_" + std::to_string(slots[index]) + suffix;
         const unsigned width = source.at("width"), height = source.at("height");
         if (!width || !height || width > 2048 || height > 2048)
             throw std::runtime_error("weapon material image dimensions must be 1..2048");
@@ -831,7 +833,8 @@ replayrender::Mesh weaponMaterial(const fs::path &path, const std::string &base)
 }
 
 void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::string &name,
-              bool textured = false)
+              bool textured = false,
+              const std::map<std::string, std::string> &surfaceMaterials = {})
 {
     if (fs::file_size(obj) > 40 * 1024 * 1024)
         throw std::runtime_error("weapon OBJ exceeds 40 MiB");
@@ -893,11 +896,12 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
     struct Part
     {
         std::string name;
+        std::string material;
         dumpsrc::XseSurface surface;
         std::vector<Weights> weights;
     };
     std::vector<Part> parts;
-    std::string group = "default";
+    std::string group = "default", materialKey;
     std::vector<Vec> positions, normals;
     std::vector<std::array<float, 2>> texcoords;
     Vec minimum{1e20f, 1e20f, 1e20f}, maximum{-1e20f, -1e20f, -1e20f};
@@ -913,6 +917,10 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
             std::getline(row >> std::ws, group);
             if (group.empty())
                 group = "default";
+        }
+        else if (command == "usemtl")
+        {
+            std::getline(row >> std::ws, materialKey);
         }
         else if (command == "v")
         {
@@ -1012,11 +1020,12 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
                 throw std::runtime_error("OBJ face has fewer than three corners");
             for (size_t i = 1; i + 1 < face.size(); ++i)
             {
-                if (parts.empty() || parts.back().name != group || parts.back().surface.verticies.size() >= 30000)
+                if (parts.empty() || parts.back().name != group || parts.back().material != materialKey ||
+                    parts.back().surface.verticies.size() >= 30000)
                 {
                     if (parts.size() >= 128)
                         throw std::runtime_error("weapon model exceeds 128 native surfaces");
-                    parts.push_back({group, {}, {}});
+                    parts.push_back({group, materialKey, {}, {}});
                 }
                 auto &meshPart = parts.back();
                 auto &surface = meshPart.surface;
@@ -1111,6 +1120,7 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
     dumpsrc::XseFile xse;
     xse.loaded = true;
     xse.name = name + "_lod0";
+    std::vector<std::string> surfaceMaterialKeys;
     for (auto &part : parts)
     {
         auto &surface = part.surface;
@@ -1157,12 +1167,18 @@ void addModel(ZoneWriter &w, const fs::path &obj, const Json &j, const std::stri
         }
         for (unsigned k = 0; k < 6; ++k)
             xse.modelSurfPartBits[k] |= surface.partBits[k];
+        surfaceMaterialKeys.push_back(part.material);
         xse.surfaces.push_back(std::move(surface));
     }
     if (xse.surfaces.empty())
         throw std::runtime_error("OBJ has no triangles or only degenerate OBJ triangles");
     model.numsurfs = static_cast<uint16_t>(xse.surfaces.size());
-    model.materials.assign(xse.surfaces.size(), text(j.at("material")));
+    model.materials.clear();
+    for (const auto &key : surfaceMaterialKeys)
+    {
+        const auto found = surfaceMaterials.find(key);
+        model.materials.push_back(found == surfaceMaterials.end() ? text(j.at("material")) : found->second);
+    }
     model.himipRadiusInvSq.assign(xse.surfaces.size(), 0);
     const auto converted = conv_xsurf::convert(xse);
     if (!converted.ok)
@@ -1701,15 +1717,32 @@ int weaponMain(int argc, char **argv)
             for (const char *kind : {"view_model", "world_model"})
                 rig[kind]["material"] = material.material;
     }
-    else if (customModels)
-        for (const char *kind : {"view_model", "world_model"})
+    std::vector<replayrender::Mesh> importedMaterials;
+    std::map<std::string, std::string> importedMaterialNames;
+    if (customModels && !project.is_null())
+        for (const auto &entry : project.value("surface_materials", Json::array()))
         {
-            const auto borrowed = text(rig.at(kind).at("material"));
-            if (borrowed.starts_with("mo/") || borrowed.starts_with("mco/") ||
-                borrowed.starts_with("m2o/") || borrowed.starts_with("m2co/"))
-                throw std::runtime_error(
-                    "rig material requires an unsupported vertex layout; supply --material");
+            const auto key = text(entry.at("key"));
+            if (key.empty() || key.size() > 52 ||
+                key.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos ||
+                importedMaterialNames.contains(key))
+                throw std::runtime_error("invalid or duplicate imported material key");
+            const auto definition = fs::path(text(entry.at("definition")));
+            if (!fs::is_regular_file(definition))
+                throw std::runtime_error("imported weapon material definition is missing: " + key);
+            auto authored = weaponMaterial(definition, base, key);
+            importedMaterialNames.emplace(key, authored.material);
+            importedMaterials.push_back(std::move(authored));
         }
+    if (customModels && material.material.empty())
+        for (const char *kind : {"view_model", "world_model"})
+            {
+                const auto borrowed = text(rig.at(kind).at("material"));
+                if (borrowed.starts_with("mo/") || borrowed.starts_with("mco/") ||
+                    borrowed.starts_with("m2o/") || borrowed.starts_with("m2co/"))
+                    throw std::runtime_error(
+                        "rig material requires an unsupported vertex layout; supply --material");
+            }
     if (!attachments)
         removeAttachments(root);
     setRequired(root, "weapon.szInternalName", name);
@@ -1873,6 +1906,8 @@ int weaponMain(int argc, char **argv)
             references.emplace(asset.at("pool").get<unsigned>(), text(asset.at("name")));
     if (customGeometry && !material.material.empty())
         references.emplace(11, material.material);
+    for (const auto &authored : importedMaterials)
+        references.emplace(11, authored.material);
     if (customModels && material.material.empty())
         for (const char *kind : {"view_model", "world_model"})
             references.emplace(11, text(rig.at(kind).at("material")));
@@ -1886,9 +1921,9 @@ int weaponMain(int argc, char **argv)
     if (customModels)
     {
         addModel(writer, required("--model"), rig.at("view_model"), base + "/vm",
-                 !material.material.empty());
+                 !material.material.empty(), importedMaterialNames);
         addModel(writer, required("--model"), rig.at("world_model"), base + "/wm",
-                 !material.material.empty());
+                 !material.material.empty(), importedMaterialNames);
     }
     for (const auto &asset : owned)
         if (asset.contains("geometry"))
@@ -2090,6 +2125,9 @@ int weaponMain(int argc, char **argv)
         ZoneWriter companion;
         if (zone == "techsets_" + base && !material.material.empty())
             replayrender::RegisterMaterial(companion, material);
+        if (zone == "techsets_" + base)
+            for (const auto &authored : importedMaterials)
+                replayrender::RegisterMaterial(companion, authored);
         if (zone == "eng_" + base)
         {
             std::map<std::string, std::string> localized{

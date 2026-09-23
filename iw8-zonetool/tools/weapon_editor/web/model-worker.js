@@ -1,4 +1,4 @@
-import {importModel} from './viewer.js?v=stock2';
+import {importModel} from './viewer.js?v=weaponmaps1';
 
 self.onmessage=async({data:{file,resources}})=>{
   try{

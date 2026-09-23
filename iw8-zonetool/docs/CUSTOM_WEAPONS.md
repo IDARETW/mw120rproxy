@@ -101,9 +101,12 @@ materials are displayed with a neutral preview material, not reconstructed shade
 4. Use the placement controls for exact position, rotation, and scale values; optional snapping
    makes repeated gizmo edits deterministic. The toolbar's reference-wireframe button loads the
    selected stock weapon as a non-exported placement guide.
-5. Create a material, import its images, and tune the live PBR preview. The viewport reads the
-   same color/specular, normal/gloss, and emissive payloads that the build owns as native material
-   and image assets.
+5. Import the model's companion material files and images with the model in the same file picker. Embedded FBX and glTF images are extracted before the material maps appear. OBJ materials load
+   from their selected .mtl file; FBX and glTF material slots are retained separately. In
+   **Imported material maps**, review each surface and select its base-color, normal, roughness,
+   metallic, ambient-occlusion, specular, and emissive images. Filename matching ignores a
+   .jpg/.jpeg extension mismatch, and every map can be reassigned manually. The live preview
+   uses the same packed textures that the native weapon materials own.
 6. Add compatible stock attachments or clone an attachment package. A cloned attachment can
    own custom view/world geometry, its bone, and an independent placement matrix. The assembled
    weapon and custom attachments are visible and selectable in the same viewport.
@@ -214,10 +217,14 @@ layouts, asset IDs, and loader behavior from another IW8 build are not interchan
 
 ## Preview limits
 
-GLB/glTF conversion runs in a worker and preserves indexed geometry. Texture images
-embedded in GLB materials are not automatically assigned to the native material:
-import color, normal, and emissive images through the material controls. Source files
-are limited to 128 MiB (512 MiB for the canonical OBJ), with chunked uploads.
+FBX, GLB, and glTF imports wait for source images to finish loading before material maps are
+extracted. Embedded images are saved into the project, and imported material slots remain
+assigned to their corresponding model surfaces. The Replay weapon profile stores color/specular, normal/gloss, and emissive
+images. During packing, ambient occlusion is multiplied into base color, roughness is inverted
+into the gloss channel, and metallic values contribute to the available specular channel; Replay's
+profile does not expose a separate metallic image slot. If an external texture is absent or
+incorrectly linked, choose its correct image in **Imported material maps**. Source files are
+limited to 128 MiB (512 MiB for the canonical OBJ), with chunked uploads.
 
 Native animation clips drive matching weapon and operator bones. Imported
 geometry needs named-part assignments to move its magazine, bolt, and other

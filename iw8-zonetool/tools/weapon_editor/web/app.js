@@ -1,4 +1,4 @@
-import {WeaponViewer,importModel,readResource,THREE} from './viewer.js?v=stock2';
+import {WeaponViewer,importModel,readResource,THREE} from './viewer.js?v=weaponmaps1';
 
 let initialBootstrap;
 try {
@@ -145,10 +145,11 @@ async function renderPage(){
 
   }else if(state.page==='model'){
 
-    $('#inspector').innerHTML=panel('Model & material',`<div class="section-label">GEOMETRY</div><p class="helper">${escape(p.model?.split('/').pop()||'Reference model')}</p><button class="button full-width" data-action="import-model">Import OBJ, FBX, GLB or glTF</button><div class="divider"></div><div class="section-label">PLACEMENT</div><div class="toolbar-row"><button class="button" data-mode="translate">Move</button><button class="button" data-mode="rotate">Rotate</button><button class="button" data-mode="scale">Scale</button></div><small class="helper">Gizmo and numeric edits save the native model transform.</small>${transformFields()}<div class="divider"></div><div class="section-label">SURFACE</div><div class="field-row"><label class="field"><span>Base color</span><input type="color" data-material="color" value="${p.material.color}"></label><label class="field"><span>Preview metalness</span><input type="number" min="0" max="1" step=".05" data-material="metalness" value="${p.material.metalness??.35}"></label></div><div class="field-row"><label class="field"><span>Native roughness</span><input type="number" min="0" max="1" step=".05" data-material="roughness" value="${p.material.roughness??.45}"></label><label class="field"><span>Native specular</span><input type="number" min="0" max="1" step=".05" data-material="specular" value="${p.material.specular??.22}"></label></div><button class="button full-width" data-action="texture">Import color texture</button><div class="toolbar-row" style="margin-top:8px"><button class="button" data-action="normal">Normal map</button><button class="button" data-action="emissive">Emissive map</button></div><p class="helper">UVs come from the imported model. Specular is packed into color alpha, roughness into normal alpha, and emissive uses the native material profile.</p>`);
+    $('#inspector').innerHTML=panel('Model & material',`<div class="section-label">GEOMETRY</div><p class="helper">${escape(p.model?.split('/').pop()||'Reference model')}</p><button class="button full-width" data-action="import-model">Import OBJ, FBX, GLB or glTF</button><p class="helper">Select the model with its companion image files in the same picker. Embedded FBX/glTF images are extracted automatically.</p><div class="divider"></div><div class="section-label">PLACEMENT</div><div class="toolbar-row"><button class="button" data-mode="translate">Move</button><button class="button" data-mode="rotate">Rotate</button><button class="button" data-mode="scale">Scale</button></div><small class="helper">Gizmo and numeric edits save the native model transform.</small>${transformFields()}<div class="divider"></div><div class="section-label">SURFACE</div><div class="field-row"><label class="field"><span>Base color</span><input type="color" data-material="color" value="${p.material.color}"></label><label class="field"><span>Preview metalness</span><input type="number" min="0" max="1" step=".05" data-material="metalness" value="${p.material.metalness??.35}"></label></div><div class="field-row"><label class="field"><span>Native roughness</span><input type="number" min="0" max="1" step=".05" data-material="roughness" value="${p.material.roughness??.45}"></label><label class="field"><span>Native specular</span><input type="number" min="0" max="1" step=".05" data-material="specular" value="${p.material.specular??.22}"></label></div><button class="button full-width" data-action="texture">Import color texture</button><div class="toolbar-row" style="margin-top:8px"><button class="button" data-action="normal">Normal map</button><button class="button" data-action="emissive">Emissive map</button></div><p class="helper">UVs come from the imported model. Specular is packed into color alpha, roughness into normal alpha, and emissive uses the native material profile.</p>`);
 
     content.innerHTML=`<div class="card">${panel('Source assets',p.files.length?p.files.map(f=>property(f.name,`${(f.bytes/1024).toFixed(1)} KB`)).join(''):'<p class="helper">Imported source files stay with this project.</p>')}</div>`;
 
+    if(p.surface_materials?.length)$('#inspector').insertAdjacentHTML('beforeend',renderSurfaceMaterials(p));
   }else if(state.page==='rig'){
 
     renderRigInspector();content.innerHTML=`<div class="card">${panel('Rig contract',property('Coordinate system','X forward · Y right · Z up')+property('Length unit','Native game unit (inch)')+property('Hand targets','tag_ik_loc_le / tag_ik_loc_ri')+`<div class="toolbar-row" style="margin-top:15px"><button class="button" data-action="import-rig">Import rig JSON</button>${p.rig?`<a class="button" href="${projectUrl('project.json')}" download>Download project with rig</a>`:''}</div>`)}</div>`;
@@ -386,6 +387,18 @@ function libraryDialog(pool,slot){const list=pool===42?state.boot.catalog.attach
 
 function genericRig(){const bones=['j_gun','tag_weapon','tag_flash','tag_brass','tag_ik_loc_le','tag_ik_loc_ri','tag_mag','tag_scope','tag_silencer'];const positions=[[0,0,0],[8,0,0],[3,-.3,1],[2,.5,-1],[0,0,-1],[1,0,-2],[3,0,1],[8,0,0]];const one={bones,root_bones:1,parents:bones.slice(1).map((_,i)=>i+1),quats:bones.slice(1).map(()=>[0,0,0,32767]),translations:positions,classification:bones.map(()=>0),bind_pose:[{quat:[0,0,0,1],translation:[0,0,0],weight:2},...positions.map(t=>({quat:[0,0,0,1],translation:t,weight:2}))],rigid_bone:0,material:'',transform:[[1,0,0,0],[0,1,0,0],[0,0,1,0]],replace:[]};const descriptor=state.boot.catalog.weapons.find(w=>w.name===state.project.reference_name);return {format:'replay-weapon-rig-v1',view_model:{...structuredClone(one),replace:[descriptor.models.gunXModel,descriptor.models.defaultViewModel].filter(Boolean)},world_model:{...structuredClone(one),replace:[descriptor.models.worldModel,descriptor.models.defaultWorldModel].filter(Boolean)}};}
 
+function renderSurfaceMaterials(project){
+  const roles=[['color_texture','Base color'],['normal_texture','Normal'],['roughness_texture','Roughness'],['metallic_texture','Metallic'],['ao_texture','Ambient occlusion'],['specular_texture','Specular'],['emissive_texture','Emissive']];
+  const images=project.files.filter(file=>/\.(png|jpe?g|webp|tga)$/i.test(file.name));
+  const body=(project.surface_materials||[]).map(material=>{
+    const maps=material.maps||{};
+    const selectors=roles.map(([role,label])=>'<label class=\"field\"><span>'+label+'</span><select class=\"form-control\" data-surface-key=\"'+escape(material.key)+'\" data-surface-map=\"'+role+'\"><option value=\"\">Unmapped</option>'+images.map(file=>'<option value=\"'+escape(file.path)+'\" '+(maps[role]===file.path?'selected':'')+'>'+escape(file.name)+'</option>').join('')+'</select></label>').join('');
+    const color=material.color||'#ffffff';
+    return '<div class=\"card\" style=\"margin-top:12px\"><strong>'+escape(material.name)+'</strong><p class=\"helper\">'+escape((material.parts||[]).join(', '))+'</p><div class=\"field-row\"><label class=\"field\"><span>Color tint</span><input type=\"color\" value=\"'+escape(color)+'\" data-surface-key=\"'+escape(material.key)+'\" data-surface-setting=\"color\"></label><label class=\"field\"><span>Metalness</span><input type=\"number\" min=\"0\" max=\"1\" step=\".05\" value=\"'+(material.metalness??0)+'\" data-surface-key=\"'+escape(material.key)+'\" data-surface-setting=\"metalness\"></label></div><div class=\"field-row\"><label class=\"field\"><span>Roughness</span><input type=\"number\" min=\"0\" max=\"1\" step=\".05\" value=\"'+(material.roughness??.45)+'\" data-surface-key=\"'+escape(material.key)+'\" data-surface-setting=\"roughness\"></label><label class=\"field\"><span>Specular</span><input type=\"number\" min=\"0\" max=\"1\" step=\".05\" value=\"'+(material.specular??.22)+'\" data-surface-key=\"'+escape(material.key)+'\" data-surface-setting=\"specular\"></label></div><div class=\"field-row\">'+selectors+'</div></div>';
+  }).join('');
+  return panel('Imported material maps','<p class=\"helper\">Assignments are stored per source material. Choose the image for each labeled channel; embedded and companion images are available in the lists, and every assignment updates the live preview. Replay packs these channels into its native color, normal/gloss and emissive textures.</p>'+body);
+}
+
 async function upload(file){
   const limit=(/\.obj$/i.test(file.name)?512:128)*1024*1024;
   if(!file.size||file.size>limit)throw new Error(`${file.name} must be between 1 byte and ${limit/1024/1024} MiB.`);
@@ -403,7 +416,7 @@ async function upload(file){
 function importModelOffscreen(file,resources){
   if(!/\.(glb|gltf)$/i.test(file.name))return importModel(file,resources);
   return new Promise((resolve,reject)=>{
-    const worker=new Worker('/model-worker.js?v=stock2',{type:'module'});
+    const worker=new Worker('/model-worker.js?v=weaponmaps1',{type:'module'});
     worker.onmessage=event=>{worker.terminate();event.data.error?reject(new Error(event.data.error)):resolve(event.data.result);};
     worker.onerror=event=>{worker.terminate();reject(new Error(event.message||'Model conversion failed.'));};
     worker.postMessage({file,resources});
@@ -413,8 +426,13 @@ function importModelOffscreen(file,resources){
 async function handleModel(file,resources=[]){
   toast('Importing geometry…');
   const result=await importModelOffscreen(file,resources);
-  let source=null;
-  for(const item of resources){const saved=await upload(item);if(item===file)source=saved;}
+  let source=null;const uploadedFiles=new Map();
+  for(const item of resources){const saved=await upload(item);uploadedFiles.set(item.name,saved);if(item===file)source=saved;}
+  for(const item of result.textureFiles||[]){
+    const saved=await upload(new File([item.file],item.name,{type:'image/png'}));uploadedFiles.set(item.name,saved);
+  }
+  const importedMaterials=(result.materials||[]).map(material=>({...material,maps:Object.fromEntries(
+    Object.entries(material.maps||{}).map(([role,name])=>[role,uploadedFiles.get(name)||state.project.files.find(file=>file.name===name)?.path||'']))}));
   const path=await upload(new File([result.obj],file.name.replace(/\.[^.]+$/,'.obj'),{type:'text/plain'}));
   let rig=structuredClone(state.project.rig||genericRig());
   if(state.project.stock_reference&&!result.rig){for(const view of ['view_model','world_model']){delete rig[view].vertex_weights;rig[view].part_bones={};rig[view].rigid_bone=0;}}
@@ -429,7 +447,7 @@ async function handleModel(file,resources=[]){
     world.replace=[descriptor.models.worldModel,descriptor.models.defaultWorldModel].filter(Boolean);
     rig={format:'replay-weapon-rig-v1',view_model:view,world_model:world};
   }
-  await mutation({op:'model',path,source,clips:result.clips||[],rig},{reloadModel:true});
+  await mutation({op:'model',path,source,clips:result.clips||[],rig,materials:importedMaterials},{reloadModel:true});
   viewer.frame();
   toast(`Model imported${result.clips?.length?` with ${result.clips.length} animation clip${result.clips.length===1?'':'s'}`:''}.`);
 }
@@ -492,7 +510,7 @@ function chooseFiles(accept,multiple,callback){
 function chooseFile(accept,callback){chooseFiles(accept,false,callback);}
 
 function chooseModelFiles(attachment=null){
-  chooseFiles('.obj,.fbx,.glb,.gltf,.bin,.png,.jpg,.jpeg,.tga',true,async files=>{
+  chooseFiles('.obj,.mtl,.fbx,.glb,.gltf,.bin,.png,.jpg,.jpeg,.webp,.tga',true,async files=>{
     const model=files.find(f=>/\.(obj|fbx|glb|gltf)$/i.test(f.name));
     if(!model)throw new Error('Select an OBJ, FBX, GLB or glTF model.');
     await (attachment?handleAttachmentModel(attachment,model,files):handleModel(model,files));
@@ -622,6 +640,10 @@ document.addEventListener('change',async e=>{const input=e.target;try{
   if(input.dataset.meta){await mutation({op:'metadata',[input.dataset.meta]:input.value},{render:false});return;}
 
   if(input.dataset.material){const k=input.dataset.material;await mutation({op:'material',material:{[k]:k==='color'?input.value:Number(input.value)}},{render:false,reloadModel:true});return;}
+
+  if(input.dataset.surfaceMap){await mutation({op:'surface_material',key:input.dataset.surfaceKey,update:{maps:{[input.dataset.surfaceMap]:input.value}}},{render:false,reloadModel:true});return;}
+
+  if(input.dataset.surfaceSetting){const key=input.dataset.surfaceSetting;await mutation({op:'surface_material',key:input.dataset.surfaceKey,update:{[key]:key==='color'?input.value:Number(input.value)}},{render:false,reloadModel:true});return;}
 
   if(input.id==='transform-step-enabled'){state.transformSnap.enabled=input.checked;applyTransformSnap();return;}
 

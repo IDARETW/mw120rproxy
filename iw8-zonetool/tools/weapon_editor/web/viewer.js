@@ -73,6 +73,7 @@ export class WeaponViewer {
     let installed=false;
     const appearance=project.material||{};
     const material=new THREE.MeshPhysicalMaterial({color:appearance.color||'#8793a6',metalness:appearance.metalness??.35,roughness:appearance.roughness??.42,specularIntensity:appearance.specular??.22});
+    const previewMaterials=new Map(),materialsToDispose=[material];
     try{
     if(appearance.definition){
       try{
@@ -96,6 +97,13 @@ export class WeaponViewer {
         material.emissiveMap=emissive;material.emissive.set('#ffffff');material.color.set('#ffffff');material.needsUpdate=true;
       }catch(e){console.warn('Material preview:',e.message);}
     }
+    for(const sourceMaterial of project.surface_materials||[]){
+      const preview=new THREE.MeshPhysicalMaterial({color:sourceMaterial.color||'#ffffff',
+        metalness:sourceMaterial.metalness??0,roughness:sourceMaterial.roughness??.45,
+        specularIntensity:sourceMaterial.specular??.22});
+      materialsToDispose.push(preview);previewMaterials.set(sourceMaterial.key,preview);
+      if(sourceMaterial.definition)await stage.loadMaterialDefinition(project,preview,sourceMaterial.definition);
+    }
     const rig=project.rig?.[view];
     if(project.model){
       const stock=project.stock_views?.[view];
@@ -104,7 +112,7 @@ export class WeaponViewer {
       stage.model.matrixAutoUpdate=false;
       if(rig?.transform)stage.model.matrix.copy(mat4(rig.transform));
       if(rig)stage.skinModel(object,text,rig,sourceVertices);
-      object.traverse(mesh=>{if(mesh.isMesh){mesh.material=material;mesh.castShadow=true;mesh.receiveShadow=true;}});
+      object.traverse(mesh=>{if(mesh.isMesh){const sourceMaterial=(project.surface_materials||[]).find(item=>(item.parts||[]).includes(mesh.name));mesh.material=sourceMaterial?previewMaterials.get(sourceMaterial.key)||material:material;mesh.castShadow=true;mesh.receiveShadow=true;}});
     }
     const template=project.template_views?.[view]||project.stock_views?.[view];
     if(template?.model){
@@ -135,7 +143,7 @@ export class WeaponViewer {
     if(!bounds.isEmpty()){this.grid.position.z=bounds.min.z-.07;this.ground.position.z=bounds.min.z-.04;}
     if(frame)this.frame();
     }catch(error){if(this.generation===generation)stats.textContent=previousStats;throw error;}
-    finally{if(!installed){for(const key of ['model','template','attachments','bones','skeletonRoot'])stage.clearGroup(stage[key]);stage.skeleton?.dispose();stage.disposeMaterial(material);}}
+    finally{if(!installed){for(const key of ['model','template','attachments','bones','skeletonRoot'])stage.clearGroup(stage[key]);stage.skeleton?.dispose();materialsToDispose.forEach(item=>stage.disposeMaterial(item));}}
   }
   async readAsset(url,type){
     const cache=this.assetCache||(this.assetCache=new Map()),key=type+':'+url;
@@ -145,6 +153,28 @@ export class WeaponViewer {
       if(cache.size>16)cache.delete(cache.keys().next().value);
     }
     return cache.get(key);
+  }
+  async loadMaterialDefinition(project,material,definitionPath){
+    try{
+      const base='/project-files/'+project.id+'/'+definitionPath;
+      const definition=JSON.parse(await this.readAsset(base,'text'));
+      if(definition.format!=='replay-weapon-material-v1'||!Array.isArray(definition.images)||definition.images.length<3)throw new Error('Material definition is incomplete');
+      const folder=base.slice(0,base.lastIndexOf('/')+1);
+      const images=await Promise.all(definition.images.slice(0,3).map(async image=>{
+        const data=new Uint8Array(await this.readAsset(folder+image.file,'arrayBuffer'));
+        if(data.length!==image.width*image.height*4)throw new Error(image.file+' has an invalid RGBA payload');
+        return {data,width:image.width,height:image.height};
+      }));
+      const texture=(image,colorSpace=THREE.NoColorSpace)=>{const result=new THREE.DataTexture(image.data,image.width,image.height,THREE.RGBAFormat);result.colorSpace=colorSpace;result.flipY=true;result.needsUpdate=true;return result;};
+      const colorSpecular=texture(images[0],THREE.SRGBColorSpace),normalGloss=texture(images[1]);
+      const roughPixels=new Uint8Array(images[1].data.length);
+      for(let i=0;i<roughPixels.length;i+=4){const roughness=255-images[1].data[i+3];roughPixels[i]=roughness;roughPixels[i+1]=roughness;roughPixels[i+2]=roughness;roughPixels[i+3]=255;}
+      const roughness=texture({data:roughPixels,width:images[1].width,height:images[1].height});
+      const emissive=texture(images[2],THREE.SRGBColorSpace);
+      material.map=colorSpecular;material.specularIntensityMap=colorSpecular;material.specularIntensity=1;
+      material.normalMap=normalGloss;material.roughnessMap=roughness;material.roughness=1;
+      material.emissiveMap=emissive;material.emissive.set('#ffffff');material.color.set('#ffffff');material.needsUpdate=true;
+    }catch(error){console.warn('Imported material preview:',error.message);}
   }
   async loadGeometry(pid,model,source){
     if(!/\.glb$/i.test(source||'')){
@@ -395,18 +425,32 @@ export class WeaponViewer {
 
 // Import scenes into editable OBJ groups while retaining their authored transform.
 // Bone assignment is per named rigid part, appropriate for weapon mechanisms.
+function trackLoadingManager(manager){
+  let pending=0;const waiters=[];const itemStart=manager.itemStart.bind(manager),itemEnd=manager.itemEnd.bind(manager);
+  manager.itemStart=url=>{pending++;itemStart(url);};
+  manager.itemEnd=url=>{try{itemEnd(url);}finally{pending--;if(pending===0)waiters.splice(0).forEach(resolve=>resolve());}};
+  return ()=>pending===0?Promise.resolve():new Promise(resolve=>waiters.push(resolve));
+}
+
 export async function importModel(file,resources=[]){
   const extension=file.name.split('.').pop().toLowerCase();
   const buffer=await file.arrayBuffer();let object,clips=[];
-  if(extension==='obj')return {obj:new TextDecoder().decode(buffer),parts:[],clips};
-  const urls=[];
+  if(extension==='obj')return importObj(new TextDecoder().decode(buffer),resources);
+  const urls=[],textureSources=new Map(),missingTextures=new Set();
   const manager=new THREE.LoadingManager();
+  const waitForTextures=trackLoadingManager(manager);
   manager.setURLModifier(url=>{
     if(url.startsWith('data:')||url.startsWith('blob:'))return url;
-    const name=decodeURIComponent(url).replace(/\\/g,'/').split('/').pop();
-    const source=resources.find(f=>f.name===name);
-    if(!source)throw new Error('Missing companion file: '+name+'. Select the model and its textures/buffers together.');
-    const mapped=URL.createObjectURL(source);urls.push(mapped);return mapped;
+    const name=decodeURIComponent(url.split(/[?#]/,1)[0]).replace(/\\/g,'/').split('/').pop();
+    const exact=resources.filter(f=>f.name.toLowerCase()===name.toLowerCase());
+    const stem=name.replace(/\.[^.]+$/,'').toLowerCase();
+    const candidates=exact.length?exact:resources.filter(f=>f.name.replace(/\.[^.]+$/,'').toLowerCase()===stem);
+    const source=candidates[0];
+    if(!source){
+      const placeholder='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+      missingTextures.add(placeholder);return placeholder;
+    }
+    const mapped=URL.createObjectURL(source);urls.push(mapped);textureSources.set(mapped,source.name);return mapped;
   });
   try{
     if(extension==='fbx'){
@@ -414,17 +458,101 @@ export async function importModel(file,resources=[]){
     }else{
       const {GLTFLoader}=await import('three/addons/loaders/GLTFLoader.js');
       const loader=new GLTFLoader(manager);
-      // Geometry import uses the project's separately authored material; don't decode discarded textures.
-      loader.register(()=>({name:'ReplayGeometryMaterial',loadMaterial:()=>Promise.resolve(new THREE.MeshBasicMaterial())}));
       const result=await loader.parseAsync(extension==='gltf'?new TextDecoder().decode(buffer):buffer,'');object=result.scene;clips=result.animations;
     }
-    return sceneToModel(object,clips);
+    // FBXLoader returns before its external images finish loading. Wait so image
+    // names and pixels are available when material assignments are exported.
+    await waitForTextures();
+    return await sceneToModel(object,clips,textureSources,missingTextures);
   }finally{urls.forEach(url=>URL.revokeObjectURL(url));}
 }
 
-export function sceneToModel(object,clips=[]){
+function materialKey(value,index){
+  const slug=String(value||'material').normalize('NFKD').replace(/[^a-zA-Z0-9]+/g,'_').replace(/^_+|_+$/g,'').slice(0,44).toLowerCase()||'material';
+  return `${slug}_${index+1}`;
+}
+
+function fileStem(value){return String(value||'').replace(/[?#].*$/,'').replace(/\\/g,'/').split('/').pop().replace(/\.[^.]+$/,'').toLowerCase();}
+
+function imageMapPath(material,role){
+  const fields={color_texture:['map','mapBump','diffuseMap'],normal_texture:['normalMap','bumpMap'],roughness_texture:['roughnessMap'],metallic_texture:['metalnessMap'],ao_texture:['aoMap'],specular_texture:['specularMap'],emissive_texture:['emissiveMap']};
+  for(const field of fields[role]||[]){const texture=material?.[field];if(texture)return texture;}
+  return null;
+}
+
+async function importObj(source,resources){
+  const urls=[],textureSources=new Map(),missingTextures=new Set();
+  const findResource=name=>{
+    const basename=String(name).replace(/\\/g,'/').split('/').pop();
+    return resources.find(file=>file.name.toLowerCase()===basename.toLowerCase())||
+      resources.find(file=>fileStem(file.name)===fileStem(basename));
+  };
+  const manager=new THREE.LoadingManager();
+  const waitForTextures=trackLoadingManager(manager);
+  manager.setURLModifier(url=>{
+    if(url.startsWith('data:')||url.startsWith('blob:'))return url;
+    const name=decodeURIComponent(url.split(/[?#]/,1)[0]).replace(/\\/g,'/').split('/').pop();
+    const source=findResource(name);
+    if(!source){
+      const placeholder='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+      missingTextures.add(placeholder);return placeholder;
+    }
+    const mapped=URL.createObjectURL(source);urls.push(mapped);textureSources.set(mapped,source.name);return mapped;
+  });
+  try{
+    const libraries=source.split(/\r?\n/).filter(line=>/^\s*mtllib\s+/i.test(line))
+      .map(line=>line.trim().replace(/^\s*mtllib\s+/i,'').replace(/^['"]|['"]$/g,''));
+    let materialCreator=null;
+    for(const library of libraries){
+      const file=findResource(library);if(!file)continue;
+      const {MTLLoader}=await import('three/addons/loaders/MTLLoader.js');
+      materialCreator=new MTLLoader(manager).parse(await file.text(),'');
+      materialCreator.preload();
+    }
+    const loader=new OBJLoader(manager);
+    if(materialCreator)loader.setMaterials(materialCreator);
+    const object=loader.parse(source);
+    await waitForTextures();
+    return await sceneToModel(object,[],textureSources,missingTextures);
+  }finally{urls.forEach(url=>URL.revokeObjectURL(url));}
+}
+
+async function sceneToModel(object,clips=[],textureSources=new Map(),missingTextures=new Set()){
   object.updateMatrixWorld(true);
-  const rows=['# Imported by Replay Weapon Workbench'],parts=[],sourceBones=[];
+  const rows=['# Imported by Replay Weapon Workbench'],parts=[],sourceBones=[],materials=[],materialObjects=new WeakMap(),fallbackMaterialKeys=new Map(),textureFiles=[],exportedTextures=new Map();
+  const extractTexture=async(texture,key,role)=>{
+    if(!texture)return '';
+    const image=texture.image||texture.source?.data;
+    const src=image?.currentSrc||image?.src||texture.source?.data?.src||'';
+    if(missingTextures.has(src))return '';
+    if(src&&textureSources.has(src))return textureSources.get(src);
+    if(texture.name&&textureSources.has(texture.name))return textureSources.get(texture.name);
+    if(src&&!/^blob:|^data:/i.test(src))return src.replace(/[?#].*$/,'').replace(/\\/g,'/').split('/').pop();
+    if(exportedTextures.has(texture))return exportedTextures.get(texture);
+    const width=image?.width||image?.videoWidth||0,height=image?.height||image?.videoHeight||0;
+    if(!width||!height||typeof createImageBitmap==='undefined'&&typeof OffscreenCanvas==='undefined'&&typeof document==='undefined')return '';
+    const filename=`${key}_${role.replace(/_texture$/,'')}.png`;let blob;
+    try{
+      const canvas=typeof OffscreenCanvas!=='undefined'?new OffscreenCanvas(width,height):Object.assign(document.createElement('canvas'),{width,height});
+      const context=canvas.getContext('2d');context.drawImage(image,0,0,width,height);
+      blob=canvas.convertToBlob?await canvas.convertToBlob({type:'image/png'}):await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+    }catch{return '';}
+    if(!blob)return '';
+    textureFiles.push({name:filename,file:blob});exportedTextures.set(texture,filename);return filename;
+  };
+  const describeMaterial=async(material,fallback)=>{
+    if(material&&materialObjects.has(material))return materialObjects.get(material);
+    const name=material?.name?.trim()||fallback||`Material ${materials.length+1}`;
+    if(!material&&fallbackMaterialKeys.has(name))return fallbackMaterialKeys.get(name);
+    const key=materialKey(name,materials.length);{
+      const colorValues=material?.color?.toArray?.()||[1,1,1],color='#'+colorValues.slice(0,3).map(value=>Math.round(Math.max(0,Math.min(1,value))*255).toString(16).padStart(2,'0')).join('');
+      const item={key,name,color,metalness:Number.isFinite(material?.metalness)?material.metalness:.35,roughness:Number.isFinite(material?.roughness)?material.roughness:.45,specular:.22,maps:{},parts:[]};
+      for(const role of ['color_texture','normal_texture','roughness_texture','metallic_texture','ao_texture','specular_texture','emissive_texture']){const texture=imageMapPath(material,role),filename=await extractTexture(texture,key,role);if(filename)item.maps[role]=filename;}
+      materials.push(item);
+    }
+    if(material)materialObjects.set(material,key);else fallbackMaterialKeys.set(name,key);
+    return key;
+  };
   object.traverse(node=>{if(node.isBone)sourceBones.push(node);});
   const nativeNames=new Map(),used=new Set(['j_import_root']);
   for(const bone of sourceBones){
@@ -453,9 +581,8 @@ export function sceneToModel(object,clips=[]){
       classification:Array(sorted.length+1).fill(0),bind_pose:[],rigid_bone:0,material:'',
       transform:[[1,0,0,0],[0,1,0,0],[0,0,1,0]],replace:[],part_bones:{},native_skin_weights:false};
   }
-  let offset=1;
-  object.traverse(mesh=>{
-    if(!mesh.isMesh)return;
+  let offset=1;const meshNodes=[];object.traverse(mesh=>{if(mesh.isMesh)meshNodes.push(mesh);});
+  for(const mesh of meshNodes){
     if(mesh.geometry.morphAttributes.position?.length)throw new Error('Morph targets require baking into bone animation before native import.');
     const geometry=mesh.geometry;
     if(!geometry.attributes.normal)geometry.computeVertexNormals();
@@ -464,17 +591,21 @@ export function sceneToModel(object,clips=[]){
     if(cornerCount%3)throw new Error('Imported geometry is not a triangle mesh');
     let name=(mesh.name||'part').replace(/[^a-zA-Z0-9_]/g,'_'),candidate=name,n=1;
     while(parts.includes(candidate))candidate=name+'_'+n++;
-    name=candidate;parts.push(name);rows.push('g '+name);
+    name=candidate;
     const v=new THREE.Vector3(),normal=new THREE.Vector3(),normalMatrix=new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
     for(let i=0;i<position.count;i++){
       v.fromBufferAttribute(position,i).applyMatrix4(mesh.matrixWorld);rows.push(`v ${v.x} ${v.y} ${v.z}`);
       rows.push(`vt ${uv?.getX(i)||0} ${uv?.getY(i)||0}`);
       normal.fromBufferAttribute(normals,i).applyMatrix3(normalMatrix).normalize();rows.push(`vn ${normal.x} ${normal.y} ${normal.z}`);
     }
-    const mirrored=mesh.matrixWorld.determinant()<0;
-    for(let i=0;i<cornerCount;i+=3){const t=[0,1,2].map(k=>offset+(indices?indices.getX(i+k):i+k));if(mirrored)[t[1],t[2]]=[t[2],t[1]];rows.push('f '+t.map(x=>`${x}/${x}/${x}`).join(' '));}
+    const mirrored=mesh.matrixWorld.determinant()<0,materialsForMesh=Array.isArray(mesh.material)?mesh.material:[mesh.material];let activePart='';
+    for(let i=0;i<cornerCount;i+=3){
+      const group=geometry.groups.find(item=>i>=item.start&&i<item.start+item.count),material=materialsForMesh[group?.materialIndex||0]||materialsForMesh[0],key=await describeMaterial(material,mesh.name||'Default Material');
+      const part=`${name}_${key}`;if(activePart!==part){activePart=part;rows.push('g '+part);rows.push('usemtl '+key);if(!parts.includes(part))parts.push(part);const entry=materials.find(item=>item.key===key);if(entry&&!entry.parts.includes(part))entry.parts.push(part);}
+      const t=[0,1,2].map(k=>offset+(indices?indices.getX(i+k):i+k));if(mirrored)[t[1],t[2]]=[t[2],t[1]];rows.push('f '+t.map(x=>`${x}/${x}/${x}`).join(' '));
+    }
     offset+=position.count;
-  });
+  }
   if(offset===1)throw new Error('No mesh geometry found in this scene');
   const animations=[];
   if(rig&&clips.length){
@@ -491,7 +622,7 @@ export function sceneToModel(object,clips=[]){
     }
     mixer.stopAllAction();sorted.forEach((b,i)=>{b.position.copy(rest[i].p);b.quaternion.copy(rest[i].q);b.scale.copy(rest[i].s);});object.updateMatrixWorld(true);
   }
-  return {obj:rows.join('\n')+'\n',parts,rig,clips:animations};
+  return {obj:rows.join('\n')+'\n',parts,rig,clips:animations,materials,textureFiles};
 }
 
 export {THREE};
