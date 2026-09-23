@@ -96,7 +96,8 @@ bool writeCompassMaterial(iw8::ZoneWriter &zw, const std::string &name);
 // One-shot convenience: read -> convert -> register-for-write. Returns false on any failure.
 // The build-map path calls this for each listed material.
 bool emitMaterialFromDump(iw8::ZoneWriter &zw, const std::string &filePath,
-                          const std::string &displayName = "");
+                          const std::string &displayName = "",
+                          std::string *emittedName = nullptr);
 
 // ===================================================================================================
 // SEMANTIC / SORTKEY / TYPE conversion helpers (conv_material.cpp). Centralized so reader+writer

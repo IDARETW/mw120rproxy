@@ -147,6 +147,8 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
         const bool litForwardPlus = techniqueType == 34;
         unsigned gtaoImageCount = 0;
         unsigned gtaoSamplerCount = 0;
+        unsigned sunVisibilityCount = 0;
+        unsigned lightingTilesCount = 0;
         for (unsigned resourceIndex = 0; resourceIndex < description.BoundResources;
              ++resourceIndex)
         {
@@ -158,6 +160,32 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
                                          shader->name);
             }
             const std::string resourceName = binding.Name ? binding.Name : "";
+            if (resourceName == "sunVisibility")
+            {
+                ++sunVisibilityCount;
+                if (binding.Type != D3D_SIT_TEXTURE || binding.BindPoint != 85 ||
+                    binding.BindCount != 1)
+                {
+                    reflection->Release();
+                    throw std::runtime_error("Generated sun visibility is not bound to t85: " +
+                                             technique.name);
+                }
+                continue;
+            }
+            if (resourceName == "lightingTiles")
+            {
+                ++lightingTilesCount;
+                const unsigned expectedRegister = staticModel ? 4 : 5;
+                if (binding.Type != D3D_SIT_STRUCTURED ||
+                    binding.BindPoint != expectedRegister || binding.BindCount != 1)
+                {
+                    reflection->Release();
+                    throw std::runtime_error(
+                        "Generated sun tile classifications use the wrong Replay binding: " +
+                        technique.name);
+                }
+                continue;
+            }
             if (resourceName == "gtaoImage")
             {
                 ++gtaoImageCount;
@@ -203,11 +231,13 @@ void validateGeneratedTextureBindings(const Material &material, const bool stati
                                          resourceName + " in " + technique.name);
             }
         }
-        if (litForwardPlus && (gtaoImageCount != 1 || gtaoSamplerCount != 1))
+        if (litForwardPlus &&
+            (gtaoImageCount != 1 || gtaoSamplerCount != 1 || sunVisibilityCount != 1 ||
+             lightingTilesCount != 1))
         {
             reflection->Release();
             throw std::runtime_error(
-                "Generated lit pass must have exactly one native GTAO t95/s8 binding: " +
+                "Generated lit pass must have native GTAO and sun-shadow bindings: " +
                 technique.name);
         }
         reflection->Release();
@@ -955,10 +985,8 @@ Mesh Load(const std::string &path)
     if (j.contains("nativeLightmaps"))
     {
         const auto &lightmaps = j.at("nativeLightmaps");
-        // The first native milestone deliberately covers the one-lightmap
-        // topology used by mp_test and mp_4doffice. Maps with larger source
-        // tables continue to use the established generated-material path
-        // until their native pack/reindex rule is recovered.
+        // Conversion preserves a single source lightmap's dimensions, or
+        // packs multiple source pairs into one native 4096x4096 atlas.
         if (!lightmaps.is_array() || lightmaps.size() > 1)
             throw std::runtime_error("Invalid native Replay lightmap table");
         constexpr std::array<uint32_t, 3> expectedFormats{39u, 32u, 40u};
@@ -1303,7 +1331,15 @@ Mesh Load(const std::string &path)
         put(sf, 16, PTR_FOLLOWS);
         put(sf, 24, i);
         put(sf, 30, uint16_t(lightmapIndex));
-        put(sf, 32, uint32_t(sky ? 0x40 : 0x41));
+        // Shipped sky surfaces keep the generic sun-shadow bit but are not
+        // Umbra occluders. The synthetic sky cube must not hide map geometry.
+        constexpr uint8_t castsSunShadow = 0x01;
+        constexpr uint8_t umbraOccluder = 0x40;
+        const unsigned sunShadowMask = s.value("sunShadowMask", 0u);
+        if (sunShadowMask & ~0x3Eu)
+            throw std::runtime_error("Surface sun-shadow mask exceeds Replay flags");
+        put(sf, 32, uint8_t(castsSunShadow | sunShadowMask |
+                            (sky ? 0 : umbraOccluder)));
         auto *bounds = m.bounds.data() + 56 * i;
         for (unsigned k = 0; k < 3; ++k)
         {
@@ -1544,7 +1580,8 @@ void StampStaticModels(std::vector<uint8_t> &world, const StaticModels &models)
     put(dpvs, 0x258, PTR_FOLLOWS);
 }
 
-void EmitStaticModels(ZoneWriter &writer, const StaticModels &models)
+void EmitStaticModels(ZoneWriter &writer, const StaticModels &models,
+                      unsigned lastSunPrimaryLightIndex)
 {
     const auto layout = BuildStaticModelLayout(models);
     if (models.models.empty())
@@ -1568,6 +1605,10 @@ void EmitStaticModels(ZoneWriter &writer, const StaticModels &models)
         writer.write(model, sizeof(model));
     }
 
+    // Replay selects bit min(activePrimarySunLight, 5) - 1, not a cascade.
+    // Keep each collection eligible for every directional sun in this world.
+    const auto sunShadowMask =
+        static_cast<uint8_t>((1u << std::min(lastSunPrimaryLightIndex, 5u)) - 1u);
     writer.align(3);
     for (size_t index = 0; index < models.instances.size(); ++index)
     {
@@ -1576,7 +1617,7 @@ void EmitStaticModels(ZoneWriter &writer, const StaticModels &models)
         put(collection, 0x00, static_cast<uint32_t>(index));
         put(collection, 0x04, uint32_t{1});
         put(collection, 0x08, static_cast<uint16_t>(instance.model));
-        collection[0x0E] = 3; // enabled and casts sun shadows
+        collection[0x0E] = sunShadowMask;
         writer.write(collection, sizeof(collection));
     }
     for (size_t index = 0; index < models.instances.size(); ++index)
@@ -1951,14 +1992,16 @@ void RegisterDecalVolumeDefinition(ZoneWriter &w, const DecalVolumeMaterial &def
 }
 
 void RegisterMaterialDefinition(ZoneWriter &w, const Material &m,
-                                std::set<std::pair<unsigned, std::string>> &registered)
+                                std::set<std::pair<unsigned, std::string>> &registered,
+                                bool registerImages = true)
 {
     if (m.techset.empty())
         return;
     // Keep every dependency at the top level: Replay supports only two nested
     // asset patch-memory frames. Techniques themselves are not XAssets.
-    for (const auto &image : m.imageDefinitions)
-        RegisterImageDefinition(w, image, registered);
+    if (registerImages)
+        for (const auto &image : m.imageDefinitions)
+            RegisterImageDefinition(w, image, registered);
     RegisterDecalVolumeDefinition(w, m.decalVolumeDefinition, registered);
     for (const auto &s : m.shaders)
         if (registered.emplace(s.type, s.name).second)
@@ -2093,6 +2136,33 @@ void RegisterMaterial(ZoneWriter &w, const Mesh &mesh)
         RegisterMaterialDefinition(w, material, registered);
     for (const auto &material : mesh.assetMaterials)
         RegisterMaterialDefinition(w, material, registered);
+}
+void RegisterMaterialReference(ZoneWriter &writer, const std::string &name)
+{
+    writer.add(ASSET_TYPE_MATERIAL, name, [name](ZoneWriter &out) {
+        Material reference;
+        reference.material = name;
+        EmitMaterial(out, reference, false);
+    });
+}
+void RegisterMapMaterials(ZoneWriter &main, ZoneWriter &techsets, const Mesh &mesh)
+{
+    std::set<std::pair<unsigned, std::string>> mainRegistered;
+    std::set<std::pair<unsigned, std::string>> techsetRegistered;
+    const auto registerOne = [&](const Material &material) {
+        if (material.techset.empty())
+            return;
+        for (const auto &image : material.imageDefinitions)
+            RegisterImageDefinition(main, image, mainRegistered);
+        if (mainRegistered.emplace(ASSET_TYPE_MATERIAL, material.material).second)
+            RegisterMaterialReference(main, material.material);
+        RegisterMaterialDefinition(techsets, material, techsetRegistered, false);
+    };
+    registerOne(mesh);
+    for (const auto &material : mesh.additionalMaterials)
+        registerOne(material);
+    for (const auto &material : mesh.assetMaterials)
+        registerOne(material);
 }
 void RegisterReflectionProbeImage(ZoneWriter &w, const Mesh &mesh)
 {

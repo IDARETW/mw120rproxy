@@ -129,11 +129,17 @@ Replay's native `TestImpact` module, while IW3 emitted-effect children use the r
 lacks a complete mapping, so the fastfile never contains a knowingly partial graph.
 
 Baked opaque world surfaces use source-specific native Replay materials backed by a retained
-shipped world-technique contract. Their packed atlas UVs and native lightmap index feed Replay's
-three-plane BC4, R11G11B10F, and BC5 temporary lightmap atlas. Cutout, glass, sky, unbaked, model,
-and VFX families keep their explicit conversion paths. Replay's engine GTAO image and sampler are
+shipped world-technique contract. A single source lightmap retains its dimensions and local UVs;
+multiple source lightmaps are packed into one native atlas with matching remapped UVs. Replay
+consumes the BC4, R11G11B10F, and BC5 lighting planes through its native lightmap index. Cutout,
+glass, sky, unbaked, model, and VFX families keep their explicit conversion paths. Replay's engine GTAO image and sampler are
 bound through the native `t95`/`s8` contract. The converter does not invent the target's optional
 64-byte-per-tetrahedron light-grid visibility records when the IW3 source cannot prove them.
+
+Native lighting conversion is still in development. In particular, map-specific compressed
+sun-shadow data is not yet generated, so distant shadow coverage remains incomplete. Successful
+package validation checks serialization and asset ownership; it does not establish visual parity
+with the original map.
 
 The twelve IW3 impact rows are mapped into Replay's native impact table for small/large bullets,
 shotgun, armor-piercing, grenade, rocket, and dud events. A converted source effect replaces the
@@ -163,11 +169,16 @@ srv_mp_example.ff
 eng_mp_example.ff
 ww_mp_example.ff
 techsets_mp_example.ff
+map.json
 ```
 
 `map.json` is required and is the only loose file accepted beside the fastfiles. The source dump
-layout is documented in [docs/INPUT_FORMAT.md](docs/INPUT_FORMAT.md). Existing
-serialized Replay collision can be placed at
+layout is documented in [docs/INPUT_FORMAT.md](docs/INPUT_FORMAT.md).
+The `techsets_` fastfile owns material, technique-set, and shader definitions; the map fastfile
+owns resident images and carries native material references for world, model, glass, and effect
+assets. The generated localization companions can be empty.
+
+Existing serialized Replay collision can be placed at
 `maps/mp/mp_example.d3dbsp.havok`. To bake native collision data directly into the server fastfile, pass
 the matching Replay executable and optional footstep data:
 
@@ -198,7 +209,8 @@ iw8-zonetool.exe inspect C:\maps\mp_example\output\mp_example.ff
 ```
 
 Validation accepts exactly five fastfiles and `map.json`. It checks the Replay header,
-resident framing, and stream sizes of every zone. Normal installation runs this validation
+resident framing, stream sizes, required map assets, and the split render-asset inventory.
+Normal installation runs this validation
 automatically; the command is useful when diagnosing a failed build.
 
 ## Install
@@ -213,11 +225,11 @@ Use a current mw120rproxy build with fastfile-only package support. The folder n
 match exactly.
 
 From the repository root, the companion deployment helper can install a validated package into the
-configured Replay directory:
+configured Replay directory. Pass `-GameRoot` if your Replay installation is elsewhere:
 
 ```powershell
 & .\mw120rproxy\tools\deploy_custom_map.ps1 `
-    'C:\Maps\mp_example\output' mp_example
+    -PackageDir 'C:\Maps\mp_example\output' -Map mp_example
 ```
 
 Close Replay before running it. The helper stages and hash-checks the five zones, preserves a

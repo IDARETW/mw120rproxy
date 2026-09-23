@@ -125,6 +125,9 @@ techsets_mp_example.ff
 map.json
 ```
 
+The `techsets_` fastfile contains material, technique-set, and shader definitions; the main
+fastfile contains resident images and material references used by geometry and effects.
+
 `map.json` is always generated and is the only loose file accepted beside the five fastfiles. It can
 set a matching `id`, a lobby `title` (or `name`), and a `description`.
 

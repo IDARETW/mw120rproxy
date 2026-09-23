@@ -218,7 +218,7 @@ bool writeCompassMaterial(iw8::ZoneWriter &zw, const std::string &name)
 
 // One-shot read -> convert -> register-for-write (the caller's build-map entry point per material).
 bool emitMaterialFromDump(iw8::ZoneWriter &zw, const std::string &filePath,
-                          const std::string &displayName)
+                          const std::string &displayName, std::string *emittedName)
 {
     DumpMaterial d = readMaterialJson(filePath, displayName);
     if (!d.loaded)
@@ -229,7 +229,11 @@ bool emitMaterialFromDump(iw8::ZoneWriter &zw, const std::string &filePath,
         err("emitMaterialFromDump: convert failed for '%s'", filePath.c_str());
         return false;
     }
-    return writeMaterial(zw, im);
+    if (!writeMaterial(zw, im))
+        return false;
+    if (emittedName)
+        *emittedName = im.name;
+    return true;
 }
 
 } // namespace convdump::mtl

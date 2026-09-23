@@ -305,6 +305,10 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     const auto cellCount = static_cast<uint32_t>(mesh.cells.size());
     const auto cellWordCount = (cellCount + 31u) >> 5;
     std::vector<uint8_t> gw(kSizeGfxWorld, 0);
+    // The Replay compressed sun-shadow payload at +0x37F4 is map-specific.
+    // Keep its size/pointer/parameters zero until a payload baked for this
+    // mesh can be validated against the native decoder. Stock-map bytes are
+    // not portable and would produce incorrect distant occlusion.
     stamp64(gw.data(), kGW_name, PTR_FOLLOWS);
     stamp64(gw.data(), kGW_baseName, PTR_FOLLOWS);
     stamp32(gw.data(), kGW_bspVersion, 243);
@@ -485,7 +489,7 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
         }
     }
     replayrender::EmitSurfaces(zw, mesh);
-    replayrender::EmitStaticModels(zw, staticModels);
+    replayrender::EmitStaticModels(zw, staticModels, sunPrimaryLightIndex);
     replayrender::EmitReflectionProbes(zw, mesh);
     if (!mesh.nativeLightmaps.empty())
     {

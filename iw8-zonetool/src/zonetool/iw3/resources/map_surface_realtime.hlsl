@@ -30,7 +30,13 @@ Texture2D<float4> sourceAtlas : register(t1);
 #endif
 SamplerState colorSampler : register(s3);
 Texture2D<float4> sunVisibility : register(t85);
+#ifdef STATIC_MODEL
+// Replay's static-model forward shader binds the sun tile classifications at
+// t4. World surfaces use t5; sampling t5 here reads the wrong screen resource.
+StructuredBuffer<uint2> lightingTiles : register(t4);
+#else
 StructuredBuffer<uint2> lightingTiles : register(t5);
+#endif
 SamplerState shadowSampler : register(s5);
 // TECHNIQUE_LIT_FORWARDPLUS_BITMASK binds code image 0 to the GTAO slot.
 // The native Replay static-model pixel shader consumes that image at t95
@@ -68,7 +74,9 @@ SourceWorldNormal(Input input, uint flags, float2 atlasUV, float lod, out float3
 #else
         float4 raw = sourceNormalAtlas.SampleLevel(colorSampler, atlasUV, lod);
 #endif
-        float2 slope = float2(raw.a, raw.g) * float2(4.08, 4.06451607) - float2(2.08, 2.06451607);
+        // IW3's normalMapSampler reads .xy (the shipped lm_sun pixel shader
+        // uses r3.xywy). Alpha is not the authored X slope.
+        float2 slope = raw.rg * float2(4.08, 4.06451607) - float2(2.08, 2.06451607);
         tangentNormal = normalize(float3(slope, 1));
     }
     float3 normal = normalize(input.normal);

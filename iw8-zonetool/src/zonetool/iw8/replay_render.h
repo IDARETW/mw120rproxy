@@ -177,6 +177,9 @@ struct Mesh : Material
 };
 Mesh Load(const std::string &path);
 void RegisterMaterial(iw8::ZoneWriter &writer, const Mesh &mesh);
+void RegisterMapMaterials(iw8::ZoneWriter &main, iw8::ZoneWriter &techsets,
+                          const Mesh &mesh);
+void RegisterMaterialReference(iw8::ZoneWriter &writer, const std::string &name);
 void RegisterReflectionProbeImage(iw8::ZoneWriter &writer, const Mesh &mesh);
 void StampWorld(std::vector<uint8_t> &world, const Mesh &mesh);
 void EmitSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh);
@@ -185,7 +188,8 @@ void EmitVertices(iw8::ZoneWriter &writer, const Mesh &mesh);
 void EmitSortedSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh,
                         const StaticModels &staticModels);
 void StampStaticModels(std::vector<uint8_t> &world, const StaticModels &models);
-void EmitStaticModels(iw8::ZoneWriter &writer, const StaticModels &models);
+void EmitStaticModels(iw8::ZoneWriter &writer, const StaticModels &models,
+                      unsigned lastSunPrimaryLightIndex);
 void StampReflectionProbes(std::vector<uint8_t> &world, const Mesh &mesh,
                            const iw8::ZoneWriter &writer);
 void EmitReflectionProbes(iw8::ZoneWriter &writer, const Mesh &mesh);

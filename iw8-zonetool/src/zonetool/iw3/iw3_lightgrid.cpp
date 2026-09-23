@@ -570,6 +570,16 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
     if (tetrahedra.empty())
         throw std::runtime_error("IW3 light-grid has no complete source cells");
 
+    // Replay treats UINT32_MAX as an unassigned voxel and samples its fallback
+    // probe.  Preserve sparse IW3 columns instead of extending tetrahedra into
+    // cells without authored light-grid coverage.
+    const std::size_t unassignedVoxelCount =
+        std::count(voxels.begin(), voxels.end(), UINT32_MAX);
+    if (unassignedVoxelCount == voxels.size())
+        throw std::runtime_error("IW3 light-grid has no populated Replay voxels");
+    zt::info("iw3: retained %zu unassigned Replay light-grid voxels and %zu authored starts",
+             unassignedVoxelCount, voxels.size() - unassignedVoxelCount);
+
     std::vector<std::array<std::uint32_t, 4>> neighbors(tetrahedra.size(),
                                                         {UINT32_MAX, UINT32_MAX, UINT32_MAX,
                                                          UINT32_MAX});

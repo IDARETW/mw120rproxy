@@ -62,6 +62,7 @@ struct SourceMaterial
     std::array<float, 4> tint{1, 1, 1, 1};
     std::array<float, 4> environment{0.8f, 4.0f, 2.5f, 0.625f};
     SurfaceKind kind{SurfaceKind::opaque};
+    bool castsShadow{true};
     unsigned flags{};
     unsigned cullMode{1}; // Replay: none=0, back=1, front=2.
 };
@@ -212,14 +213,81 @@ std::uint32_t EncodeUnsignedFloat(const float value, const unsigned mantissaBits
     return (static_cast<std::uint32_t>(biasedExponent) << mantissaBits) | fraction;
 }
 
-std::uint32_t EncodeR11G11B10(const std::uint8_t red, const std::uint8_t green,
-                              const std::uint8_t blue)
+std::uint32_t EncodeR11G11B10(const float red, const float green, const float blue)
 {
-    constexpr float scale = 1.0f / 255.0f;
-    const std::uint32_t r = EncodeUnsignedFloat(red * scale, 6);
-    const std::uint32_t g = EncodeUnsignedFloat(green * scale, 6);
-    const std::uint32_t b = EncodeUnsignedFloat(blue * scale, 5);
+    const std::uint32_t r = EncodeUnsignedFloat(red, 6);
+    const std::uint32_t g = EncodeUnsignedFloat(green, 6);
+    const std::uint32_t b = EncodeUnsignedFloat(blue, 5);
     return r | (g << 11) | (b << 22);
+}
+
+struct NativeLightmapPixel
+{
+    std::uint32_t irradiance{};
+    std::uint8_t directionX{};
+    std::uint8_t directionY{};
+};
+
+std::array<std::uint8_t, 2> EncodeOctDirection(const float slopeX, const float slopeY)
+{
+    const float denominator = 1.0f + std::abs(slopeX) + std::abs(slopeY);
+    const float octX = slopeX / denominator;
+    const float octY = slopeY / denominator;
+    const auto encode = [](const float value) {
+        return static_cast<std::uint8_t>(
+            std::lround(std::clamp(value * 127.5f, 0.0f, 255.0f)));
+    };
+    return {encode(1.0f + octX + octY), encode(1.0f + octX - octY)};
+}
+
+NativeLightmapPixel EncodeNativeLightmapPixel(const std::array<std::uint8_t, 4> &a,
+                                             const std::array<std::uint8_t, 4> &b)
+{
+    // IW3's secondary lightmap evaluates A * normal.z + B * dot(normal, D).
+    // The retained Replay shader evaluates irradiance * dot(normal, D') / D'.z
+    // when its BC4 ambient fraction is zero. Fit the shared direction to the
+    // three color channels, preserving the source flat-normal result before
+    // Replay's own exposure scale is applied.
+    constexpr float byteScale = 1.0f / 255.0f;
+    const float slopeX = 4.07999992f * (a[3] * byteScale) - 2.07999992f;
+    const float slopeY = 4.06451607f * (b[3] * byteScale) - 2.06451607f;
+    const float directionZ = 1.0f / std::sqrt(1.0f + slopeX * slopeX + slopeY * slopeY);
+    std::array<float, 3> irradiance{};
+    float irradianceSquared = 0.0f;
+    float directionalDot = 0.0f;
+    for (unsigned channel = 0; channel < 3; ++channel)
+    {
+        const float directional = b[channel] * byteScale;
+        irradiance[channel] = a[channel] * byteScale + directional * directionZ;
+        irradianceSquared += irradiance[channel] * irradiance[channel];
+        directionalDot += irradiance[channel] * directional;
+    }
+    const float ratio = irradianceSquared > 0.0f
+                            ? directionZ * directionalDot / irradianceSquared
+                            : 0.0f;
+    const auto direction = EncodeOctDirection(slopeX * ratio, slopeY * ratio);
+    return {EncodeR11G11B10(irradiance[0], irradiance[1], irradiance[2]),
+            direction[0], direction[1]};
+}
+
+Image EncodeNativeWorldNormal(Image source)
+{
+    for (std::size_t offset = 0; offset < source.rgba.size(); offset += 4)
+    {
+        const float slopeX = 4.07999992f * (source.rgba[offset] / 255.0f) - 2.07999992f;
+        const float slopeY = 4.06451607f * (source.rgba[offset + 1] / 255.0f) - 2.06451607f;
+        const auto direction = EncodeOctDirection(slopeX, slopeY);
+        // The retained Replay shader decodes its normal from G and A.
+        // It also reads R as a material-response control. The IW3 R channel
+        // is the normal X slope, so retaining it would vary Replay's response
+        // with the source bump pattern. Use the retained material's neutral
+        // response until an IW3 specular-to-Replay material mapping is proven.
+        source.rgba[offset] = 128;
+        source.rgba[offset + 1] = direction[0];
+        source.rgba[offset + 2] = 255;
+        source.rgba[offset + 3] = direction[1];
+    }
+    return source;
 }
 
 Json ReadJson(const std::filesystem::path &path)
@@ -1359,6 +1427,16 @@ SourceMaterial ReadMaterial(const std::filesystem::path &root,
     const Json source = ReadJson(path);
     SourceMaterial material;
     material.name = name;
+    if (source.contains("gameFlags"))
+    {
+        const auto &flags = source.at("gameFlags");
+        if (!flags.is_array())
+            throw std::runtime_error("Invalid IW3 material game flags: " + name);
+        material.castsShadow = false;
+        for (const auto &flag : flags)
+            if (flag == "CASTS_SHADOW")
+                material.castsShadow = true;
+    }
     const std::string techset = source.at("techniqueSet").get<std::string>();
     if (techset == "shadowcaster" ||
         std::regex_search(techset, std::regex("(^|_)sky($|_)", std::regex::icase)))
@@ -2250,6 +2328,7 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     {
         MaterialPlan item;
         item.kind = material.kind;
+        item.castsShadow = material.castsShadow;
         item.flags = material.flags;
         item.environment = material.environment;
         if (material.kind != SurfaceKind::skipped)
@@ -2335,13 +2414,12 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             response.rgba[index * 4 + 2] = b[0];
             response.rgba[index * 4 + 3] = a[0];
         }
-        // Replay 1.20's native temporary lightmap atlas takes one BC4 mask,
-        // one R11G11B10F irradiance image and one BC5 direction image per
-        // target lightmap. A single source pair can be represented directly.
-        // Multiple IW3 pairs are packed below into one target lightmap, which
-        // matches the one-atlas GfxWorld contract used by shipped 1.20 maps.
-        // The generated material remains the rendering consumer until the
-        // target precompiled layout is fully matched.
+        // Replay 1.20's native temporary lightmap atlas takes one BC4 ambient
+        // fraction, one R11G11B10F irradiance image and one BC5 octahedral
+        // direction image per target lightmap. IW3's primary image is a sun
+        // visibility mask, not that ambient fraction. The baked opaque world
+        // material consumes this native atlas; generated materials still read
+        // the separate source atlases above.
         if (lightmapDimensions.size() == 1)
         {
             const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
@@ -2349,14 +2427,15 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
                 directionY(pixelCount), irradiance(pixelCount * sizeof(std::uint32_t));
             for (std::size_t index = 0; index < pixelCount; ++index)
             {
-                maskValues[index] = mask.rgba[index * 4];
                 const auto *a = secondBytes.data() + index * 4;
                 const auto *b = secondBytes.data() + half + index * 4;
-                directionX[index] = a[3];
-                directionY[index] = b[3];
-                const std::uint32_t packed = EncodeR11G11B10(a[2], a[1], a[0]);
-                std::memcpy(irradiance.data() + index * sizeof(packed), &packed,
-                            sizeof(packed));
+                const auto sample = EncodeNativeLightmapPixel(
+                    {a[2], a[1], a[0], a[3]}, {b[2], b[1], b[0], b[3]});
+                maskValues[index] = 0;
+                directionX[index] = sample.directionX;
+                directionY[index] = sample.directionY;
+                std::memcpy(irradiance.data() + index * sizeof(sample.irradiance),
+                            &sample.irradiance, sizeof(sample.irradiance));
             }
             NativeLightmapPlan native;
             native.width = width;
@@ -2388,35 +2467,27 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
                         map + "_native_lightmap_0.r11g11b10f",
                         map + "_native_lightmap_0.bc5"};
 
+        std::vector<std::uint8_t> maskValues(nativePixelCount),
+            irradiance(nativePixelCount * sizeof(std::uint32_t)),
+            directionX(nativePixelCount), directionY(nativePixelCount);
+        for (std::size_t index = 0; index < nativePixelCount; ++index)
         {
-            std::vector<std::uint8_t> maskValues(nativePixelCount);
-            for (std::size_t index = 0; index < nativePixelCount; ++index)
-                maskValues[index] = atlases[0].rgba[index * 4 + 3];
-            WriteBytes(mapDirectory / native.files[0],
-                       EncodeBc4(nativeWidth, nativeHeight, maskValues));
+            const auto *color = atlases[0].rgba.data() + index * 4;
+            const auto *normal = atlases[1].rgba.data() + index * 4;
+            const auto *response = atlases[2].rgba.data() + index * 4;
+            const auto sample = EncodeNativeLightmapPixel(
+                {color[0], color[1], color[2], normal[0]},
+                {response[0], response[1], response[2], normal[1]});
+            directionX[index] = sample.directionX;
+            directionY[index] = sample.directionY;
+            std::memcpy(irradiance.data() + index * sizeof(sample.irradiance),
+                        &sample.irradiance, sizeof(sample.irradiance));
         }
-        {
-            std::vector<std::uint8_t> irradiance(nativePixelCount * sizeof(std::uint32_t));
-            for (std::size_t index = 0; index < nativePixelCount; ++index)
-            {
-                const auto *color = atlases[0].rgba.data() + index * 4;
-                const std::uint32_t packed = EncodeR11G11B10(color[0], color[1], color[2]);
-                std::memcpy(irradiance.data() + index * sizeof(packed), &packed,
-                            sizeof(packed));
-            }
-            WriteBytes(mapDirectory / native.files[1], irradiance);
-        }
-        {
-            std::vector<std::uint8_t> directionX(nativePixelCount),
-                directionY(nativePixelCount);
-            for (std::size_t index = 0; index < nativePixelCount; ++index)
-            {
-                directionX[index] = atlases[1].rgba[index * 4 + 0];
-                directionY[index] = atlases[1].rgba[index * 4 + 1];
-            }
-            WriteBytes(mapDirectory / native.files[2],
-                       EncodeBc5(nativeWidth, nativeHeight, directionX, directionY));
-        }
+        WriteBytes(mapDirectory / native.files[0],
+                   EncodeBc4(nativeWidth, nativeHeight, maskValues));
+        WriteBytes(mapDirectory / native.files[1], irradiance);
+        WriteBytes(mapDirectory / native.files[2],
+                   EncodeBc5(nativeWidth, nativeHeight, directionX, directionY));
         plan.nativeLightmaps.push_back(std::move(native));
     }
 
@@ -2539,11 +2610,18 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         direct["techset"] = entry->second.first;
         direct["techsetDefinition"] = entry->second.second;
         direct["imageDefinitions"] = Json::array();
+        auto pixelConstants = Unhex(direct.at("buffers").at(0).at(3).get<std::string>());
+        if (pixelConstants.size() != 64 || pixelConstants[54] != 0x7e)
+            throw std::runtime_error("native world normal-strength template changed");
+        // The retained pixel shader scales the octahedral G/A normal by
+        // (cb3[3].y[16:23] + 1) / 256. Use the full encoded direction.
+        pixelConstants[54] = 0xff;
+        direct["buffers"][0][3] = Hex(pixelConstants);
         residentImage(direct, 0, image(source.color).front(), source.tint, "world");
         residentImage(direct, 1,
-                      source.normal.empty()
-                          ? Image{1, 1, std::vector<std::uint8_t>{128, 128, 255, 255}}
-                          : image(source.normal).front(),
+                      source.normal.empty() || source.normal == "$identitynormalmap"
+                          ? Image{1, 1, std::vector<std::uint8_t>{128, 128, 255, 128}}
+                          : EncodeNativeWorldNormal(image(source.normal).front()),
                       {1, 1, 1, 1}, "world");
         residentImage(direct, 2,
                       source.response.empty() ? Image{1, 1, std::vector<std::uint8_t>{0, 0, 0, 0}}

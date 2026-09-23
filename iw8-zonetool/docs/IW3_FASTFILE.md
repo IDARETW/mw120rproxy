@@ -127,6 +127,10 @@ techsets_mp_example.ff
 map.json
 ```
 
+`techsets_mp_example.ff` owns the converted material, technique-set, and shader definitions.
+`mp_example.ff` keeps the resident images and the native material references used by world and
+model geometry, glass, and effects. The `eng_` and `ww_` companions can be empty.
+
 No input JSON is required. The converter creates `map.json` with the map id and a default title. To set a friendly lobby title or description, pass one small file with `--metadata`. `name` and `title` are accepted aliases and must match if both are present:
 
 ```json
@@ -153,6 +157,11 @@ preserves the original indexed geometry and UVs, and
 generates Replay material/technique assets from the source color, normal, and response images.
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
+
+Baked opaque surfaces use Replay's native lightmap inputs. One source lightmap keeps its original
+dimensions and normalized coordinates; several source lightmaps share a packed atlas and receive
+remapped coordinates. Native material lighting and sun-shadow coverage remain under development;
+the converter does not yet generate map-specific compressed sun shadows for distant geometry.
 
 Each source cubemap is converted into one slice of Replay's native 256-by-256 octahedral
 reflection array. The compiler writes six mip levels in Replay's mip-major, slice-major order,

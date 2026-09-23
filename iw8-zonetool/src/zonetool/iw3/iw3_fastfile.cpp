@@ -125,7 +125,11 @@ struct CollisionHull
     std::uint32_t model{};
     std::uint32_t surfaceFlags{};
     std::uint16_t glassId{};
+    std::uint32_t materialOverride{};
     std::vector<Vec4> ladderPlanes;
+    // Per face: world-space tangent coordinate of the model center, then width.
+    std::vector<std::array<float, 2>> ladderModelTangents;
+    float ladderRungOffset{};
 };
 
 struct CollisionModel
@@ -501,7 +505,7 @@ std::filesystem::path FindIw3CommonFastfile(const ImportOptions &options)
 }
 
 std::vector<std::string> MissingEntityModels(const std::filesystem::path &root,
-                                             const std::vector<std::string> &models)
+                                              const std::vector<std::string> &models)
 {
     std::vector<std::string> missing;
     for (const auto &model : models)
@@ -512,6 +516,133 @@ std::vector<std::string> MissingEntityModels(const std::filesystem::path &root,
             missing.push_back(model);
     }
     return missing;
+}
+
+void CopyExtractedEntityModels(const std::filesystem::path &destination,
+                               const std::vector<std::string> &models,
+                               const std::vector<std::filesystem::path> &searchPaths)
+{
+    for (const std::string &model : models)
+    {
+        for (const auto &searchPath : searchPaths)
+        {
+            const auto sourceModel = searchPath / "xmodel" / (model + ".json");
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(sourceModel, error))
+                continue;
+
+            const auto targetModel = destination / "xmodel" / sourceModel.filename();
+            std::filesystem::create_directories(targetModel.parent_path(), error);
+            if (error)
+                throw std::runtime_error("cannot create IW3 entity-model staging directory");
+            std::filesystem::copy_file(sourceModel, targetModel,
+                                       std::filesystem::copy_options::overwrite_existing, error);
+            if (error)
+                throw std::runtime_error("cannot stage IW3 entity model " + model);
+
+            const auto sourceAttributes = searchPath / "xmodel" / (model + ".replay.json");
+            if (!std::filesystem::is_regular_file(sourceAttributes, error))
+                continue;
+            std::filesystem::copy_file(sourceAttributes, destination / "xmodel" /
+                                                            sourceAttributes.filename(),
+                                       std::filesystem::copy_options::overwrite_existing, error);
+            if (error)
+                throw std::runtime_error("cannot stage IW3 entity-model attributes " + model);
+
+            const auto sourceModels = searchPath / "model_export";
+            if (!std::filesystem::is_directory(sourceModels, error))
+                continue;
+            const auto targetModels = destination / "model_export";
+            std::filesystem::create_directories(targetModels, error);
+            if (error)
+                throw std::runtime_error("cannot create IW3 model-export staging directory");
+            for (std::filesystem::directory_iterator entry(sourceModels, error), end;
+                 !error && entry != end; entry.increment(error))
+            {
+                if (!entry->is_regular_file(error) ||
+                    !entry->path().filename().string().starts_with(model))
+                    continue;
+                std::filesystem::copy_file(entry->path(), targetModels / entry->path().filename(),
+                                           std::filesystem::copy_options::overwrite_existing, error);
+                if (error)
+                    throw std::runtime_error("cannot stage IW3 entity-model mesh " + model);
+            }
+            if (error)
+                throw std::runtime_error("cannot enumerate IW3 entity-model mesh files");
+            zt::info("iw3: staged entity model %s from extracted search assets", model.c_str());
+            break;
+        }
+    }
+}
+
+void CopyExtractedFx(const std::filesystem::path &destination,
+                     const std::vector<std::filesystem::path> &searchPaths)
+{
+    std::size_t copied = 0;
+    for (const auto &searchPath : searchPaths)
+    {
+        const auto sourceRoot = searchPath / "fx";
+        std::error_code error;
+        if (!std::filesystem::is_directory(sourceRoot, error))
+            continue;
+        for (std::filesystem::recursive_directory_iterator entry(sourceRoot, error), end;
+             !error && entry != end; entry.increment(error))
+        {
+            if (!entry->is_regular_file(error) || entry->path().extension() != ".json")
+                continue;
+            const auto target = destination / "fx" /
+                                std::filesystem::relative(entry->path(), sourceRoot, error);
+            if (error)
+                throw std::runtime_error("cannot resolve extracted IW3 FX asset path");
+            std::filesystem::create_directories(target.parent_path(), error);
+            if (error)
+                throw std::runtime_error("cannot create IW3 FX staging directory");
+            std::filesystem::copy_file(entry->path(), target,
+                                       std::filesystem::copy_options::skip_existing, error);
+            if (error)
+                throw std::runtime_error("cannot stage extracted IW3 FX source asset");
+            ++copied;
+        }
+        if (error)
+            throw std::runtime_error("cannot enumerate extracted IW3 FX source assets");
+    }
+    if (copied)
+        zt::info("iw3: staged %zu extracted source FX graph(s)", copied);
+}
+
+void CopyExtractedFxMaterials(const std::filesystem::path &destination,
+                              const std::vector<std::filesystem::path> &searchPaths)
+{
+    std::size_t copied = 0;
+    for (const auto &searchPath : searchPaths)
+    {
+        const auto sourceRoot = searchPath / "materials";
+        std::error_code error;
+        if (!std::filesystem::is_directory(sourceRoot, error))
+            continue;
+        for (std::filesystem::recursive_directory_iterator entry(sourceRoot, error), end;
+             !error && entry != end; entry.increment(error))
+        {
+            if (!entry->is_regular_file(error) || entry->path().extension() != ".json")
+                continue;
+            const auto target = destination / "materials" /
+                                std::filesystem::relative(entry->path(), sourceRoot, error);
+            if (error)
+                throw std::runtime_error("cannot resolve extracted IW3 FX material path");
+            std::filesystem::create_directories(target.parent_path(), error);
+            if (error)
+                throw std::runtime_error("cannot create IW3 FX material staging directory");
+            std::filesystem::copy_file(entry->path(), target,
+                                       std::filesystem::copy_options::skip_existing, error);
+            if (error)
+                throw std::runtime_error("cannot stage extracted IW3 FX material source");
+            ++copied;
+        }
+        if (error)
+            throw std::runtime_error("cannot enumerate extracted IW3 FX material sources");
+    }
+    if (copied)
+        zt::info("iw3: staged %zu extracted source FX material(s)", copied);
 }
 
 std::string JoinNames(const std::vector<std::string> &names)
@@ -1879,7 +2010,10 @@ std::uint32_t PackedNormal(const Vec3 &source, const Vec3 &sourceTangent, const 
     if (Dot(tangent, tangent) < 1.0e-10f)
         tangent = Cross(std::abs(normal[2]) < 0.9f ? Vec3{0, 0, 1} : Vec3{0, 1, 0}, normal);
     tangent = Unit(tangent);
-    const Vec3 bitangent = Multiply(Cross(normal, tangent), binormalSign < 0 ? -1.0f : 1.0f);
+    // The quaternion stores a proper rotation. A mirrored tangent frame has
+    // determinant -1 and cannot be encoded as a quaternion; Replay carries
+    // its handedness separately in packed bit 29.
+    const Vec3 bitangent = Cross(normal, tangent);
     const float matrix[3][3] = {{tangent[0], bitangent[0], normal[0]},
                                 {tangent[1], bitangent[1], normal[1]},
                                 {tangent[2], bitangent[2], normal[2]}};
@@ -1968,6 +2102,14 @@ Vec2 EncodedLightmap(const Vertex &vertex, const Surface &surface, const Materia
     if (baked)
     {
         const auto &rectangle = plan.lightmaps[surface.lightmap];
+        // A single native lightmap retains its source dimensions and has no
+        // offset in the generated material atlas. Replay applies its own atlas
+        // placement to these local UVs in the native world pixel shader.
+        if (nativeWorld && plan.lightmaps.size() == 1)
+            return {std::clamp(vertex.lightmapUv[0], 0.5f / rectangle.width,
+                               1.0f - 0.5f / rectangle.width),
+                    std::clamp(vertex.lightmapUv[1], 0.5f / rectangle.height,
+                               1.0f - 0.5f / rectangle.height)};
         x = (rectangle.x +
              std::clamp(vertex.lightmapUv[0] * rectangle.width, 0.5f, rectangle.width - 0.5f)) /
             4096.0f;
@@ -2543,6 +2685,10 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                  const std::string &entities, CollisionData &collision,
                  std::size_t &triangleCount)
 {
+    const unsigned sunCount = world.at("sun_primary_light_index").get<unsigned>();
+    if (sunCount > 5)
+        throw std::runtime_error("IW3 sun-light count exceeds Replay surface-shadow mask");
+    const unsigned sunShadowMask = ((1u << sunCount) - 1u) << 1;
     Json output = {{"schema", 1},
                    {"material", plan.material},
                    {"materialDefinition", plan.materialDefinition},
@@ -2698,6 +2844,9 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                 key << ':' << value;
             key << ':' << surface.visibilityGroup;
             key << ':' << surface.reflectionProbe;
+            // Several IW3 materials share one Replay fallback material. Keep
+            // their caster eligibility separate when merging world geometry.
+            key << ':' << (modelIndex == 0 && material.castsShadow);
             if (!target || activeKey != key.str() ||
                 targetVertices + surface.vertices.size() > 60000 ||
                 targetIndices + surface.indices.size() > 65535u * 3u)
@@ -2708,6 +2857,8 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                                               {"atlasVertexLayout", nativeWorld ? 1u : 3u},
                                               {"lightmapIndex", 0u},
                                               {"opaque", material.kind == SurfaceKind::opaque},
+                                              {"sunShadowMask", modelIndex == 0 && material.castsShadow
+                                                                    ? sunShadowMask : 0u},
                                               {"reflectionProbe", surface.reflectionProbe},
                                               {"materialParameters", material.environment}});
                 target = &output["surfaces"].back();
@@ -3180,6 +3331,198 @@ CollisionData ReadCollision(const Json &collision)
 
 unsigned FootstepMaterial(std::string material);
 
+void AlignLadderEdgesToModels(CollisionData &collision, const SourceStaticModels &models)
+{
+    struct LadderModel
+    {
+        std::string name;
+        std::uint32_t material{};
+        Vec3 minimum{INFINITY, INFINITY, INFINITY};
+        Vec3 maximum{-INFINITY, -INFINITY, -INFINITY};
+        std::vector<Vec3> vertices;
+        float rungPhase{};
+        bool hasRungPhase{};
+    };
+    std::vector<LadderModel> ladders;
+    for (const SourceStaticModelInstance &instance : models.instances)
+    {
+        const SourceStaticModel &model = models.models.at(instance.model);
+        std::string name = model.name;
+        std::ranges::transform(name, name.begin(), [](const unsigned char letter) {
+            return static_cast<char>(std::tolower(letter));
+        });
+        if (name.find("ladder") == std::string::npos || model.lods.empty())
+            continue;
+
+        LadderModel candidate;
+        candidate.name = model.name;
+        if (!model.lods.front().surfaces.empty())
+        {
+            candidate.material = FootstepMaterial(model.lods.front().surfaces.front().material);
+            for (const Surface &surface : model.lods.front().surfaces)
+                if (FootstepMaterial(surface.material) != candidate.material)
+                {
+                    candidate.material = 0;
+                    break;
+                }
+        }
+        double phaseCos = 0.0, phaseSin = 0.0;
+        std::size_t rungTriangles = 0;
+        for (const Surface &surface : model.lods.front().surfaces)
+        {
+            std::vector<Vec3> worldVertices;
+            worldVertices.reserve(surface.vertices.size());
+            for (const Vertex &vertex : surface.vertices)
+            {
+                const Vec3 position = Add(
+                    instance.origin,
+                    Multiply(Transform(instance.axis, vertex.position), instance.scale));
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                {
+                    candidate.minimum[axis] = (std::min)(candidate.minimum[axis], position[axis]);
+                    candidate.maximum[axis] = (std::max)(candidate.maximum[axis], position[axis]);
+                }
+                candidate.vertices.push_back(position);
+                worldVertices.push_back(position);
+            }
+            for (std::size_t first = 0; first + 2 < surface.indices.size(); first += 3)
+            {
+                const Vec3 &a = worldVertices.at(surface.indices[first]);
+                const Vec3 &b = worldVertices.at(surface.indices[first + 1]);
+                const Vec3 &c = worldVertices.at(surface.indices[first + 2]);
+                const float low = (std::min)({a[2], b[2], c[2]});
+                const float high = (std::max)({a[2], b[2], c[2]});
+                const auto broad = [](const Vec3 &p, const Vec3 &q) {
+                    const float dx = p[0] - q[0], dy = p[1] - q[1];
+                    return dx * dx + dy * dy;
+                };
+                if (high - low > 4.0f ||
+                    (std::max)({broad(a, b), broad(b, c), broad(c, a)}) < 144.0f)
+                    continue;
+                const double angle = (double(a[2]) + b[2] + c[2]) * (2.0 * 3.141592653589793 / 36.0);
+                phaseCos += std::cos(angle);
+                phaseSin += std::sin(angle);
+                ++rungTriangles;
+            }
+        }
+        if (rungTriangles >= 16 &&
+            std::hypot(phaseCos, phaseSin) / rungTriangles >= 0.75)
+        {
+            candidate.rungPhase = static_cast<float>(
+                std::atan2(phaseSin, phaseCos) * (12.0 / (2.0 * 3.141592653589793)));
+            const float halfUnit = std::round(candidate.rungPhase * 2.0f) * 0.5f;
+            if (std::abs(candidate.rungPhase - halfUnit) < 0.15f)
+                candidate.rungPhase = halfUnit;
+            candidate.hasRungPhase = true;
+        }
+        if (!candidate.vertices.empty())
+            ladders.push_back(std::move(candidate));
+    }
+
+    std::size_t aligned = 0;
+    for (CollisionHull &hull : collision.hulls)
+    {
+        if (hull.ladderPlanes.empty() || hull.points.empty())
+            continue;
+        Vec3 minimum{INFINITY, INFINITY, INFINITY};
+        Vec3 maximum{-INFINITY, -INFINITY, -INFINITY};
+        for (const Vec3 &point : hull.points)
+            for (std::size_t axis = 0; axis < 3; ++axis)
+            {
+                minimum[axis] = (std::min)(minimum[axis], point[axis]);
+                maximum[axis] = (std::max)(maximum[axis], point[axis]);
+            }
+        const Vec3 center{(minimum[0] + maximum[0]) * 0.5f,
+                          (minimum[1] + maximum[1]) * 0.5f,
+                          (minimum[2] + maximum[2]) * 0.5f};
+
+        const LadderModel *best = nullptr;
+        float bestScore = INFINITY;
+        for (const LadderModel &model : ladders)
+        {
+            const float overlapZ = (std::min)(maximum[2], model.maximum[2]) -
+                                   (std::max)(minimum[2], model.minimum[2]);
+            if (overlapZ < 12.0f)
+                continue;
+            const float modelX = (model.minimum[0] + model.maximum[0]) * 0.5f;
+            const float modelY = (model.minimum[1] + model.maximum[1]) * 0.5f;
+            const float modelZ = (model.minimum[2] + model.maximum[2]) * 0.5f;
+            const float dx = modelX - center[0], dy = modelY - center[1];
+            const float distanceSquared = dx * dx + dy * dy;
+            if (distanceSquared > 24.0f * 24.0f)
+                continue;
+            const float dz = modelZ - center[2];
+            const float score = distanceSquared + dz * dz * 0.02f;
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = &model;
+            }
+        }
+        if (!best)
+            continue;
+
+        // The IW3 brush marks the climbable volume, which can be wider and
+        // deeper than its rendered ladder. Replay IK uses the edge centerline
+        // as its hand anchor. Keep the collision hull and normal unchanged;
+        // move only the serialized edge plane to the visible model surface.
+        std::vector<float> adjusted;
+        std::vector<std::array<float, 2>> modelTangents;
+        adjusted.reserve(hull.ladderPlanes.size());
+        modelTangents.reserve(hull.ladderPlanes.size());
+        bool valid = true;
+        for (const Vec4 &plane : hull.ladderPlanes)
+        {
+            float modelFace = -INFINITY;
+            float modelTangentMin = INFINITY;
+            float modelTangentMax = -INFINITY;
+            float hullTangentMin = INFINITY;
+            float hullTangentMax = -INFINITY;
+            const float tangentX = -plane[1], tangentY = plane[0];
+            for (const Vec3 &position : best->vertices)
+            {
+                modelFace = (std::max)(modelFace, plane[0] * position[0] +
+                                                     plane[1] * position[1] +
+                                                     plane[2] * position[2]);
+                const float tangent = tangentX * position[0] + tangentY * position[1];
+                modelTangentMin = (std::min)(modelTangentMin, tangent);
+                modelTangentMax = (std::max)(modelTangentMax, tangent);
+            }
+            for (const Vec3 &position : hull.points)
+            {
+                const float tangent = tangentX * position[0] + tangentY * position[1];
+                hullTangentMin = (std::min)(hullTangentMin, tangent);
+                hullTangentMax = (std::max)(hullTangentMax, tangent);
+            }
+            const float inset = plane[3] - modelFace;
+            const float width = modelTangentMax - modelTangentMin;
+            if (!std::isfinite(modelFace) || inset < -2.0f || inset > 16.0f ||
+                width < 12.0f || modelTangentMin < hullTangentMin - 2.0f ||
+                modelTangentMax > hullTangentMax + 2.0f)
+            {
+                valid = false;
+                break;
+            }
+            adjusted.push_back(modelFace);
+            modelTangents.push_back({(modelTangentMin + modelTangentMax) * 0.5f, width});
+        }
+        if (!valid)
+            continue;
+        for (std::size_t index = 0; index < adjusted.size(); ++index)
+            hull.ladderPlanes[index][3] = adjusted[index];
+        hull.ladderModelTangents = std::move(modelTangents);
+        hull.materialOverride = best->material;
+        if (best->hasRungPhase)
+            hull.ladderRungOffset =
+                std::remainder(best->rungPhase + 2.0f - minimum[2], 12.0f);
+        ++aligned;
+        zt::info("iw3: aligned ladder edge to %s at (%.1f %.1f %.1f), rung phase offset %.1f",
+                 best->name.c_str(), center[0], center[1], center[2], hull.ladderRungOffset);
+    }
+    if (aligned)
+        zt::info("iw3: aligned %zu ladder edge pairs to rendered models", aligned);
+}
+
 void AppendStaticModelCollision(CollisionData &collision, const SourceStaticModels &staticModels)
 {
     constexpr std::size_t maximumVertices = 4'000'000;
@@ -3254,7 +3597,7 @@ void AppendStaticModelCollision(CollisionData &collision, const SourceStaticMode
 
 void WriteCollision(const std::filesystem::path &path, const CollisionData &collision)
 {
-    std::vector<std::uint8_t> output{'M', 'W', 'C', 'O', 'L', 'L', '0', '9'};
+    std::vector<std::uint8_t> output{'M', 'W', 'C', 'O', 'L', 'L', '1', '2'};
     const auto append = [&](const auto &value) {
         const std::size_t offset = output.size();
         output.resize(offset + sizeof(value));
@@ -3279,6 +3622,8 @@ void WriteCollision(const std::filesystem::path &path, const CollisionData &coll
         append(hull.surfaceFlags);
         append(static_cast<std::uint32_t>(hull.ladderPlanes.size()));
         append(hull.glassId);
+        append(hull.materialOverride);
+        append(hull.ladderRungOffset);
         for (const Vec3 &point : hull.points)
         {
             for (const float value : point)
@@ -3300,6 +3645,14 @@ void WriteCollision(const std::filesystem::path &path, const CollisionData &coll
         for (const auto &plane : hull.ladderPlanes)
             for (const float value : plane)
                 append(value);
+        for (std::size_t index = 0; index < hull.ladderPlanes.size(); ++index)
+        {
+            const std::array<float, 2> tangent = hull.ladderModelTangents.empty()
+                                                     ? std::array<float, 2>{}
+                                                     : hull.ladderModelTangents.at(index);
+            append(tangent[0]);
+            append(tangent[1]);
+        }
     }
     for (const auto &mesh : collision.meshes)
     {
@@ -4485,6 +4838,15 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     auto missingEntityModels = MissingEntityModels(exportRoot, entityModelNames);
     if (!missingEntityModels.empty())
     {
+        // A direct conversion may be given an already-extracted IW3 asset pack
+        // instead of a full installation containing common_mp.ff.  Stage only
+        // the entity models the map names, then retain the normal common-zone
+        // fallback for ordinary IW3 installations.
+        CopyExtractedEntityModels(exportRoot, missingEntityModels, options.searchPaths);
+        missingEntityModels = MissingEntityModels(exportRoot, entityModelNames);
+    }
+    if (!missingEntityModels.empty())
+    {
         const auto commonFastfile = FindIw3CommonFastfile(options);
         if (commonFastfile.empty())
         {
@@ -4508,6 +4870,8 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     // from the map fastfile first, then resolve only still-missing declarations
     // from the shared multiplayer zone.
     RunUnlinker(unlinker, options, exportRoot, options.fastfile, true);
+    CopyExtractedFx(exportRoot, options.searchPaths);
+    CopyExtractedFxMaterials(exportRoot, options.searchPaths);
     const auto missingFx = MissingDeclaredFx(exportRoot);
     if (!missingFx.empty())
     {
@@ -4562,6 +4926,16 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
              fxElementTypes[0], fxElementTypes[1], fxElementTypes[2], fxElementTypes[3],
              fxElementTypes[4], fxElementTypes[5], fxElementTypes[6], fxElementTypes[7],
              fxElementTypes[8], fxElementTypes[9], fxElementTypes[10]);
+    std::vector<std::string> fxDependencyModels;
+    for (const auto &effect : result.fxEffects)
+        for (const auto &dependency : effect.dependencies)
+            if (dependency.type == "xmodel")
+                fxDependencyModels.push_back(dependency.name);
+    std::ranges::sort(fxDependencyModels);
+    fxDependencyModels.erase(
+        std::unique(fxDependencyModels.begin(), fxDependencyModels.end()), fxDependencyModels.end());
+    CopyExtractedEntityModels(exportRoot, MissingEntityModels(exportRoot, fxDependencyModels),
+                              options.searchPaths);
     std::set<std::string> fxMaterialNames;
     for (const auto &effect : result.fxEffects)
         for (const auto &dependency : effect.dependencies)
@@ -4800,6 +5174,7 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     }
     std::size_t triangles = 0;
     auto nativeCollision = ReadCollision(collision);
+    AlignLadderEdgesToModels(nativeCollision, sourceStaticModels);
     const Json render = BuildRender(world, visibility, brushModels, renderPlan, entities,
                                     nativeCollision, triangles);
     result.footsteps = result.scratch / "footsteps.native";

@@ -403,7 +403,10 @@ struct Hull
     std::uint32_t model = 0;
     std::uint32_t surfaceFlags = 0;
     std::uint16_t glassId = 0;
+    std::uint32_t materialOverride = 0;
+    float ladderRungOffset = 0.0f;
     std::vector<std::array<float, 4>> ladderPlanes;
+    std::vector<std::array<float, 2>> ladderModelTangents;
 };
 
 struct MeshTriangle
@@ -438,10 +441,16 @@ CollisionInput ReadCollision(const std::filesystem::path &path)
                               std::memcmp(bytes.data(), "MWCOLL06", 8) != 0 &&
                               std::memcmp(bytes.data(), "MWCOLL07", 8) != 0 &&
                               std::memcmp(bytes.data(), "MWCOLL08", 8) != 0 &&
-                              std::memcmp(bytes.data(), "MWCOLL09", 8) != 0))
-        throw std::runtime_error("Collision input must use MWCOLL02 through MWCOLL09");
+                              std::memcmp(bytes.data(), "MWCOLL09", 8) != 0 &&
+                              std::memcmp(bytes.data(), "MWCOLL10", 8) != 0 &&
+                              std::memcmp(bytes.data(), "MWCOLL11", 8) != 0 &&
+                              std::memcmp(bytes.data(), "MWCOLL12", 8) != 0))
+        throw std::runtime_error("Collision input must use MWCOLL02 through MWCOLL12");
 
-    const bool hasGlassIds = std::memcmp(bytes.data(), "MWCOLL09", 8) == 0;
+    const bool hasLadderRungOffset = std::memcmp(bytes.data(), "MWCOLL12", 8) == 0;
+    const bool hasMaterialOverride = hasLadderRungOffset || std::memcmp(bytes.data(), "MWCOLL11", 8) == 0;
+    const bool hasLadderModelTangents = hasMaterialOverride || std::memcmp(bytes.data(), "MWCOLL10", 8) == 0;
+    const bool hasGlassIds = hasLadderModelTangents || std::memcmp(bytes.data(), "MWCOLL09", 8) == 0;
     const bool hasMeshes = hasGlassIds || std::memcmp(bytes.data(), "MWCOLL08", 8) == 0;
     const bool hasLadderPlanes = hasMeshes || std::memcmp(bytes.data(), "MWCOLL07", 8) == 0;
     const bool hasSurfaceFlags = hasLadderPlanes || std::memcmp(bytes.data(), "MWCOLL06", 8) == 0;
@@ -496,7 +505,9 @@ CollisionInput ReadCollision(const std::filesystem::path &path)
     constexpr std::uint32_t supportedContents = 0x33691;
     for (std::uint32_t hullIndex = 0; hullIndex < count; ++hullIndex)
     {
-        if (cursor + (hasGlassIds      ? 26u
+        if (cursor + (hasLadderRungOffset ? 34u
+                      : hasMaterialOverride ? 30u
+                      : hasGlassIds      ? 26u
                       : hasLadderPlanes   ? 24u
                       : hasSurfaceFlags ? 20u
                       : hasSlabs        ? 16u
@@ -540,12 +551,24 @@ CollisionInput ReadCollision(const std::filesystem::path &path)
             hull.glassId = Read<std::uint16_t>(bytes.data() + cursor);
             cursor += 2;
         }
+        if (hasMaterialOverride)
+        {
+            hull.materialOverride = Read<std::uint32_t>(bytes.data() + cursor);
+            cursor += 4;
+        }
+        if (hasLadderRungOffset)
+        {
+            hull.ladderRungOffset = Read<float>(bytes.data() + cursor);
+            cursor += 4;
+        }
         if (vertexCount < 4 || vertexCount > 252 || hull.contents == 0 ||
             (hull.contents & ~supportedContents) != 0 || hull.model >= result.models.size() ||
             (hull.glassId && !(hull.contents & 0x10u)) ||
+            hull.materialOverride > 28 || !std::isfinite(hull.ladderRungOffset) ||
+            std::abs(hull.ladderRungOffset) > 6.0f ||
             slabCount > 252 || ladderPlaneCount > 8 || (hull.surfaceFlags & ~0x7FFFFu) != 0 ||
             cursor + std::size_t(vertexCount) * 12 + std::size_t(slabCount) * 20 +
-                    std::size_t(ladderPlaneCount) * 16 >
+                    std::size_t(ladderPlaneCount) * (hasLadderModelTangents ? 24 : 16) >
                 bytes.size())
             throw std::runtime_error("Collision hull data is invalid");
         hull.points.resize(vertexCount);
@@ -580,6 +603,18 @@ CollisionInput ReadCollision(const std::filesystem::path &path)
                             [](const float value) { return !std::isfinite(value); }) ||
                 std::abs(plane[2]) > 0.001f || std::abs(lengthSquared - 1.0f) > 0.001f)
                 throw std::runtime_error("Collision ladder plane is invalid");
+        }
+        if (hasLadderModelTangents)
+        {
+            hull.ladderModelTangents.resize(ladderPlaneCount);
+            for (auto &tangent : hull.ladderModelTangents)
+            {
+                std::memcpy(tangent.data(), bytes.data() + cursor, sizeof(tangent));
+                cursor += sizeof(tangent);
+                if (!std::isfinite(tangent[0]) || !std::isfinite(tangent[1]) ||
+                    tangent[1] < 0.0f || tangent[1] > 1000000.0f)
+                    throw std::runtime_error("Collision ladder model tangent is invalid");
+            }
         }
         ++result.models[hull.model].hullCount;
         if (!grouped)
@@ -1390,8 +1425,10 @@ std::vector<std::uint8_t> BuildShapeList(ReplayHavok &havok, const std::vector<H
                 [](const auto &left, const auto &right) { return left[2] < right[2]; });
             // Surface type 9 maps to Replay's native breakable-glass flags
             // (9 << 19 == 0x480000); glassId is one-based in userData[32:47].
-            const auto material = hull.glassId ? 9u :
-                useFloorMaterials ? floors.At(center[0], center[1], (*highest)[2]) : 5u;
+            const auto material = hull.glassId ? 9u
+                                  : hull.materialOverride ? hull.materialOverride
+                                  : useFloorMaterials ? floors.At(center[0], center[1], (*highest)[2])
+                                                      : 5u;
             const auto tag = findTag(hull.contents, material, hull.surfaceFlags, hull.glassId);
             allContents |= hull.contents;
 
@@ -1631,8 +1668,9 @@ BakeResult BakeCollision(const BakeInput &input)
         hull.contents = source.contents;
         hull.model = source.model;
         hull.slabs = source.slabs;
-        for (const auto &plane : source.ladderPlanes)
+        for (std::size_t planeIndex = 0; planeIndex < source.ladderPlanes.size(); ++planeIndex)
         {
+            const auto &plane = source.ladderPlanes[planeIndex];
             if (result.ladders.size() >= 512)
                 throw std::runtime_error("Collision has more than 512 ladder faces");
 
@@ -1645,6 +1683,7 @@ BakeResult BakeCollision(const BakeInput &input)
             ladder.bottom[0] += plane[0] * distance;
             ladder.bottom[1] += plane[1] * distance;
             ladder.bottom[2] = hull.minimum[2];
+            ladder.bottom[2] += source.ladderRungOffset;
             ladder.top = ladder.bottom;
             ladder.top[2] += std::floor((hull.maximum[2] - hull.minimum[2]) / 12.0f) * 12.0f;
             std::copy_n(plane.data(), 3, ladder.normal.data());
@@ -1652,6 +1691,18 @@ BakeResult BakeCollision(const BakeInput &input)
             const float tangentY = plane[0];
             ladder.width = std::abs(tangentX) * (hull.maximum[0] - hull.minimum[0]) +
                            std::abs(tangentY) * (hull.maximum[1] - hull.minimum[1]);
+            if (!source.ladderModelTangents.empty() &&
+                source.ladderModelTangents[planeIndex][1] > 0.0f)
+            {
+                const auto &modelTangent = source.ladderModelTangents[planeIndex];
+                const float lateralOffset = modelTangent[0] -
+                                            (tangentX * ladder.bottom[0] + tangentY * ladder.bottom[1]);
+                ladder.bottom[0] += tangentX * lateralOffset;
+                ladder.bottom[1] += tangentY * lateralOffset;
+                ladder.top[0] += tangentX * lateralOffset;
+                ladder.top[1] += tangentY * lateralOffset;
+                ladder.width = modelTangent[1];
+            }
             if (ladder.top[2] - ladder.bottom[2] >= 48.0f && ladder.width >= 12.0f)
                 result.ladders.push_back(ladder);
         }

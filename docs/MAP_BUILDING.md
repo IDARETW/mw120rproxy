@@ -50,13 +50,16 @@ Build a prepared dump with the native compiler:
 
 The compiler can read a pre-serialized native Havok blob at
 'maps/mp/mp_example.d3dbsp.havok'. To bake collision in memory instead, provide the supported
-Replay executable, an MWCOLL02 or MWCOLL03 collision input, and optional MWRSTEP1 footstep data:
+Replay executable, an MWCOLL02 through MWCOLL12 collision input, and optional MWRSTEP1 footstep data:
 
 ~~~powershell
 .\iw8-zonetool\xmake-out\x64\Release\iw8-zonetool.exe build-map 'D:\Maps\Example\dump' mp_example -o 'D:\Maps\Example\output' --replay 'D:\Games\Replay\game_dx12_ship_replay.exe' --collision 'D:\Maps\Example\collision.native' --footsteps 'D:\Maps\Example\footsteps.native'
 ~~~
 
-Use '—sun-intensity-scale' with a positive multiplier when the prepared lighting profile needs an
+The direct IW3 route produces MWCOLL12 staging data internally and does not require a separate
+collision file from the user.
+
+Use '--sun-intensity-scale' with a positive multiplier when the prepared lighting profile needs an
 exposure adjustment. Rebuild the complete package after changing lighting or lightgrid data.
 
 The output contains exactly:
@@ -69,6 +72,9 @@ ww_mp_example.ff
 techsets_mp_example.ff
 map.json
 ~~~
+
+The `techsets_` zone owns material, technique-set, and shader definitions. The main zone keeps
+resident images and material references; the `eng_` and `ww_` companions can be empty.
 
 'map.json' is always generated and is the only loose output file accepted beside those fastfiles. It may
 contain a matching 'id', a lobby 'title' or 'name', and a 'description'. The compiler rejects

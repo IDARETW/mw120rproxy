@@ -536,6 +536,7 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
     {
         const auto &main = validation[0].typeCounts;
         const auto &server = validation[1].typeCounts;
+        const auto &techsets = validation[4].typeCounts;
         if (main[ASSET_TYPE_GFX_MAP] != 1 || main[ASSET_TYPE_GLASS_MAP] != 1 ||
             main[ASSET_TYPE_IMPACT_FX] != 1 || server[ASSET_TYPE_COL_MAP] != 1 ||
             server[ASSET_TYPE_COM_MAP] != 1 || server[ASSET_TYPE_MAP_ENTS] != 1 ||
@@ -544,11 +545,21 @@ bool validatePackage(const std::string &packageDirectory, const std::string &map
             err("validate: package is missing a required native Replay map asset");
             valid = false;
         }
-        for (size_t index = 2; index < validation.size(); ++index)
+        if (!techsets[ASSET_TYPE_MATERIAL] ||
+            main[ASSET_TYPE_MATERIAL] != techsets[ASSET_TYPE_MATERIAL] ||
+            !techsets[ASSET_TYPE_TECHSET] ||
+            !techsets[ASSET_TYPE_VERTEXSHADER] || !techsets[ASSET_TYPE_PIXELSHADER] ||
+            techsets[ASSET_TYPE_IMAGE] || main[ASSET_TYPE_TECHSET] ||
+            main[ASSET_TYPE_VERTEXSHADER] || main[ASSET_TYPE_PIXELSHADER])
+        {
+            err("validate: map render definitions must reside in the techset zone and images in the main zone");
+            valid = false;
+        }
+        for (size_t index = 2; index < 4; ++index)
         {
             if (validation[index].assetCount)
             {
-                err("validate: generated localization/techset companion zones must be empty");
+                err("validate: generated localization companions must be empty");
                 valid = false;
                 break;
             }
@@ -576,23 +587,29 @@ struct AssetTally
     int models{};
     int surfaces{};
     int failures{};
+    std::string firstFailure;
     bool hasCompass{};
 };
 
-AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirectory,
+AssetTally addMapAssets(iw8::ZoneWriter &writer, iw8::ZoneWriter &techsets,
+                        const std::string &dumpDirectory,
                         const dumpsrc::DumpSource &source, const std::string &map)
 {
     AssetTally tally;
     for (const std::string &relativePath : source.listMaterials())
     {
         const std::string path = path_join(path_join(dumpDirectory, "materials"), relativePath);
-        if (convdump::mtl::emitMaterialFromDump(writer, path, relativePath))
+        std::string materialName;
+        if (convdump::mtl::emitMaterialFromDump(techsets, path, relativePath, &materialName))
         {
+            replayrender::RegisterMaterialReference(writer, materialName);
             ++tally.materials;
         }
         else
         {
             ++tally.failures;
+            if (tally.firstFailure.empty())
+                tally.firstFailure = "material " + path;
         }
     }
 
@@ -604,6 +621,8 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
         if (!input.loaded || !dumpimg::addImageAsset(writer, dumpimg::convertImage(input)))
         {
             ++tally.failures;
+            if (tally.firstFailure.empty())
+                tally.firstFailure = "image " + name + " in " + dumpDirectory;
             continue;
         }
         ++tally.images;
@@ -612,9 +631,15 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
     if (hasCompass)
     {
         tally.hasCompass = true;
-        if (!convdump::mtl::writeCompassMaterial(writer, compassName))
+        if (!convdump::mtl::writeCompassMaterial(techsets, compassName))
         {
             ++tally.failures;
+            if (tally.firstFailure.empty())
+                tally.firstFailure = "compass material " + compassName;
+        }
+        else
+        {
+            replayrender::RegisterMaterialReference(writer, compassName);
         }
     }
     else
@@ -640,6 +665,8 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
             else
             {
                 ++tally.failures;
+                if (tally.firstFailure.empty())
+                    tally.firstFailure = "XModelSurfs " + name + " in " + dumpDirectory;
             }
         }
     }
@@ -654,11 +681,12 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, const std::string &dumpDirector
         else
         {
             ++tally.failures;
+            if (tally.firstFailure.empty())
+                tally.firstFailure = "XModel " + name + " in " + dumpDirectory;
         }
     }
 
-    info("assets: %d materials, %d images, %d models, %d model surfaces, %d "
-         "skipped",
+    info("assets: %d materials, %d images, %d models, %d model surfaces, %d failures",
          tally.materials, tally.images, tally.models, tally.surfaces, tally.failures);
     return tally;
 }
@@ -954,9 +982,10 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
 
     {
         iw8::ZoneWriter writer;
+        iw8::ZoneWriter techsets;
         const auto dynamicCounts = prepared ? iw8::CountDynamicEntities(prepared->dynamicEntities)
                                             : iw8::DynamicEntityCounts{};
-        replayrender::RegisterMaterial(writer, renderMesh);
+        replayrender::RegisterMapMaterials(writer, techsets, renderMesh);
         replayrender::RegisterReflectionProbeImage(writer, renderMesh);
         if (glassInitCount)
             iw8::writePhysicsAsset(writer, glassPhysics);
@@ -1006,7 +1035,10 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
                        iw8maps::emitGlassMapBody(output, assetName.c_str(), renderMesh);
                    });
         const dumpsrc::DumpSource source(dumpDirectory, map);
-        const AssetTally assets = addMapAssets(writer, dumpDirectory, source, map);
+        const AssetTally assets = addMapAssets(writer, techsets, dumpDirectory, source, map);
+        if (assets.failures)
+            throw std::runtime_error("failed to import " + std::to_string(assets.failures) +
+                                     " map assets; first: " + assets.firstFailure);
         if (assets.hasCompass && compassBounds)
         {
             const std::string scriptName = "scripts/mp/maps/" + map + "/" + map + ".gsc";
@@ -1022,13 +1054,21 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
         {
             warn("assets: compass image has no valid pair of IW3 minimap_corner entities");
         }
+        techsets.build();
         writer.build();
+
+        if (!iw8_write(path_join(outputDirectory, "techsets_" + map + ".ff"),
+                       techsets.body(), writeParams(techsets)))
+        {
+            result = 1;
+        }
 
         if (!iw8_write(path_join(outputDirectory, map + ".ff"), writer.body(), writeParams(writer)))
         {
             result = 1;
         }
         info("build-map: main zone contains %zu assets", writer.assetCount());
+        info("build-map: techset zone contains %zu assets", techsets.assetCount());
     }
 
     const auto writeEmpty = [&](const std::string &name) {
@@ -1041,7 +1081,6 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
     };
     writeEmpty("eng_" + map + ".ff");
     writeEmpty("ww_" + map + ".ff");
-    writeEmpty("techsets_" + map + ".ff");
 
     if (result == 0 && !writeMetadata(outputDirectory, metadata))
     {

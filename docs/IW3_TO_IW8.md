@@ -79,6 +79,12 @@ as IW8 structures. Successful conversion leaves exactly five fastfiles and `map.
 output directory. It does not leave intermediate JSON, binary payloads, DDS files, or package
 directories.
 
+The `techsets_` zone owns material, technique-set, and shader definitions. The main zone owns
+resident images and references those materials; the `eng_` and `ww_` zones can be empty. One
+source lightmap retains its dimensions and local UVs, while multiple source lightmaps share a
+packed native atlas with remapped UVs. Map-specific compressed sun shadows are still under
+development; see [Custom-map lighting](LIGHTING.md) for the current limits.
+
 The build log accounts for every declared source asset family. Unsupported gameplay, audio,
 script, alternate-mode spawn, or particle families remain explicit warnings rather than partial
 assets. This is deliberate: a native Replay consumer and verified target layout are required before

@@ -1,7 +1,8 @@
 # Custom-map lighting
 
-> **POC status:** lighting output has offline coverage only. Exposure, shadow range, indirect
-> light, and viewmodel response require in-game verification on each converted map.
+> **POC status:** Office has owner-tested lighting iterations, but arbitrary converted maps still
+> need in-game verification. Map-specific compressed sun shadows are not yet generated, so distant
+> shadow coverage remains incomplete. Serialization checks alone do not prove visual correctness.
 
 MW120R uses the lighting serialized by the native zonetool. The proxy does not replace a converted map's sun direction, color, or intensity. This page describes the prepared-dump route; direct `build-iw3` conversion uses the source sun without requiring a lighting JSON file.
 
@@ -41,9 +42,12 @@ compiler validates it and embeds it in the main fastfile; neither file is part o
 package. Keep prepared inputs from the same export. Incorrect counts, offsets, probes, or color
 data can cause camera-dependent artifacts and poor indoor or viewmodel lighting.
 
-Authored IW3 lightmaps are packed into Replay's native temporary atlas contract. Baked opaque
-surfaces use source-specific native Replay materials, direct packed-atlas UVs, and the native
-lightmap index. The atlas contains the three target planes in BC4, R11G11B10F, and BC5 order.
+Authored IW3 lightmaps feed Replay's native temporary atlas contract. A single source lightmap
+keeps its source dimensions and local UVs. Multiple source lightmaps share a packed atlas with
+correspondingly remapped UVs. Baked opaque surfaces use source-specific native Replay materials
+and the native lightmap index. The atlas contains the three target planes in BC4, R11G11B10F,
+and BC5 order. The single-lightmap UV correction passes a source-to-fastfile check across every
+native world vertex in Office; its latest visual result is not yet confirmed.
 
 Screen-space ambient occlusion remains owned by MW2019's rendering engine. Lit generated passes
 bind Replay's GTAO code image at `t95` and sampler at `s8`; the converter does not bake a custom AO

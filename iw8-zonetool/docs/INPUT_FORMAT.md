@@ -90,7 +90,7 @@ Use either of these inputs:
 - Place a valid serialized Replay TAG0 blob at `<asset>.havok`.
 - Pass `--replay`, `--collision`, and optionally `--footsteps` to build it in memory.
 
-The second form accepts the MWCOLL02/MWCOLL03 collision format and MWRSTEP1 footstep data used by
+The second form accepts MWCOLL02 through MWCOLL12 collision formats and MWRSTEP1 footstep data used by
 the existing conversion pipeline. `build-iw3` generates MWRSTEP1 data from upward-facing world
 triangles automatically; a prepared dump may provide it explicitly when authored surface metadata
 is available. Footstep input is consumed by the Havok baker and is never copied to the output. No

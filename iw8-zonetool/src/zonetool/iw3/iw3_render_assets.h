@@ -24,6 +24,7 @@ struct MaterialPlan
 {
     std::size_t tile{};
     SurfaceKind kind{SurfaceKind::opaque};
+    bool castsShadow{true};
     unsigned flags{};
     std::array<float, 4> environment{0.8f, 4.0f, 2.5f, 0.625f};
     unsigned worldMaterialIndex{};

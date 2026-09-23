@@ -11,6 +11,18 @@ inline constexpr size_t ClipMapSize = 0xF8;
 inline constexpr size_t ComWorldSize = 0xA8;
 inline constexpr size_t GlassWorldSize = 0x10;
 inline constexpr size_t GfxWorldSize = 0x4590;
+// Replay Load_GfxWorldDraw RVA 0xD96710: the map-specific compressed sun
+// shadow payload precedes its 0x60-byte GPU buffer and 0x30-byte parameters.
+// These are whole-GfxWorld offsets, not the later-build GfxWorldDraw offsets.
+// Replay cs_sunvis.434.cso reads the payload as a 32-byte header, a four-byte
+// forest, and pointed-to 512-pixel mini-trees. A nonzero scalar forest entry
+// is a normalized depth threshold under the outer header's +24/+28 origin
+// and inverse span; mini-tree leaves use the mini-header's own +24/+28 pair.
+// Consequently these fields must be baked together from this map's casters.
+inline constexpr size_t CompressedSunShadowSize = 0x37F4;
+inline constexpr size_t CompressedSunShadowData = 0x37F8;
+inline constexpr size_t CompressedSunShadowBuffer = 0x3800;
+inline constexpr size_t CompressedSunShadowParams = 0x3860;
 // Load_GfxWorld allocates this in stream 4, using cellCount*ceil(cellCount/32).
 inline constexpr size_t CellVisBits = 0x3EF0;
 inline constexpr size_t SceneDynModel = 0x3F00;
