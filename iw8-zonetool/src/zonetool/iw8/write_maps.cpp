@@ -295,7 +295,8 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
                     const replayrender::Mesh &mesh,
                     const uint32_t primaryLightCount, const uint32_t sunPrimaryLightIndex,
                     const replayrender::StaticModels &staticModels,
-                    const uint32_t dynamicModelCount, const uint32_t dynamicBrushCount)
+                    const uint32_t dynamicModelCount, const uint32_t dynamicBrushCount,
+                    const replaysunshadow::Data &sunShadow)
 {
     if (primaryLightCount < 2 || sunPrimaryLightIndex >= primaryLightCount)
         throw std::runtime_error("invalid primary-light table for GfxWorld");
@@ -305,10 +306,19 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     const auto cellCount = static_cast<uint32_t>(mesh.cells.size());
     const auto cellWordCount = (cellCount + 31u) >> 5;
     std::vector<uint8_t> gw(kSizeGfxWorld, 0);
-    // The Replay compressed sun-shadow payload at +0x37F4 is map-specific.
-    // Keep its size/pointer/parameters zero until a payload baked for this
-    // mesh can be validated against the native decoder. Stock-map bytes are
-    // not portable and would produce incorrect distant occlusion.
+    if (!sunShadow.bytes.empty())
+    {
+        // Load_GfxWorldDraw (0xD96710) creates the runtime GPU record at
+        // +0x3800 from these bytes. Only the data pointer and params are disk
+        // inputs; the 96-byte runtime record remains zero until loading.
+        if (sunShadow.bytes.size() > 0x7ffffffcu)
+            throw std::runtime_error("compressed sun-shadow data exceeds native size");
+        stamp32(gw.data(), replaymap::CompressedSunShadowSize,
+                static_cast<uint32_t>(sunShadow.bytes.size()));
+        stamp64(gw.data(), replaymap::CompressedSunShadowData, PTR_FOLLOWS);
+        std::memcpy(gw.data() + replaymap::CompressedSunShadowParams,
+                    &sunShadow.parameters, sizeof(sunShadow.parameters));
+    }
     stamp64(gw.data(), kGW_name, PTR_FOLLOWS);
     stamp64(gw.data(), kGW_baseName, PTR_FOLLOWS);
     stamp32(gw.data(), kGW_bspVersion, 243);
@@ -586,6 +596,10 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
         zw.align(3);
         zw.writeT<uint32_t>(0); // lightmap 0 resides in transient zone slot 0
     }
+    // Native byte allocation has no extra alignment. The compressed forest
+    // follows lightmapTransientIndex and precedes the brush-model array.
+    if (!sunShadow.bytes.empty())
+        zw.write(sunShadow.bytes.data(), sunShadow.bytes.size());
     zw.align(3);
     for (const auto &model : mesh.brushModels)
     {

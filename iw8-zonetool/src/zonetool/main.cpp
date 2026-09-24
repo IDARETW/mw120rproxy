@@ -921,6 +921,18 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
         throw std::runtime_error("native render data is missing: " + renderPath);
     }
     const auto renderMesh = replayrender::Load(renderPath);
+    // Use the final ComWorld sun vector, including any requested profile.
+    // Replay rejects compressed shadows whose stored direction differs from
+    // the active sun. Moving entities and breakable panes are not baked.
+    const auto sunShadow = prepared
+        ? replaysunshadow::Bake(prepared->shadowScene,
+                                {lighting.direction[0], lighting.direction[1], lighting.direction[2]},
+                                renderMesh.sceneBounds)
+        : replaysunshadow::Data{};
+    if (!sunShadow.bytes.empty())
+        info("sun-shadow: baked %u cells at %u resolution, %zu native compressed bytes",
+             sunShadow.parameters.forestSize, sunShadow.parameters.resolution,
+             sunShadow.bytes.size());
     const auto glassInitCount = static_cast<uint32_t>(renderMesh.glassPanes.size());
     iw8::havok::PhysicsAsset glassPhysics;
     if (glassInitCount)
@@ -1024,11 +1036,12 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
             prepared ? prepared->staticModels : replayrender::StaticModels{};
         writer.add(ASSET_TYPE_GFX_MAP, assetName,
                    [assetName, renderPath, &renderMesh, primaryLightCount,
-                    sunPrimaryLightIndex, staticModels, dynamicCounts](iw8::ZoneWriter &output) {
+                    sunPrimaryLightIndex, staticModels, dynamicCounts,
+                    &sunShadow](iw8::ZoneWriter &output) {
                        iw8maps::emitGfxMapBody(output, assetName.c_str(), renderPath,
                                                renderMesh, primaryLightCount, sunPrimaryLightIndex,
                                                staticModels, dynamicCounts.models,
-                                               dynamicCounts.brushes);
+                                               dynamicCounts.brushes, sunShadow);
                    });
         writer.add(ASSET_TYPE_GLASS_MAP, assetName,
                    [assetName, &renderMesh](iw8::ZoneWriter &output) {

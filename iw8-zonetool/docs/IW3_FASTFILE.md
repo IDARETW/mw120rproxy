@@ -131,6 +131,14 @@ map.json
 `mp_example.ff` keeps the resident images and the native material references used by world and
 model geometry, glass, and effects. The `eng_` and `ww_` companions can be empty.
 
+Direct conversion also generates native compressed sun shadows for the fixed world and placed
+static models. The bake follows the converted sun direction and material alpha/culling rules,
+and embeds its forest and projection parameters in `mp_example.ff`. Windows' software Direct3D
+device performs this offline step. It needs no additional package directory, input JSON, shader
+export, or loose shadow file. Moving objects and breakable panes keep their runtime shadow paths.
+This new bake has native shader and loader checks; its first Office iteration still needs
+gameplay verification.
+
 No input JSON is required. The converter creates `map.json` with the map id and a default title. To set a friendly lobby title or description, pass one small file with `--metadata`. `name` and `title` are accepted aliases and must match if both are present:
 
 ```json
@@ -160,8 +168,9 @@ sets themselves cannot be copied verbatim because the engines use different shad
 
 Baked opaque surfaces use Replay's native lightmap inputs. One source lightmap keeps its original
 dimensions and normalized coordinates; several source lightmaps share a packed atlas and receive
-remapped coordinates. Native material lighting and sun-shadow coverage remain under development;
-the converter does not yet generate map-specific compressed sun shadows for distant geometry.
+remapped coordinates. The owner confirmed correct UVs and no blackened map faces in Office's
+`lightmap-uv-1` iteration. Native lighting and the new compressed sun-shadow bake remain under
+development; package checks do not establish visual parity on every converted map.
 
 Each source cubemap is converted into one slice of Replay's native 256-by-256 octahedral
 reflection array. The compiler writes six mip levels in Replay's mip-major, slice-major order,

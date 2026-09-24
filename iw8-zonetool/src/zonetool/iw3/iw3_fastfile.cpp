@@ -2235,6 +2235,18 @@ Vec3 Transform(const std::array<Vec3, 3> &axis, const Vec3 &value)
     return result;
 }
 
+std::array<Vec3, 3> StaticModelAxis(const SourceStaticModelInstance &instance)
+{
+    std::array<Vec3, 3> axis{};
+    for (std::size_t index = 0; index < axis.size(); ++index)
+        axis[index] = Unit(instance.axis[index]);
+    if (std::abs(Dot(axis[0], axis[1])) > 0.01f || std::abs(Dot(axis[0], axis[2])) > 0.01f ||
+        std::abs(Dot(axis[1], axis[2])) > 0.01f ||
+        Dot(Cross(axis[0], axis[1]), axis[2]) < 0.99f)
+        throw std::runtime_error("IW3 static-model instance has an invalid rotation basis");
+    return axis;
+}
+
 Vec4 QuaternionFromBasis(const Vec3 &x, const Vec3 &y, const Vec3 &z)
 {
     const float matrix[3][3]{{x[0], y[0], z[0]}, {x[1], y[1], z[1]}, {x[2], y[2], z[2]}};
@@ -2520,19 +2532,98 @@ void BuildPreparedStaticModels(const SourceStaticModels &source, const RenderPla
     staticModels.instances.reserve(source.instances.size());
     for (const SourceStaticModelInstance &sourceInstance : source.instances)
     {
-        std::array<Vec3, 3> axis{};
-        for (std::size_t index = 0; index < axis.size(); ++index)
-            axis[index] = Unit(sourceInstance.axis[index]);
-        if (std::abs(Dot(axis[0], axis[1])) > 0.01f || std::abs(Dot(axis[0], axis[2])) > 0.01f ||
-            std::abs(Dot(axis[1], axis[2])) > 0.01f ||
-            Dot(Cross(axis[0], axis[1]), axis[2]) < 0.99f)
-        {
-            throw std::runtime_error("IW3 static-model instance has an invalid rotation basis");
-        }
+        const auto axis = StaticModelAxis(sourceInstance);
         staticModels.instances.push_back(
             {static_cast<unsigned>(sourceInstance.model), sourceInstance.origin,
              QuaternionFromBasis(axis[0], axis[1], axis[2]), sourceInstance.scale});
     }
+}
+
+void BuildShadowScene(const std::vector<BrushModel> &brushModels,
+                      const SourceStaticModels &staticModels, const RenderPlan &plan,
+                      replaysunshadow::Scene &scene)
+{
+    const auto append = [&](const Surface &source, const unsigned material,
+                            const bool reverseWinding,
+                            const SourceStaticModelInstance *instance,
+                            const std::array<Vec3, 3> *axis) {
+        if (source.indices.size() % 3 || source.vertices.empty())
+            throw std::runtime_error("invalid IW3 shadow-caster surface");
+        if (source.indices.empty())
+            return;
+        replaysunshadow::Surface caster;
+        caster.material = material;
+        caster.vertices.reserve(source.indices.size());
+        for (std::size_t first = 0; first < source.indices.size(); first += 3)
+            for (const std::size_t corner : {0u, reverseWinding ? 2u : 1u,
+                                             reverseWinding ? 1u : 2u})
+            {
+                const std::uint32_t index = source.indices[first + corner];
+                if (index >= source.vertices.size())
+                    throw std::runtime_error("IW3 shadow triangle references a missing vertex");
+                const Vertex &vertex = source.vertices[index];
+                replaysunshadow::Vertex output;
+                output.position = instance
+                                      ? Add(instance->origin,
+                                            Multiply(Transform(*axis, vertex.position),
+                                                     instance->scale))
+                                      : vertex.position;
+                output.uv = vertex.uv;
+                output.alpha = vertex.color[3] / 255.0f;
+                for (const float coordinate : output.position)
+                    if (!std::isfinite(coordinate) || std::abs(coordinate) > 1.0e7f)
+                        throw std::runtime_error("IW3 shadow vertex is outside world range");
+                for (const float coordinate : output.uv)
+                    if (!std::isfinite(coordinate) || std::abs(coordinate) > 1.0e6f)
+                        throw std::runtime_error("IW3 shadow UV is outside supported range");
+                caster.vertices.push_back(output);
+            }
+        scene.surfaces.push_back(std::move(caster));
+    };
+
+    if (brushModels.empty())
+        throw std::runtime_error("IW3 shadow scene has no fixed world brush model");
+    for (const Surface &surface : brushModels.front().surfaces)
+    {
+        const auto found = plan.worldShadowMaterials.find(surface.material);
+        if (found != plan.worldShadowMaterials.end())
+            append(surface, found->second, true, nullptr, nullptr);
+    }
+    const std::size_t worldSurfaceCount = scene.surfaces.size();
+    for (const SourceStaticModelInstance &instance : staticModels.instances)
+    {
+        if (instance.model >= staticModels.models.size())
+            throw std::runtime_error("IW3 shadow instance references a missing model");
+        const SourceStaticModel &model = staticModels.models[instance.model];
+        if (model.lods.empty())
+            throw std::runtime_error("IW3 shadow instance model has no render LOD");
+        const auto axis = StaticModelAxis(instance);
+        for (const Surface &surface : model.lods.front().surfaces)
+        {
+            const auto found = plan.modelShadowMaterials.find(surface.material);
+            if (found == plan.modelShadowMaterials.end())
+                continue;
+            if (model.name == "com_ladder_wood")
+            {
+                Surface corrected = surface;
+                AddLadderMidpointRungs(corrected, 0);
+                append(corrected, found->second, false, &instance, &axis);
+            }
+            else
+            {
+                append(surface, found->second, false, &instance, &axis);
+            }
+        }
+    }
+    const std::size_t triangles = std::accumulate(
+        scene.surfaces.begin(), scene.surfaces.end(), std::size_t{},
+        [](const std::size_t count, const replaysunshadow::Surface &surface) {
+            return count + surface.vertices.size() / 3;
+        });
+    zt::info("iw3: prepared sun-shadow scene: %zu material(s), %zu fixed-world and %zu "
+             "static-model surface(s), %zu triangle(s)",
+             scene.materials.size(), worldSurfaceCount,
+             scene.surfaces.size() - worldSurfaceCount, triangles);
 }
 
 Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &plan,
@@ -4731,6 +4822,7 @@ PreparedMap::PreparedMap(PreparedMap &&other) noexcept
     , smallGlassEffect(std::move(other.smallGlassEffect))
     , impactOverrides(std::move(other.impactOverrides))
     , staticModels(std::move(other.staticModels))
+    , shadowScene(std::move(other.shadowScene))
     , dynamicEntities(std::move(other.dynamicEntities))
 {
     other.scratch.clear();
@@ -4758,6 +4850,7 @@ PreparedMap &PreparedMap::operator=(PreparedMap &&other) noexcept
         smallGlassEffect = std::move(other.smallGlassEffect);
         impactOverrides = std::move(other.impactOverrides);
         staticModels = std::move(other.staticModels);
+        shadowScene = std::move(other.shadowScene);
         dynamicEntities = std::move(other.dynamicEntities);
         other.scratch.clear();
     }
@@ -5013,6 +5106,14 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     std::vector<std::string> materialNames;
     std::vector<std::string> worldMaterialNames;
     std::vector<std::string> modelMaterialNames;
+    std::vector<std::string> shadowWorldMaterialNames;
+    std::vector<std::string> shadowModelMaterialNames;
+    for (const Surface &surface : brushModels.front().surfaces)
+        shadowWorldMaterialNames.push_back(surface.material);
+    for (const SourceStaticModel &model : sourceStaticModels.models)
+        if (!model.lods.empty())
+            for (const Surface &surface : model.lods.front().surfaces)
+                shadowModelMaterialNames.push_back(surface.material);
     for (const BrushModel &model : brushModels)
         for (const Surface &surface : model.surfaces)
         {
@@ -5050,13 +5151,16 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     const auto mapDirectory = result.root / "maps" / "mp";
     std::filesystem::create_directories(mapDirectory);
     const std::vector<std::string> fxMaterials(fxMaterialNames.begin(), fxMaterialNames.end());
-    const RenderPlan renderPlan =
+    RenderPlan renderPlan =
         PrepareRenderAssets(exportRoot, world, materialNames, worldMaterialNames,
-                            modelMaterialNames, fxMaterials, options.searchPaths, mapDirectory,
+                            modelMaterialNames, fxMaterials, shadowWorldMaterialNames,
+                            shadowModelMaterialNames, options.searchPaths, mapDirectory,
                             options.map);
     result.fxMaterialAliases = renderPlan.fxMaterialAliases;
     BuildPreparedStaticModels(sourceStaticModels, renderPlan, options.map, "smodel", result.xmodels,
                               result.staticModels, true);
+    result.shadowScene = std::move(renderPlan.shadowScene);
+    BuildShadowScene(brushModels, sourceStaticModels, renderPlan, result.shadowScene);
     replayrender::StaticModels unusedDynamicTables;
     BuildPreparedStaticModels(sourceDynamicEntities.models, renderPlan, options.map, "dynmodel",
                               result.xmodels, unusedDynamicTables, true);

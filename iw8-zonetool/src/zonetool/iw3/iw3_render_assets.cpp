@@ -63,6 +63,7 @@ struct SourceMaterial
     std::array<float, 4> environment{0.8f, 4.0f, 2.5f, 0.625f};
     SurfaceKind kind{SurfaceKind::opaque};
     bool castsShadow{true};
+    bool shadowOnly{};
     unsigned flags{};
     unsigned cullMode{1}; // Replay: none=0, back=1, front=2.
 };
@@ -1438,8 +1439,23 @@ SourceMaterial ReadMaterial(const std::filesystem::path &root,
                 material.castsShadow = true;
     }
     const std::string techset = source.at("techniqueSet").get<std::string>();
-    if (techset == "shadowcaster" ||
-        std::regex_search(techset, std::regex("(^|_)sky($|_)", std::regex::icase)))
+    if (techset == "shadowcaster")
+    {
+        material.kind = SurfaceKind::skipped;
+        material.shadowOnly = true;
+        for (const auto &state : source.value("stateBits", Json::array()))
+        {
+            if (!state.contains("cullFace"))
+                continue;
+            const std::string cull = state.at("cullFace").get<std::string>();
+            if (cull != "none" && cull != "back" && cull != "front")
+                throw std::runtime_error("Unsupported IW3 material culling: " + name);
+            material.cullMode = cull == "none" ? 0 : cull == "back" ? 1 : 2;
+            break;
+        }
+        return material;
+    }
+    if (std::regex_search(techset, std::regex("(^|_)sky($|_)", std::regex::icase)))
     {
         material.kind = SurfaceKind::skipped;
         return material;
@@ -2139,6 +2155,8 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
                                const std::vector<std::string> &worldMaterials,
                                const std::vector<std::string> &modelMaterials,
                                const std::vector<std::string> &fxMaterials,
+                               const std::vector<std::string> &shadowWorldMaterials,
+                               const std::vector<std::string> &shadowModelMaterials,
                                const std::vector<std::filesystem::path> &sourcePaths,
                                const std::filesystem::path &mapDirectory, const std::string &map)
 {
@@ -2353,6 +2371,60 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             plan.hasGlass |= item.kind == SurfaceKind::glass;
         }
         plan.materials.emplace(material.name, item);
+    }
+
+    const std::set<std::string> worldCasters(shadowWorldMaterials.begin(),
+                                             shadowWorldMaterials.end());
+    const std::set<std::string> modelCasters(shadowModelMaterials.begin(),
+                                             shadowModelMaterials.end());
+    for (const SourceMaterial &source : materials)
+    {
+        if (!source.castsShadow ||
+            (source.kind != SurfaceKind::opaque && source.kind != SurfaceKind::cutout &&
+             !source.shadowOnly))
+            continue;
+        const auto addCaster = [&](const bool worldDomain) {
+            const auto &requested = worldDomain ? worldCasters : modelCasters;
+            if (!requested.contains(source.name))
+                return;
+            replaysunshadow::Material caster;
+            // The generated world foliage shadow variants disable culling on
+            // both depth passes; model variants retain their authored cull.
+            caster.cullMode = worldDomain && source.kind == SurfaceKind::cutout
+                                  ? 0u
+                                  : source.cullMode;
+            caster.atlasTile = worldDomain;
+            if (source.kind == SurfaceKind::cutout)
+                caster.alphaTest = source.flags & 8u ? 2u : source.flags & 16u ? 3u : 1u;
+            if (!source.color.empty())
+            {
+                const Image &resident = image(source.color).front();
+                caster.width = worldDomain ? cell : resident.width;
+                caster.height = worldDomain ? cell : resident.height;
+                if (caster.alphaTest)
+                {
+                    const Image mask = Resize(resident, caster.width, caster.height, true,
+                                              source.tint);
+                    const std::size_t pixels =
+                        static_cast<std::size_t>(caster.width) * caster.height;
+                    caster.alpha.reserve(pixels);
+                    for (std::size_t pixel = 0; pixel < pixels; ++pixel)
+                        caster.alpha.push_back(mask.rgba[pixel * 4 + 3]);
+                }
+            }
+            else
+            {
+                caster.width = caster.height = 1; // Shadow-only techset is opaque.
+            }
+            if (plan.shadowScene.materials.size() >= UINT32_MAX)
+                throw std::runtime_error("IW3 shadow material table exceeds Replay limits");
+            const unsigned index = static_cast<unsigned>(plan.shadowScene.materials.size());
+            plan.shadowScene.materials.push_back(std::move(caster));
+            (worldDomain ? plan.worldShadowMaterials : plan.modelShadowMaterials)
+                .emplace(source.name, index);
+        };
+        addCaster(true);
+        addCaster(false);
     }
 
     for (std::size_t face = 0; face < plan.skyTiles.size(); ++face)

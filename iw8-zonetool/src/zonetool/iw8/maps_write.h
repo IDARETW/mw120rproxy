@@ -2,6 +2,7 @@
 #include "iw8_zone.h"
 #include "replay_map_layout.h"
 #include "replay_render.h"
+#include "replay_sunshadow.h"
 #include <cstdint>
 #include <string>
 
@@ -42,6 +43,7 @@ void emitGfxMapBody(iw8::ZoneWriter &zw, const char *assetName, const std::strin
                     const replayrender::Mesh &mesh,
                     uint32_t primaryLightCount, uint32_t sunPrimaryLightIndex,
                     const replayrender::StaticModels &staticModels,
-                    uint32_t dynamicModelCount, uint32_t dynamicBrushCount);
+                    uint32_t dynamicModelCount, uint32_t dynamicBrushCount,
+                    const replaysunshadow::Data &sunShadow);
 
 } // namespace iw8maps

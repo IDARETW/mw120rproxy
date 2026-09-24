@@ -6,6 +6,7 @@
 #include "../iw8/replay_havok.h"
 #include "../iw8/replay_impact.h"
 #include "../iw8/replay_render.h"
+#include "../iw8/replay_sunshadow.h"
 #include "../iw8/replay_vfx.h"
 
 #include <array>
@@ -211,6 +212,7 @@ struct PreparedMap
     std::string smallGlassEffect;
     iw8::impact::EffectOverrides impactOverrides;
     replayrender::StaticModels staticModels;
+    replaysunshadow::Scene shadowScene;
     std::vector<iw8::DynamicEntity> dynamicEntities;
 
     PreparedMap() = default;

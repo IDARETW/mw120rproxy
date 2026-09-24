@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/json.hpp"
+#include "../iw8/replay_sunshadow.h"
 
 #include <array>
 #include <cstddef>
@@ -72,6 +73,9 @@ struct RenderPlan
     std::vector<ReflectionProbePlan> reflectionProbes;
     nlohmann::json reflectionProbeArrayImage;
     std::vector<NativeLightmapPlan> nativeLightmaps;
+    replaysunshadow::Scene shadowScene;
+    std::unordered_map<std::string, unsigned> worldShadowMaterials;
+    std::unordered_map<std::string, unsigned> modelShadowMaterials;
 };
 
 RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot,
@@ -80,6 +84,8 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot,
                                const std::vector<std::string> &worldMaterials,
                                const std::vector<std::string> &modelMaterials,
                                const std::vector<std::string> &fxMaterials,
+                               const std::vector<std::string> &shadowWorldMaterials,
+                               const std::vector<std::string> &shadowModelMaterials,
                                const std::vector<std::filesystem::path> &sourcePaths,
                                const std::filesystem::path &mapDirectory,
                                const std::string &map);

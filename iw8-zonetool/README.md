@@ -136,10 +136,20 @@ glass, sky, unbaked, model, and VFX families keep their explicit conversion path
 bound through the native `t95`/`s8` contract. The converter does not invent the target's optional
 64-byte-per-tetrahedron light-grid visibility records when the IW3 source cannot prove them.
 
-Native lighting conversion is still in development. In particular, map-specific compressed
-sun-shadow data is not yet generated, so distant shadow coverage remains incomplete. Successful
-package validation checks serialization and asset ownership; it does not establish visual parity
-with the original map.
+Direct IW3 conversion also bakes map-specific compressed sun-shadow data from the fixed world
+and placed static models at their highest-detail LOD. It uses the final sun direction, authored
+shadow-caster eligibility, and the converted materials' culling and alpha tests. Moving objects,
+sky surfaces, and breakable glass are excluded from this permanent bake. The native forest and
+projection parameters are embedded in the main fastfile; no shadow sidecar or additional input
+directory is required. The offline rasterizer uses Windows' software Direct3D device, so baking
+does not depend on a particular graphics card.
+
+Native lighting conversion is still in development. The lossless shadow-tree encoder passes
+synthetic checks with Replay's original prepass and visibility shaders, but it does not reproduce
+the shipped compiler's lossy compression. The first Office shadow bake still needs gameplay
+verification. Successful package validation checks serialization and asset ownership; it does
+not establish visual parity with the original map. Prepared `build-map` inputs without a direct
+IW3 caster scene retain their existing lighting and do not acquire this bake automatically.
 
 The twelve IW3 impact rows are mapped into Replay's native impact table for small/large bullets,
 shotgun, armor-piercing, grenade, rocket, and dud events. A converted source effect replaces the
@@ -234,6 +244,20 @@ configured Replay directory. Pass `-GameRoot` if your Replay installation is els
 
 Close Replay before running it. The helper stages and hash-checks the five zones, preserves a
 rollback copy, and accepts only those zones plus `map.json`.
+
+## Development checks
+
+From the `iw8-zonetool` source directory, run the synthetic shadow contract checks with:
+
+```powershell
+xmake build -y css-smoke
+.\xmake-out\x64\Release\css-smoke.exe --self-test
+```
+
+These checks cover tree encoding, cropped forests, projection, receiver bounds, depth ordering,
+face culling, and alpha cutouts without game assets. The separate `css-native-shaders` target
+is an optional developer fixture for locally supplied Replay compute shaders. Its test inputs
+are not part of ordinary conversion and are not distributed in this repository.
 
 This project currently has no project license. The bundled third-party component is listed in
 [THIRD_PARTY.md](THIRD_PARTY.md).
