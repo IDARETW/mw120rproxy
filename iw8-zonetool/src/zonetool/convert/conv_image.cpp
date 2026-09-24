@@ -245,6 +245,11 @@ Iw8ImageDef convertImage(const ImageDumpFile &in)
                  in.name.c_str(), in.format);
     }
     out.format = iw8fmt;
+    // Shipped Replay compass images use the sRGB BC1 view. IW3's DXT1/DDS
+    // source can lack that color-space tag even when it is a HUD color image.
+    if (out.name.starts_with("compass_map_") && out.semantic == IW8_TS_COLOR_MAP &&
+        out.format == cvtimg::IW8_FMT_BC1_UNORM)
+        out.format = IW8_FMT_BC1_SRGB;
 
     // ---- flags (IW8 GfxImageFlags). Resident map sidecar: no streaming flags. Carry nothing
     // risky. ----
