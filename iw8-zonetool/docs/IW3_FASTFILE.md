@@ -166,6 +166,13 @@ generates Replay material/technique assets from the source color, normal, and re
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
 
+The opaque BSP world path retains the IW3 specular image bytes, but its current
+Replay material constants leave the shader's third-texture sampling branch
+disabled. When enabled, that branch reads only the texture's red channel;
+IW3's shader uses RGB specular color and alpha gloss. Their exact mapping to
+Replay's separate response controls is not established, so world specular
+appearance is still a fidelity gap even when the image asset loads.
+
 Baked opaque surfaces use Replay's native lightmap inputs. One source lightmap keeps its original
 dimensions and normalized coordinates; several source lightmaps share a packed atlas and receive
 remapped coordinates. The owner confirmed correct UVs and no blackened map faces in Office's
