@@ -70,7 +70,13 @@ void DecodeTangentFrame(uint packed, out float3 normal, out float3 tangent,
 
 Output main(uint id : SV_VertexID) {
     uint drawSurface = id >> 16;
+    // Replay's static-model shadow pass uses the second draw-surface table in
+    // t63. The lit and depth-prepass paths use the table at byte offset zero.
+#ifdef MAP_MODEL_SHADOW_PASS
+    uint3 surface = drawSurfaces.Load3(0x002c0000 + drawSurface * 16);
+#else
     uint3 surface = drawSurfaces.Load3(drawSurface * 16);
+#endif
     uint page = vertexPages.Load((surface.z + ((id >> 6) & 1023)) * 4);
 
     uint attributeVertex = (id & 63) | (page << 6);

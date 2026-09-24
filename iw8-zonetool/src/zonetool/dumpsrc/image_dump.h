@@ -83,7 +83,9 @@ std::string cleanImageName(const std::string &name);
 std::vector<std::string> listImageDumps(const std::string &dumpDir);
 
 // Stage B-convert (conv_image.cpp): map the parsed IW5 fields -> the IW8 GfxImage def. Pure; no IO.
-Iw8ImageDef convertImage(const ImageDumpFile &in);
+// compassRotation is an optional clockwise quarter-turn of the embedded HUD
+// image. Other image assets must pass zero.
+Iw8ImageDef convertImage(const ImageDumpFile &in, unsigned compassRotation = 0);
 
 } // namespace dumpimg
 

@@ -125,7 +125,15 @@ float4 main(Input input) : SV_TARGET0 {
     uint flags = (uint)input.metadata.y;
     uint kind = flags % 4;
     bool sky = kind == 1;
-    float2 local = sky ? saturate(input.uv.xy) : frac(input.uv.xy);
+    float2 mappedUv = input.uv.xy;
+#ifdef MAP_GLASS_UV_REMAP
+    // FxGlassDef has one UV basis for both intact and shattered materials.
+    // A linked IW3 shattered brush may use another affine mapping.
+    if (kind == 2)
+        mappedUv = float2(dot(input.uv.xy, MAP_GLASS_ROW0),
+                          dot(input.uv.xy, MAP_GLASS_ROW1)) + MAP_GLASS_OFFSET;
+#endif
+    float2 local = sky ? saturate(mappedUv) : frac(mappedUv);
 #ifdef STATIC_MODEL
     // Replay's shipped static-model shaders use the material sampler, screen
     // gradients and the view mip bias. Preserve the unwrapped model UV so the
@@ -136,7 +144,7 @@ float4 main(Input input) : SV_TARGET0 {
 #else
     float2 cellSize = 4096.0 / ATLAS_COLUMNS;
     // Derivatives must use the continuous UV, before frac introduces tile seams.
-    float footprint = max(length(ddx(input.uv.xy) * cellSize), length(ddy(input.uv.xy) * cellSize));
+    float footprint = max(length(ddx(mappedUv) * cellSize), length(ddy(mappedUv) * cellSize));
     float lod = sky ? 0 : clamp(log2(max(1.0, footprint)), 0, log2(cellSize.x) - 2);
     float border = .5 * exp2(ceil(lod));
     float2 pixel = float2(tile % ATLAS_COLUMNS, tile / ATLAS_COLUMNS) * cellSize +

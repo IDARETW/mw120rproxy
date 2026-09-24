@@ -89,4 +89,10 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot,
                                const std::vector<std::filesystem::path> &sourcePaths,
                                const std::filesystem::path &mapDirectory,
                                const std::string &map);
+
+std::string RegisterGlassUvRemap(RenderPlan &plan,
+                                 const std::filesystem::path &mapDirectory,
+                                 const std::string &map,
+                                 const std::string &material,
+                                 const std::array<float, 6> &uvAffine);
 } // namespace iw3

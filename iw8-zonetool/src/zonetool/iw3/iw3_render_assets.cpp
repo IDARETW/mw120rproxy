@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -1851,6 +1852,18 @@ Json BuildTechset(const std::string &map, const unsigned columns, const bool sta
     const auto shadowProgram =
         Compile(ShadowSource(pixelSource), "ps_5_0", "iw3_shadow_coverage.hlsl");
     Json shadowShader = Shader(17, "iw3_shadow", "iw3_shadow_coverage.hlsl", shadowProgram);
+    Json shadowVertexShader;
+    if (staticModel)
+    {
+        const std::string shadowVertexSource =
+            "#define MAP_MODEL_SHADOW_PASS 1\n" + ResourceText(IDR_IW3_MODEL_VERTEX_SHADER);
+        const auto shadowVertexProgram =
+            Compile(shadowVertexSource, "vs_5_0", "iw3_model_shadow_vertex.hlsl");
+        shadowVertexShader = Shader(14, "iw3_model_shadow", "iw3_model_shadow_vertex.hlsl",
+                                    shadowVertexProgram);
+        techset["shaders"]["14:" + shadowVertexShader.at("name").get<std::string>()] =
+            shadowVertexShader;
+    }
     std::vector<unsigned> shadowTypes;
     for (auto &technique : techset.at("techniques"))
     {
@@ -1863,8 +1876,9 @@ Json BuildTechset(const std::string &map, const unsigned columns, const bool sta
             header[0x9C] = 35;
         }
         technique["header"] = Hex(header);
-        technique["shaders"] =
-            Json::array({vertexShader.at("name"), nullptr, nullptr, shadowShader.at("name")});
+        technique["shaders"] = Json::array(
+            {staticModel ? shadowVertexShader.at("name") : vertexShader.at("name"), nullptr,
+             nullptr, shadowShader.at("name")});
         technique["name"] = "TECHNIQUE_SHADOW_" + std::to_string(type) + "_" +
                             shadowShader.at("name").get<std::string>();
         AppendCoverageArgument(technique, staticModel);
@@ -2880,5 +2894,75 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             throw std::runtime_error("duplicate IW3 FX material alias: " + name);
     }
     return plan;
+}
+
+std::string RegisterGlassUvRemap(RenderPlan &plan,
+                                 const std::filesystem::path &mapDirectory,
+                                 const std::string &map,
+                                 const std::string &material,
+                                 const std::array<float, 6> &uvAffine)
+{
+    const auto number = [](const float value) {
+        if (!std::isfinite(value))
+            throw std::runtime_error("IW3 shattered glass has a nonfinite UV transform");
+        std::array<char, 48> buffer{};
+        const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                                          std::chars_format::general,
+                                          std::numeric_limits<float>::max_digits10);
+        if (result.ec != std::errc{})
+            throw std::runtime_error("cannot format shattered glass UV transform");
+        return std::string(buffer.data(), result.ptr);
+    };
+    std::string source = "#define MAP_SOURCE_SUN_MASK 1\n#define MAP_SOURCE_CHANNELS 1\n"
+                         "#define MAP_GLASS_UV_REMAP 1\n#define MAP_GLASS_ROW0 float2(" +
+                         number(uvAffine[0]) + "," + number(uvAffine[1]) + ")\n"
+                         "#define MAP_GLASS_ROW1 float2(" + number(uvAffine[2]) + "," +
+                         number(uvAffine[3]) + ")\n#define MAP_GLASS_OFFSET float2(" +
+                         number(uvAffine[4]) + "," + number(uvAffine[5]) + ")\n" +
+                         ResourceText(IDR_IW3_PIXEL_SHADER);
+    constexpr std::string_view token = "ATLAS_COLUMNS";
+    for (std::size_t at = source.find(token); at != std::string::npos;
+         at = source.find(token, at + 1))
+        source.replace(at, token.size(), std::to_string(plan.columns));
+    const std::string key = material + '\n' + source;
+    const auto keyBytes = std::span(reinterpret_cast<const std::uint8_t *>(key.data()), key.size());
+    const auto digest = Sha256(keyBytes);
+    const std::string id = Hex(std::span(digest).first(8));
+    const std::string alias = plan.material + "_pane_uv_" + id;
+    if (std::any_of(plan.assetMaterials.begin(), plan.assetMaterials.end(),
+                    [&](const Json &entry) { return entry.at("material") == alias; }))
+        return alias;
+
+    const auto original = std::find_if(plan.assetMaterials.begin(), plan.assetMaterials.end(),
+                                       [&](const Json &entry) {
+                                           return entry.at("material") == material;
+                                       });
+    if (original == plan.assetMaterials.end())
+        throw std::runtime_error("shattered glass material is not registered: " + material);
+    Json definition = ReadJson(mapDirectory /
+                               original->at("materialDefinition").get<std::string>());
+    Json techset = ReadJson(mapDirectory /
+                            definition.at("techsetDefinition").get<std::string>());
+    if (techset.at("techniques").size() != 1)
+        throw std::runtime_error("shattered glass requires one native pane technique");
+    const auto program = Compile(source, "ps_5_0", "iw3_glass_shattered_uv.hlsl");
+    Json shader = Shader(17, "iw3_glass_shattered_uv", "iw3_glass_shattered_uv.hlsl", program);
+    Json &lit = techset.at("techniques").at(0);
+    lit["shaders"][3] = shader.at("name");
+    lit["name"] = "TECHNIQUE_LIT_FORWARDPLUS_BITMASK_mw120r_" + map + "_pane_uv_" + id;
+    PatchStateIdentity(lit, program);
+    techset["name"] = "tw/mw120r_" + map + "_pane_uv_" + id;
+    techset["shaders"]["17:" + shader.at("name").get<std::string>()] = shader;
+    KeepReferencedShaders(techset);
+
+    const std::string stem = map + ".pane_uv_" + id;
+    definition["techset"] = techset.at("name");
+    definition["techsetDefinition"] = stem + ".techset.json";
+    WriteJson(mapDirectory / (stem + ".material.json"), definition);
+    WriteJson(mapDirectory / (stem + ".techset.json"), techset);
+    plan.assetMaterials.push_back({{"schema", 1},
+                                   {"material", alias},
+                                   {"materialDefinition", stem + ".material.json"}});
+    return alias;
 }
 } // namespace iw3

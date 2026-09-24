@@ -65,6 +65,14 @@ target("iw8-zonetool")
         end
     end)
 
+target("compass-rotation-smoke")
+    set_kind("binary")
+    set_default(false)
+    set_targetdir(path.join(os.projectdir(), "xmake-out", "x64", is_mode("debug") and "Debug" or "Release"))
+    add_defines("WIN32", "NOMINMAX", "WIN32_LEAN_AND_MEAN")
+    add_includedirs("src", "src/common", "src/zonetool")
+    add_files("tests/compass_rotation_smoke.cpp", "src/zonetool/convert/conv_image.cpp")
+
 target("vfx-smoke")
     set_kind("binary")
     set_default(false)

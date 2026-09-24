@@ -152,8 +152,15 @@ No input JSON is required. The converter creates `map.json` with the map id and 
 }
 ```
 
-`id` is also allowed when it matches the target map id. The supplied values are written to the
-output `map.json`, which is the only loose file accepted beside the five fastfiles.
+`id` is also allowed when it matches the target map id. The supplied name and description are
+written to the output `map.json`, which is the only loose file accepted beside the five fastfiles.
+If an authored compass image is rotated relative to the map geometry, the same input metadata can
+include `"compassRotation": 90` (degrees clockwise; accepted values are 0, 90, 180, and 270).
+This rotates only the embedded `compass_map_<map>` pixels. It does not change worldspawn `northyaw`
+or the `minimap_corner` bounds, and it does not add an output file. The default is 0. The converter
+preserves BC1, BC2, and BC3 block endpoints and rotates their pixel selectors without recompression;
+RGBA8 compasses are also supported. Other formats or incomplete resident images cause a clear
+conversion error when rotation is requested.
 
 Installation validates the output automatically. To inspect a failed conversion manually:
 
@@ -202,7 +209,9 @@ recognized. Glass definitions include Replay's native pane break-sound aliases; 
 confirms their references, while audible playback remains a gameplay check. A unique
 `target`/`targetname` link from an intact glass brush to a shattered
 `script_brushmodel` supplies the native shattered-material slot. Without an unambiguous authored link,
-that slot retains the intact material. The converter also
+that slot retains the intact material. When linked brushes use different texture coordinates,
+the converter embeds a shattered-material shader variant that maps the pane's native UVs to the
+linked brush's UVs; no external shader or texture file is needed. The converter also
 converts surface information into native footstep and collision tags in
 `srv_<map>.ff`. These features do not require an additional export step, package directory,
 `build-map` invocation, or loose sidecar. Supported multiplayer start and TDM spawn markers retain

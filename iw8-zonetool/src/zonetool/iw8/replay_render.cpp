@@ -1136,7 +1136,33 @@ Mesh Load(const std::string &path)
         }
         else
         {
-            cell.trees.push_back({cell.bounds, 0, 0, 48, static_cast<uint16_t>(leaves.size())});
+            // Replay's native multi-child AABB trees retain the aggregate
+            // world-surface range and static-model references on the parent.
+            // The children refine that set; an empty parent can lose objects
+            // when the renderer selects the coarse visibility path.
+            unsigned firstSurface = m.worldSurfaceCount();
+            unsigned lastSurface = 0;
+            std::vector<uint16_t> parentModels;
+            for (const CellTree &leaf : leaves)
+            {
+                if (leaf.surfaceCount)
+                {
+                    firstSurface = std::min(firstSurface, leaf.firstSurface);
+                    lastSurface = std::max(lastSurface, leaf.firstSurface + leaf.surfaceCount);
+                }
+                parentModels.insert(parentModels.end(), leaf.staticModelIndexes.begin(),
+                                    leaf.staticModelIndexes.end());
+            }
+            std::ranges::sort(parentModels);
+            parentModels.erase(std::unique(parentModels.begin(), parentModels.end()),
+                               parentModels.end());
+            if (parentModels.size() > UINT16_MAX)
+                throw std::runtime_error("Replay AABB parent has too many static models");
+            if (firstSurface == m.worldSurfaceCount())
+                firstSurface = 0;
+            cell.trees.push_back({cell.bounds, firstSurface, lastSurface - firstSurface,
+                                  48, static_cast<uint16_t>(leaves.size()),
+                                  std::move(parentModels)});
             cell.trees.insert(cell.trees.end(), leaves.begin(), leaves.end());
         }
         m.cells.push_back(std::move(cell));

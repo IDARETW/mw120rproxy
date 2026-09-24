@@ -23,6 +23,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -2626,7 +2627,62 @@ void BuildShadowScene(const std::vector<BrushModel> &brushModels,
              scene.surfaces.size() - worldSurfaceCount, triangles);
 }
 
-Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &plan,
+struct GlassFaceUv
+{
+    std::string material;
+    std::array<float, 4> gradient{};
+    Vec2 atSample{};
+};
+
+std::optional<GlassFaceUv> BestGlassFaceUv(const BrushModel &model, const RenderPlan &plan,
+                                         const std::array<std::size_t, 2> plane,
+                                         const Vec3 &sample, const bool intactOnly,
+                                         const std::string &wantedMaterial = {})
+{
+    std::optional<GlassFaceUv> best;
+    float largestFace = 0;
+    for (const Surface &surface : model.surfaces)
+    {
+        const auto material = plan.materials.find(surface.material);
+        if (material == plan.materials.end() || material->second.glassMaterial.empty() ||
+            (intactOnly && surface.material.find("shattered") != std::string::npos) ||
+            (!wantedMaterial.empty() && material->second.glassMaterial != wantedMaterial))
+            continue;
+        for (std::size_t index = 0; index + 2 < surface.indices.size(); index += 3)
+        {
+            const Vertex &a = surface.vertices.at(surface.indices[index]);
+            const Vertex &b = surface.vertices.at(surface.indices[index + 1]);
+            const Vertex &c = surface.vertices.at(surface.indices[index + 2]);
+            const float bx = b.position[plane[0]] - a.position[plane[0]];
+            const float by = b.position[plane[1]] - a.position[plane[1]];
+            const float cx = c.position[plane[0]] - a.position[plane[0]];
+            const float cy = c.position[plane[1]] - a.position[plane[1]];
+            const float determinant = bx * cy - by * cx;
+            if (std::abs(determinant) <= std::max(0.0001f, largestFace))
+                continue;
+            largestFace = std::abs(determinant);
+            GlassFaceUv candidate;
+            candidate.material = material->second.glassMaterial;
+            for (std::size_t channel = 0; channel < 2; ++channel)
+            {
+                const float buv = b.uv[channel] - a.uv[channel];
+                const float cuv = c.uv[channel] - a.uv[channel];
+                const float dx = (buv * cy - cuv * by) / determinant;
+                const float dy = (cuv * bx - buv * cx) / determinant;
+                candidate.gradient[channel * 2] = dx;
+                candidate.gradient[channel * 2 + 1] = dy;
+                candidate.atSample[channel] = a.uv[channel] +
+                    dx * (sample[plane[0]] - a.position[plane[0]]) +
+                    dy * (sample[plane[1]] - a.position[plane[1]]);
+            }
+            best = std::move(candidate);
+        }
+    }
+    return best;
+}
+
+Json BuildGlassPanes(const std::vector<BrushModel> &models, RenderPlan &plan,
+                     const std::filesystem::path &mapDirectory, const std::string &map,
                      const std::string &entityText, CollisionData &collision)
 {
     Json panes = Json::array();
@@ -2677,52 +2733,21 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
             halfHeight * 32.0f > 32767.0f)
             throw std::runtime_error("IW3 glass pane dimensions exceed Replay limits");
 
-        std::string paneMaterial;
-        std::array<float, 4> texVecs{};
-        Vec2 texOrigin{};
-        float largestFace = 0;
-        for (const Surface &surface : model.surfaces)
-        {
-            const auto material = plan.materials.find(surface.material);
-            if (material == plan.materials.end() || material->second.glassMaterial.empty() ||
-                surface.material.find("shattered") != std::string::npos)
-                continue;
-            for (std::size_t index = 0; index + 2 < surface.indices.size(); index += 3)
-            {
-                const Vertex &a = surface.vertices.at(surface.indices[index]);
-                const Vertex &b = surface.vertices.at(surface.indices[index + 1]);
-                const Vertex &c = surface.vertices.at(surface.indices[index + 2]);
-                const float bx = b.position[plane[0]] - a.position[plane[0]];
-                const float by = b.position[plane[1]] - a.position[plane[1]];
-                const float cx = c.position[plane[0]] - a.position[plane[0]];
-                const float cy = c.position[plane[1]] - a.position[plane[1]];
-                const float determinant = bx * cy - by * cx;
-                if (std::abs(determinant) <= std::max(0.0001f, largestFace))
-                    continue;
-                largestFace = std::abs(determinant);
-                paneMaterial = material->second.glassMaterial;
-                for (std::size_t channel = 0; channel < 2; ++channel)
-                {
-                    const float buv = b.uv[channel] - a.uv[channel];
-                    const float cuv = c.uv[channel] - a.uv[channel];
-                    const float dx = (buv * cy - cuv * by) / determinant;
-                    const float dy = (cuv * bx - buv * cx) / determinant;
-                    // FxGlassGeometryData coordinates are in 1/32 world units.
-                    texVecs[channel * 2] = dx / 32.0f;
-                    texVecs[channel * 2 + 1] = dy / 32.0f;
-                    texOrigin[channel] = a.uv[channel] +
-                        dx * (center[plane[0]] - a.position[plane[0]]) +
-                        dy * (center[plane[1]] - a.position[plane[1]]);
-                }
-            }
-        }
-        if (paneMaterial.empty())
+        const auto intactFace = BestGlassFaceUv(model, plan, plane, center, true);
+        if (!intactFace)
             throw std::runtime_error("IW3 glass pane has no nondegenerate textured face");
+        const std::string paneMaterial = intactFace->material;
+        std::array<float, 4> texVecs{};
+        for (std::size_t index = 0; index < texVecs.size(); ++index)
+            texVecs[index] = intactFace->gradient[index] / 32.0f;
+        const Vec2 texOrigin = intactFace->atSample;
 
         // IW3 scripted glass commonly links its intact brush to the shattered
         // replacement by target/targetname. Follow that authored link rather
         // than assuming adjacent brush-model indices or a material name suffix.
         std::string shatteredMaterial = paneMaterial;
+        const EntityFields *shatteredEntity = nullptr;
+        std::size_t shatteredModel = 0;
         if (const auto target = entity.find("target"); target != entity.end())
         {
             const EntityFields *replacement = nullptr;
@@ -2764,7 +2789,11 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
                             linkedMaterial = material->second.glassMaterial;
                         }
                         if (!ambiguous && !linkedMaterial.empty())
+                        {
                             shatteredMaterial = linkedMaterial;
+                            shatteredEntity = replacement;
+                            shatteredModel = linkedIndex;
+                        }
                     }
                 }
             }
@@ -2783,6 +2812,68 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
         if (const auto found = entity.find("origin"); found != entity.end())
             entityOrigin = ParseVector(found->second);
         origin = Add(origin, entityOrigin);
+        if (shatteredEntity && shatteredMaterial != paneMaterial)
+        {
+            const auto linkedAxis = EntityAxis(*shatteredEntity);
+            Vec3 linkedOrigin{};
+            if (const auto found = shatteredEntity->find("origin");
+                found != shatteredEntity->end())
+                linkedOrigin = ParseVector(found->second);
+            const Vec3 relative = Subtract(origin, linkedOrigin);
+            const Vec3 linkedSample{Dot(relative, linkedAxis[0]), Dot(relative, linkedAxis[1]),
+                                    Dot(relative, linkedAxis[2])};
+            const BrushModel &linkedModel = models.at(shatteredModel);
+            Vec3 linkedSize{};
+            for (std::size_t dimension = 0; dimension < 3; ++dimension)
+                linkedSize[dimension] = linkedModel.maximum[dimension] -
+                                        linkedModel.minimum[dimension];
+            const std::size_t linkedThin = static_cast<std::size_t>(
+                std::min_element(linkedSize.begin(), linkedSize.end()) - linkedSize.begin());
+            std::array<std::size_t, 2> linkedPlane{};
+            std::size_t linkedPlaneIndex = 0;
+            for (std::size_t dimension = 0; dimension < 3; ++dimension)
+                if (dimension != linkedThin)
+                    linkedPlane[linkedPlaneIndex++] = dimension;
+            const auto linkedFace = BestGlassFaceUv(linkedModel, plan, linkedPlane,
+                                                     linkedSample, false, shatteredMaterial);
+            if (!linkedFace)
+                throw std::runtime_error("linked IW3 shattered glass has no textured face");
+            const auto paneGradient = intactFace->gradient;
+            const float determinant = paneGradient[0] * paneGradient[3] -
+                                      paneGradient[1] * paneGradient[2];
+            if (std::abs(determinant) < 1.0e-10f)
+                throw std::runtime_error("IW3 glass pane UV basis cannot be inverted");
+            const auto linkedGradient = [&](const std::size_t channel,
+                                            const Vec3 &direction) {
+                return linkedFace->gradient[channel * 2] *
+                           Dot(direction, linkedAxis[linkedPlane[0]]) +
+                       linkedFace->gradient[channel * 2 + 1] *
+                           Dot(direction, linkedAxis[linkedPlane[1]]);
+            };
+            const float su = linkedGradient(0, worldU), sv = linkedGradient(0, worldV);
+            const float tu = linkedGradient(1, worldU), tv = linkedGradient(1, worldV);
+            const float inv = 1.0f / determinant;
+            std::array<float, 6> remap{
+                (su * paneGradient[3] - sv * paneGradient[2]) * inv,
+                (sv * paneGradient[0] - su * paneGradient[1]) * inv,
+                (tu * paneGradient[3] - tv * paneGradient[2]) * inv,
+                (tv * paneGradient[0] - tu * paneGradient[1]) * inv, 0, 0};
+            remap[4] = linkedFace->atSample[0] - remap[0] * texOrigin[0] -
+                       remap[1] * texOrigin[1];
+            remap[5] = linkedFace->atSample[1] - remap[2] * texOrigin[0] -
+                       remap[3] * texOrigin[1];
+            const std::array<float, 6> identity{1, 0, 0, 1, 0, 0};
+            bool differs = false;
+            for (std::size_t index = 0; index < remap.size(); ++index)
+            {
+                if (!std::isfinite(remap[index]))
+                    throw std::runtime_error("linked IW3 shattered glass has invalid UV mapping");
+                differs |= std::abs(remap[index] - identity[index]) > 0.00001f;
+            }
+            if (differs)
+                shatteredMaterial = RegisterGlassUvRemap(plan, mapDirectory, map,
+                                                         shatteredMaterial, remap);
+        }
         if (panes.size() >= std::numeric_limits<std::uint16_t>::max())
             throw std::runtime_error("IW3 glass has too many native collision pieces");
         const auto glassId = static_cast<std::uint16_t>(panes.size() + 1);
@@ -2825,7 +2916,8 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
 }
 
 Json BuildRender(const Json &world, const VisibilityGroups &visibility,
-                 const std::vector<BrushModel> &models, const RenderPlan &plan,
+                 const std::vector<BrushModel> &models, RenderPlan &plan,
+                 const std::filesystem::path &mapDirectory, const std::string &map,
                  const std::string &entities, CollisionData &collision,
                  std::size_t &triangleCount)
 {
@@ -3152,7 +3244,9 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                                               {"image", probe.image},
                                               {"sh", probe.sh}});
     }
-    output["glassPanes"] = BuildGlassPanes(models, plan, entities, collision);
+    output["glassPanes"] = BuildGlassPanes(models, plan, mapDirectory, map,
+                                          entities, collision);
+    output["assetMaterials"] = plan.assetMaterials;
     return output;
 }
 
@@ -5332,8 +5426,9 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     std::size_t triangles = 0;
     auto nativeCollision = ReadCollision(collision);
     AlignLadderEdgesToModels(nativeCollision, sourceStaticModels);
-    const Json render = BuildRender(world, visibility, brushModels, renderPlan, entities,
-                                    nativeCollision, triangles);
+    const Json render = BuildRender(world, visibility, brushModels, renderPlan,
+                                    mapDirectory, options.map, entities, nativeCollision,
+                                    triangles);
     result.footsteps = result.scratch / "footsteps.native";
     WriteFootsteps(result.footsteps, brushModels);
 

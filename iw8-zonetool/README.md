@@ -92,7 +92,11 @@ and must match if both are present:
 ```
 
 The supplied values replace the defaults in the output `map.json`. It is the only loose file the
-output accepts. It may also contain an `id` that matches the map id.
+output accepts. It may also contain an `id` that matches the map id. For a source compass image
+authored at a different orientation than its map geometry, the same input metadata may set
+`"compassRotation": 90` (clockwise degrees: 0, 90, 180, or 270). This rotates the embedded compass
+pixels only; it does not change `northyaw` or create another output file. See
+[the direct IW3 guide](docs/IW3_FASTFILE.md) for supported image formats.
 
 Direct fastfile conversion preserves world geometry, every resolved static-model placement and
 available source LOD, native model physics, dynamic model definitions, collision, source sun

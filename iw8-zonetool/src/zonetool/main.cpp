@@ -63,6 +63,7 @@ struct MapMetadata
     std::string id;
     std::string title;
     std::string description;
+    unsigned compassRotation{};
 };
 
 void printUsage()
@@ -253,6 +254,15 @@ bool readMetadata(const std::string &path, MapMetadata &metadata)
             throw std::runtime_error("name and title must match when both are present");
         if (metadata.title.empty())
             metadata.title = std::move(name);
+        if (const auto rotation = data.find("compassRotation"); rotation != data.end())
+        {
+            if (!rotation->is_number_unsigned())
+                throw std::runtime_error("compassRotation must be 0, 90, 180, or 270 clockwise");
+            metadata.compassRotation = rotation->get<unsigned>();
+            if (metadata.compassRotation != 0 && metadata.compassRotation != 90 &&
+                metadata.compassRotation != 180 && metadata.compassRotation != 270)
+                throw std::runtime_error("compassRotation must be 0, 90, 180, or 270 clockwise");
+        }
         metadata.present = true;
     }
     catch (const std::exception &exception)
@@ -595,7 +605,8 @@ struct AssetTally
 
 AssetTally addMapAssets(iw8::ZoneWriter &writer, iw8::ZoneWriter &techsets,
                         const std::string &dumpDirectory,
-                        const dumpsrc::DumpSource &source, const std::string &map)
+                        const dumpsrc::DumpSource &source, const std::string &map,
+                        const unsigned compassRotation)
 {
     AssetTally tally;
     for (const std::string &relativePath : source.listMaterials())
@@ -620,7 +631,8 @@ AssetTally addMapAssets(iw8::ZoneWriter &writer, iw8::ZoneWriter &techsets,
     for (const std::string &name : dumpimg::listImageDumps(dumpDirectory))
     {
         const dumpimg::ImageDumpFile input = dumpimg::readImageDump(dumpDirectory, name);
-        if (!input.loaded || !dumpimg::addImageAsset(writer, dumpimg::convertImage(input)))
+        const unsigned rotation = input.name == compassName ? compassRotation : 0;
+        if (!input.loaded || !dumpimg::addImageAsset(writer, dumpimg::convertImage(input, rotation)))
         {
             ++tally.failures;
             if (tally.firstFailure.empty())
@@ -1050,7 +1062,8 @@ int writeMapPackage(const Args &args, const std::string &map, const std::string 
                        iw8maps::emitGlassMapBody(output, assetName.c_str(), renderMesh);
                    });
         const dumpsrc::DumpSource source(dumpDirectory, map);
-        const AssetTally assets = addMapAssets(writer, techsets, dumpDirectory, source, map);
+        const AssetTally assets =
+            addMapAssets(writer, techsets, dumpDirectory, source, map, metadata.compassRotation);
         if (assets.failures)
             throw std::runtime_error("failed to import " + std::to_string(assets.failures) +
                                      " map assets; first: " + assets.firstFailure);
