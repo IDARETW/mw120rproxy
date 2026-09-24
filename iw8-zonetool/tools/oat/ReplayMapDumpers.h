@@ -514,6 +514,183 @@ class Fx final : public AbstractAssetDumper<IW3::AssetFx>
     }
 };
 
+class ImpactFx final : public AbstractAssetDumper<IW3::AssetImpactFx>
+{
+    void DumpAsset(AssetDumpingContext &context,
+                   const XAssetInfo<IW3::FxImpactTable> &asset) override
+    {
+        constexpr size_t kImpactCount = 12;
+        constexpr size_t kNonFleshCount = 29;
+        constexpr size_t kFleshCount = 4;
+
+        const auto *table = asset.Asset();
+        if (!table || !table->table)
+            throw std::runtime_error("Missing IW3 impact FX table");
+
+        const auto name = fx::BoundedString(table->name, "impact-table name");
+        Json entries = Json::array();
+        for (size_t row = 0; row < kImpactCount; ++row)
+        {
+            Json nonFlesh = Json::array();
+            Json flesh = Json::array();
+            for (size_t index = 0; index < kNonFleshCount; ++index)
+            {
+                const auto *effect = table->table[row].nonflesh[index];
+                nonFlesh.push_back(effect && effect->name
+                                       ? Json(fx::AssetName(effect->name, "impact FX name"))
+                                       : Json(nullptr));
+            }
+            for (size_t index = 0; index < kFleshCount; ++index)
+            {
+                const auto *effect = table->table[row].flesh[index];
+                flesh.push_back(effect && effect->name
+                                    ? Json(fx::AssetName(effect->name, "impact FX name"))
+                                    : Json(nullptr));
+            }
+            entries.push_back({{"index", row},
+                               {"nonflesh", std::move(nonFlesh)},
+                               {"flesh", std::move(flesh)}});
+        }
+
+        const auto fileName = name.empty() ? "_default" : fx::ValidateAssetPath(name.c_str());
+        Save(context, std::string("impactfx/") + fileName + ".iw3.json",
+             {{"schema", 1},
+              {"asset_type", "iw3_impact_fx"},
+              {"name", name},
+              {"layout",
+               {{"impact_count", kImpactCount},
+                {"nonflesh_count", kNonFleshCount},
+                {"flesh_count", kFleshCount}}},
+              {"entries", std::move(entries)}});
+    }
+};
+
+namespace sound
+{
+constexpr size_t kMaxAliasCount = 65536;
+
+inline Json OptionalString(const char *value, const char *field)
+{
+    if (!value)
+        return nullptr;
+    return fx::BoundedString(value, field);
+}
+
+inline Json SpeakerMap(const IW3::SpeakerMap *map)
+{
+    if (!map)
+        return nullptr;
+
+    Json channels = Json::array();
+    for (size_t sourceChannel = 0; sourceChannel < 2; ++sourceChannel)
+        for (size_t destinationChannel = 0; destinationChannel < 2; ++destinationChannel)
+        {
+            const auto &channel = map->channelMaps[sourceChannel][destinationChannel];
+            if (channel.speakerCount < 0 || channel.speakerCount > 6)
+                throw std::runtime_error("Invalid IW3 sound speaker count");
+            Json speakers = Json::array();
+            for (int index = 0; index < channel.speakerCount; ++index)
+            {
+                const auto &speaker = channel.speakers[index];
+                if (speaker.numLevels < 0 || speaker.numLevels > 2)
+                    throw std::runtime_error("Invalid IW3 sound speaker level count");
+                Json levels = Json::array();
+                for (int level = 0; level < speaker.numLevels; ++level)
+                    levels.push_back(speaker.levels[level]);
+                speakers.push_back({{"speaker", speaker.speaker}, {"levels", std::move(levels)}});
+            }
+            channels.push_back({{"source", sourceChannel},
+                                {"destination", destinationChannel},
+                                {"speakers", std::move(speakers)}});
+        }
+
+    return {{"default", map->isDefault},
+            {"name", OptionalString(map->name, "speaker-map name")},
+            {"channels", std::move(channels)}};
+}
+
+inline Json File(const IW3::SoundFile *file)
+{
+    if (!file)
+        return nullptr;
+
+    Json result = {{"type", static_cast<unsigned>(static_cast<unsigned char>(file->type))},
+                   {"exists", file->exists != 0}};
+    if (file->type == IW3::SAT_LOADED)
+    {
+        result["kind"] = "loaded";
+        result["name"] = file->u.loadSnd
+                              ? OptionalString(file->u.loadSnd->name, "loaded-sound name")
+                              : Json(nullptr);
+    }
+    else if (file->type == IW3::SAT_STREAMED)
+    {
+        result["kind"] = "streamed";
+        result["directory"] = OptionalString(file->u.streamSnd.dir, "streamed-sound directory");
+        result["name"] = OptionalString(file->u.streamSnd.name, "streamed-sound name");
+    }
+    else
+    {
+        result["kind"] = "unknown";
+    }
+    return result;
+}
+
+inline Json Alias(const IW3::snd_alias_t &alias)
+{
+    return {{"alias_name", OptionalString(alias.aliasName, "sound-alias name")},
+            {"subtitle", OptionalString(alias.subtitle, "sound-alias subtitle")},
+            {"secondary_alias",
+             OptionalString(alias.secondaryAliasName, "secondary sound-alias name")},
+            {"chain_alias", OptionalString(alias.chainAliasName, "chain sound-alias name")},
+            {"file", File(alias.soundFile)},
+            {"sequence", alias.sequence},
+            {"volume", {{"min", alias.volMin}, {"max", alias.volMax}}},
+            {"pitch", {{"min", alias.pitchMin}, {"max", alias.pitchMax}}},
+            {"distance", {{"min", alias.distMin}, {"max", alias.distMax}}},
+            {"flags", static_cast<uint32_t>(alias.flags)},
+            {"slave_percentage", alias.slavePercentage},
+            {"probability", alias.probability},
+            {"lfe_percentage", alias.lfePercentage},
+            {"center_percentage", alias.centerPercentage},
+            {"start_delay", alias.startDelay},
+            {"volume_falloff_curve",
+             alias.volumeFalloffCurve
+                 ? OptionalString(alias.volumeFalloffCurve->filename, "sound curve name")
+                 : Json(nullptr)},
+            {"envelope",
+             {{"min", alias.envelopMin},
+              {"max", alias.envelopMax},
+              {"percentage", alias.envelopPercentage}}},
+            {"speaker_map", SpeakerMap(alias.speakerMap)}};
+}
+} // namespace sound
+
+class Sound final : public AbstractAssetDumper<IW3::AssetSound>
+{
+    void DumpAsset(AssetDumpingContext &context,
+                   const XAssetInfo<IW3::snd_alias_list_t> &asset) override
+    {
+        const auto *list = asset.Asset();
+        if (!list)
+            throw std::runtime_error("Missing IW3 sound-alias list");
+        if (list->count < 0 || static_cast<size_t>(list->count) > sound::kMaxAliasCount)
+            throw std::runtime_error("Invalid IW3 sound-alias count");
+        if (list->count && !list->head)
+            throw std::runtime_error("Missing IW3 sound-alias records");
+
+        const auto name = fx::ValidateAssetPath(list->aliasName);
+        Json aliases = Json::array();
+        for (int index = 0; index < list->count; ++index)
+            aliases.push_back(sound::Alias(list->head[index]));
+        Save(context, std::string("soundaliases/") + name + ".iw3.json",
+             {{"schema", 1},
+              {"asset_type", "iw3_sound_alias_list"},
+              {"name", name},
+              {"aliases", std::move(aliases)}});
+    }
+};
+
 class Model final : public AbstractAssetDumper<IW3::AssetXModel>
 {
     void DumpAsset(AssetDumpingContext &context, const XAssetInfo<IW3::XModel> &asset) override
@@ -737,18 +914,21 @@ class World final : public AbstractAssetDumper<IW3::AssetGfxWorld>
                         static_cast<unsigned>(w.surfaceCount) ||
                     (tree.smodelIndexCount && !tree.smodelIndexes))
                     throw std::runtime_error("Invalid IW3 cell AABB tree");
+                int firstChild = 0;
                 if (tree.childCount)
                 {
                     const int treeSize = static_cast<int>(sizeof(IW3::GfxAabbTree));
                     if (tree.childrenOffset <= 0 || tree.childrenOffset % treeSize != 0)
                         throw std::runtime_error("Invalid IW3 cell AABB child offset");
-                    const auto firstChild = treeIndex + tree.childrenOffset / treeSize;
+                    firstChild = treeIndex + tree.childrenOffset / treeSize;
                     if (firstChild < 0 || firstChild + tree.childCount > cell.aabbTreeCount)
                         throw std::runtime_error("Invalid IW3 cell AABB child range");
                 }
                 Json outTree = {{"bounds", {V3(tree.mins), V3(tree.maxs)}},
                                 {"surfaces", Json::array()},
-                                {"models", Json::array()}};
+                                {"models", Json::array()},
+                                {"childCount", tree.childCount},
+                                {"firstChild", firstChild}};
                 for (unsigned surface = 0; surface < tree.surfaceCount; ++surface)
                     outTree["surfaces"].push_back(tree.startSurfIndex + surface);
                 for (unsigned model = 0; model < tree.smodelIndexCount; ++model)

@@ -77,6 +77,24 @@ if (-not $writer.Contains($fx)) {
     $writer = $writer.Replace($anchor, "$fx`r`n    $anchor")
 }
 
+$impactFx = 'RegisterAssetDumper(std::make_unique<replay_export::ImpactFx>());'
+if (-not $writer.Contains($impactFx)) {
+    $anchor = '// REGISTER_DUMPER(AssetDumperFxImpactTable)'
+    if (($writer.Split($anchor).Count - 1) -ne 1) {
+        throw 'Could not find the IW3 impact-FX registration anchor'
+    }
+    $writer = $writer.Replace($anchor, $impactFx)
+}
+
+$sound = 'RegisterAssetDumper(std::make_unique<replay_export::Sound>());'
+if (-not $writer.Contains($sound)) {
+    $anchor = '// REGISTER_DUMPER(AssetDumpersnd_alias_list_t)'
+    if (($writer.Split($anchor).Count - 1) -ne 1) {
+        throw 'Could not find the IW3 sound registration anchor'
+    }
+    $writer = $writer.Replace($anchor, $sound)
+}
+
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ReplayMapDumpers.h') `
     -Destination (Join-Path $iw3Directory 'ReplayMapDumpers.h') -Force
 Set-Content -LiteralPath $writerPath -Value $writer -NoNewline
