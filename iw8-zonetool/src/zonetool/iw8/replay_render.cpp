@@ -1090,6 +1090,43 @@ Mesh Load(const std::string &path)
         const auto &trees = source.at("trees");
         if (!trees.is_array())
             throw std::runtime_error("Replay DPVS cell has invalid AABB trees");
+        if (!trees.empty() && trees.at(0).contains("childCount"))
+        {
+            for (std::size_t treeIndex = 0; treeIndex < trees.size(); ++treeIndex)
+            {
+                const auto &tree = trees.at(treeIndex);
+                const auto childCount = tree.at("childCount").get<unsigned>();
+                const auto firstChild = tree.at("firstChild").get<unsigned>();
+                if (childCount > UINT16_MAX ||
+                    (childCount && (firstChild <= treeIndex ||
+                                    firstChild + childCount > trees.size())) ||
+                    (!childCount && firstChild))
+                    throw std::runtime_error("Replay DPVS AABB child range is invalid");
+                const auto bounds = LoadBounds(tree.at("bounds"));
+                auto owned = tree.at("surfaces").get<std::vector<unsigned>>();
+                std::ranges::sort(owned);
+                owned.erase(std::unique(owned.begin(), owned.end()), owned.end());
+                for (const auto surface : owned)
+                    if (surface >= m.worldSurfaceCount())
+                        throw std::runtime_error("Replay DPVS cell references an invalid surface");
+                const unsigned firstSurface = owned.empty() ? 0 : owned.front();
+                const unsigned surfaceCount = owned.empty() ? 0 : owned.back() - firstSurface + 1;
+                const auto models = tree.at("models").get<std::vector<unsigned>>();
+                std::vector<uint16_t> ownedModels;
+                ownedModels.reserve(models.size());
+                for (const auto model : models)
+                {
+                    if (model > UINT16_MAX)
+                        throw std::runtime_error("Replay DPVS static-model index exceeds its native width");
+                    ownedModels.push_back(static_cast<uint16_t>(model));
+                }
+                cell.trees.push_back({bounds, firstSurface, surfaceCount,
+                                      childCount ? static_cast<unsigned>((firstChild - treeIndex) * 48) : 0,
+                                      static_cast<uint16_t>(childCount), std::move(ownedModels)});
+            }
+            m.cells.push_back(std::move(cell));
+            continue;
+        }
         for (const auto &tree : trees)
         {
             const auto bounds = LoadBounds(tree.at("bounds"));

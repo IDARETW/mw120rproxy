@@ -2,6 +2,9 @@
 #ifdef GLASS_PANE
 // Replay's native glass vertex buffer (code buffer 47), 28 bytes per vertex.
 // The signed glass shader reads UV at +12 and tangent frame at +16.
+#ifndef GLASS_ENVIRONMENT
+#define GLASS_ENVIRONMENT float4(.8, 4, 2.5, .625)
+#endif
 struct GlassVertex {
     float3 position;
     uint texcoord;
@@ -66,7 +69,7 @@ Output main(uint id : SV_VertexID) {
 #ifdef GLASS_PANE
     o.uv = float4(f16tof32(vertex.texcoord & 0xffff), f16tof32(vertex.texcoord >> 16), 0, 0);
     o.metadata = float2(GLASS_TILE, GLASS_FLAGS);
-    o.materialParameters = float4(.8, 4, 2.5, .625);
+    o.materialParameters = GLASS_ENVIRONMENT;
     o.lightmapUV = 0;
     uint packed = vertex.tangentFrame;
 #else

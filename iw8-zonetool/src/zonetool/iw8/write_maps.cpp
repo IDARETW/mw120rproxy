@@ -338,6 +338,14 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     stamp32(gw.data(), 0x24, primaryLightCount); // firstStaticScriptablePrimaryLight
     stamp32(gw.data(), 0x2C, primaryLightCount); // firstScriptablePrimaryLight
     stamp32(gw.data(), 0x34, primaryLightCount); // firstMovingScriptablePrimaryLight
+    // These are world-wide material sort ranges, not per-surface values. Both
+    // shipped Replay mp_m_king and mp_rust GfxWorld assets carry this table.
+    // Leaving the zero-initialized ranges excludes decal draw keys (7..17),
+    // including the bullet-impact decals used by ordinary walls and models.
+    constexpr std::array<uint32_t, 15> sortKeys{
+        7, 14, 17, 35, 24, 36, 41, 1, 6, 7, 17, 18, 34, 35, 40};
+    for (size_t index = 0; index < sortKeys.size(); ++index)
+        stamp32(gw.data(), 0x3C + index * sizeof(uint32_t), sortKeys[index]);
     stamp64(gw.data(), 0x3D68, PTR_FOLLOWS);     // runtime GfxLight[], zero-fill stream 4
     // Native Load_GfxBrushModelArray DD1750 consumes 96 bytes per model;
     // allocator DCF750 uses alignment mask 3. Entity model indices refer to

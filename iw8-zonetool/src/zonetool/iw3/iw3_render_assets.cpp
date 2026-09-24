@@ -1627,6 +1627,19 @@ void Put(std::vector<std::uint8_t> &data, const std::size_t offset, const T valu
     std::memcpy(data.data() + offset, &value, sizeof(value));
 }
 
+std::string HlslNumber(const float value)
+{
+    if (!std::isfinite(value))
+        throw std::runtime_error("IW3 material has a nonfinite shader constant");
+    std::array<char, 48> buffer{};
+    const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                                      std::chars_format::general,
+                                      std::numeric_limits<float>::max_digits10);
+    if (result.ec != std::errc{})
+        throw std::runtime_error("cannot format IW3 material shader constant");
+    return std::string(buffer.data(), result.ptr);
+}
+
 std::vector<std::uint8_t> Compile(const std::string &source, const char *target, const char *name)
 {
     ID3DBlob *program = nullptr, *errors = nullptr;
@@ -2729,8 +2742,12 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         auto &entry = plan.materials.at(sourceName);
         if (entry.kind != SurfaceKind::glass || !entry.glassMaterial.empty())
             continue;
+        const auto sourceBytes = std::span(
+            reinterpret_cast<const std::uint8_t *>(sourceName.data()), sourceName.size());
+        const auto sourceDigest = Sha256(sourceBytes);
         const std::string kind = "pane_" + std::to_string(entry.tile) + "_" +
-                                 std::to_string(entry.flags) + "_glass";
+                                 std::to_string(entry.flags) + "_" +
+                                 Hex(std::span(sourceDigest).first(8)) + "_glass";
         entry.glassMaterial = plan.material + "_" + kind;
         if (std::any_of(plan.assetMaterials.begin(), plan.assetMaterials.end(),
                         [&](const Json &existing) {
@@ -2739,9 +2756,13 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             continue;
         Json variant = CreateVariant(techset, material, stem, map, kind);
         Json &paneTechset = variant.at("techset");
+        const auto &environment = entry.environment;
         const std::string vertexSource = "#define GLASS_PANE 1\n#define GLASS_TILE " +
             std::to_string(entry.tile) + "\n#define GLASS_FLAGS " +
-            std::to_string(entry.flags | 2u) + "\n" + ResourceText(IDR_IW3_VERTEX_SHADER);
+            std::to_string(entry.flags | 2u) + "\n#define GLASS_ENVIRONMENT float4(" +
+            HlslNumber(environment[0]) + "," + HlslNumber(environment[1]) + "," +
+            HlslNumber(environment[2]) + "," + HlslNumber(environment[3]) + ")\n" +
+            ResourceText(IDR_IW3_VERTEX_SHADER);
         Json vertex = Shader(14, "iw3_glass", "iw3_glass_vertex.hlsl",
                              Compile(vertexSource, "vs_5_0", "iw3_glass_vertex.hlsl"));
         Json &lit = paneTechset.at("techniques").back();
@@ -2775,6 +2796,13 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         paneTechset["header"] = Hex(type);
         KeepReferencedShaders(paneTechset);
         auto info = Unhex(variant.at("material").at("info").get<std::string>());
+        if (sourceName.find("shattered") != std::string::npos)
+        {
+            // Replay's native shattered pane uses glass contents/surface flags,
+            // not the opaque baseboard flags inherited by the material template.
+            Put<std::uint32_t>(info, 0x00, 0x2010u);
+            Put<std::uint32_t>(info, 0x04, 0x4C4000u);
+        }
         Put<std::uint32_t>(info, 0xC, 0x100000u);
         info[0x10] = 3;
         info[0x11] = 26;
@@ -2902,23 +2930,12 @@ std::string RegisterGlassUvRemap(RenderPlan &plan,
                                  const std::string &material,
                                  const std::array<float, 6> &uvAffine)
 {
-    const auto number = [](const float value) {
-        if (!std::isfinite(value))
-            throw std::runtime_error("IW3 shattered glass has a nonfinite UV transform");
-        std::array<char, 48> buffer{};
-        const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
-                                          std::chars_format::general,
-                                          std::numeric_limits<float>::max_digits10);
-        if (result.ec != std::errc{})
-            throw std::runtime_error("cannot format shattered glass UV transform");
-        return std::string(buffer.data(), result.ptr);
-    };
     std::string source = "#define MAP_SOURCE_SUN_MASK 1\n#define MAP_SOURCE_CHANNELS 1\n"
                          "#define MAP_GLASS_UV_REMAP 1\n#define MAP_GLASS_ROW0 float2(" +
-                         number(uvAffine[0]) + "," + number(uvAffine[1]) + ")\n"
-                         "#define MAP_GLASS_ROW1 float2(" + number(uvAffine[2]) + "," +
-                         number(uvAffine[3]) + ")\n#define MAP_GLASS_OFFSET float2(" +
-                         number(uvAffine[4]) + "," + number(uvAffine[5]) + ")\n" +
+                         HlslNumber(uvAffine[0]) + "," + HlslNumber(uvAffine[1]) + ")\n"
+                         "#define MAP_GLASS_ROW1 float2(" + HlslNumber(uvAffine[2]) + "," +
+                         HlslNumber(uvAffine[3]) + ")\n#define MAP_GLASS_OFFSET float2(" +
+                         HlslNumber(uvAffine[4]) + "," + HlslNumber(uvAffine[5]) + ")\n" +
                          ResourceText(IDR_IW3_PIXEL_SHADER);
     constexpr std::string_view token = "ATLAS_COLUMNS";
     for (std::size_t at = source.find(token); at != std::string::npos;

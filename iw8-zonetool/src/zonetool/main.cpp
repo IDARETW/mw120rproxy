@@ -311,6 +311,10 @@ bool writeMetadata(const std::string &directory, const MapMetadata &metadata)
     {
         data["description"] = metadata.description;
     }
+    if (metadata.compassRotation)
+    {
+        data["compassRotation"] = metadata.compassRotation;
+    }
     std::ofstream output(std::filesystem::path(directory) / "map.json", std::ios::binary);
     if (!output)
     {

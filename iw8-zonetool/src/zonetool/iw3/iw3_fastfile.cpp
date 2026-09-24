@@ -170,7 +170,11 @@ struct VisibilityGroups
     std::vector<std::uint32_t> models;
     std::vector<Json> treeBounds;
     std::vector<std::vector<std::uint32_t>> treeModels;
+    std::vector<std::vector<std::uint32_t>> groupTrees;
+    std::vector<std::uint16_t> treeChildCounts;
+    std::vector<std::uint32_t> treeFirstChildren;
     std::vector<std::vector<std::uint32_t>> cellTrees;
+    bool nativeTopology{};
     std::size_t sourceTreeCount{};
 };
 
@@ -1601,6 +1605,11 @@ VisibilityGroups ReadVisibilityGroups(const Json &world)
     result.cellTrees.resize(cells.size());
     result.surfaces.assign(surfaces.size(), VisibilityGroups::Unassigned);
     result.models.assign(models.size(), VisibilityGroups::Unassigned);
+    result.nativeTopology = !cells.at(0).at("trees").empty() &&
+                            cells.at(0).at("trees").at(0).contains("childCount");
+    std::vector<std::vector<std::uint32_t>> surfaceTrees;
+    if (result.nativeTopology)
+        surfaceTrees.resize(surfaces.size());
     const auto assign = [](std::vector<std::uint32_t> &groups, const std::size_t index,
                            const std::uint32_t tree) {
         if (index >= groups.size())
@@ -1616,28 +1625,47 @@ VisibilityGroups ReadVisibilityGroups(const Json &world)
         const auto &trees = cell.at("trees");
         if (!trees.is_array())
             throw std::runtime_error("invalid IW3 DPVS AABB trees");
-        for (const auto &tree : trees)
+        for (std::size_t treeIndex = 0; treeIndex < trees.size(); ++treeIndex)
         {
+            const auto &tree = trees.at(treeIndex);
             ++result.sourceTreeCount;
             const auto &treeSurfaces = tree.at("surfaces");
             const auto &treeModels = tree.at("models");
             if (!treeSurfaces.is_array() || !treeModels.is_array())
                 throw std::runtime_error("invalid IW3 DPVS AABB ownership");
-            if (treeSurfaces.empty() && treeModels.empty())
+            if (!result.nativeTopology && treeSurfaces.empty() && treeModels.empty())
                 continue;
             if (result.treeBounds.size() >= VisibilityGroups::Unassigned)
                 throw std::runtime_error("IW3 DPVS has too many AABB trees");
-            const auto &bounds = tree.at("bounds");
+            Json bounds = tree.at("bounds");
             if (!bounds.is_array() || bounds.size() != 2)
                 throw std::runtime_error("invalid IW3 DPVS AABB bounds");
             const Vec3 minimum = ReadVector<3>(bounds.at(0));
             const Vec3 maximum = ReadVector<3>(bounds.at(1));
             for (std::size_t axis = 0; axis < minimum.size(); ++axis)
                 if (minimum[axis] > maximum[axis])
-                    throw std::runtime_error("reversed IW3 DPVS AABB bounds");
+                {
+                    if (!result.nativeTopology || !treeSurfaces.empty() ||
+                        !treeModels.empty() || tree.at("childCount").get<unsigned>())
+                        throw std::runtime_error("reversed IW3 DPVS AABB bounds");
+                    bounds = cell.at("bounds");
+                    break;
+                }
 
             const auto group = static_cast<std::uint32_t>(result.treeBounds.size());
             result.treeBounds.push_back(bounds);
+            if (result.nativeTopology)
+            {
+                const auto childCount = tree.at("childCount").get<unsigned>();
+                const auto firstChild = tree.at("firstChild").get<unsigned>();
+                if (childCount > UINT16_MAX ||
+                    (childCount && (firstChild <= treeIndex ||
+                                    firstChild + childCount > trees.size())) ||
+                    (!childCount && firstChild))
+                    throw std::runtime_error("invalid IW3 DPVS AABB child range");
+                result.treeChildCounts.push_back(static_cast<std::uint16_t>(childCount));
+                result.treeFirstChildren.push_back(static_cast<std::uint32_t>(firstChild));
+            }
             std::vector<std::uint32_t> ownedModels;
             ownedModels.reserve(treeModels.size());
             for (const auto &model : treeModels)
@@ -1649,7 +1677,54 @@ VisibilityGroups ReadVisibilityGroups(const Json &world)
             result.treeModels.push_back(std::move(ownedModels));
             result.cellTrees[cellIndex].push_back(group);
             for (const auto &surface : treeSurfaces)
-                assign(result.surfaces, surface.get<std::size_t>(), group);
+            {
+                const auto index = surface.get<std::size_t>();
+                if (result.nativeTopology)
+                {
+                    if (index >= surfaceTrees.size())
+                        throw std::runtime_error("IW3 DPVS surface index is outside its array");
+                    surfaceTrees[index].push_back(group);
+                }
+                else
+                    assign(result.surfaces, index, group);
+            }
+        }
+        if (result.nativeTopology && !trees.empty())
+        {
+            std::vector<bool> visited(trees.size());
+            std::vector<std::size_t> pending{0};
+            while (!pending.empty())
+            {
+                const auto index = pending.back();
+                pending.pop_back();
+                if (visited.at(index))
+                    throw std::runtime_error("IW3 DPVS AABB tree has repeated descendants");
+                visited[index] = true;
+                const auto &tree = trees.at(index);
+                const auto first = tree.at("firstChild").get<std::size_t>();
+                const auto count = tree.at("childCount").get<std::size_t>();
+                for (std::size_t child = first; child < first + count; ++child)
+                    pending.push_back(child);
+            }
+            if (std::ranges::find(visited, false) != visited.end())
+                throw std::runtime_error("IW3 DPVS AABB tree has unreachable nodes");
+        }
+    }
+    if (result.nativeTopology)
+    {
+        std::map<std::vector<std::uint32_t>, std::uint32_t> membershipGroups;
+        for (std::size_t index = 0; index < surfaceTrees.size(); ++index)
+        {
+            auto &members = surfaceTrees[index];
+            if (members.empty())
+                continue;
+            std::ranges::sort(members);
+            members.erase(std::unique(members.begin(), members.end()), members.end());
+            const auto [it, inserted] = membershipGroups.try_emplace(
+                members, static_cast<std::uint32_t>(result.groupTrees.size()));
+            if (inserted)
+                result.groupTrees.push_back(members);
+            result.surfaces[index] = it->second;
         }
     }
     for (auto &group : result.surfaces)
@@ -3081,8 +3156,8 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
             key << ':' << surface.visibilityGroup;
             key << ':' << surface.reflectionProbe;
             // Several IW3 materials share one Replay fallback material. Keep
-            // their caster eligibility separate when merging world geometry.
-            key << ':' << (modelIndex == 0 && material.castsShadow);
+            // their caster eligibility separate when merging fixed and entity brushes.
+            key << ':' << material.castsShadow;
             if (!target || activeKey != key.str() ||
                 targetVertices + surface.vertices.size() > 60000 ||
                 targetIndices + surface.indices.size() > 65535u * 3u)
@@ -3093,8 +3168,7 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                                               {"atlasVertexLayout", nativeWorld ? 1u : 3u},
                                               {"lightmapIndex", 0u},
                                               {"opaque", material.kind == SurfaceKind::opaque},
-                                              {"sunShadowMask", modelIndex == 0 && material.castsShadow
-                                                                    ? sunShadowMask : 0u},
+                                              {"sunShadowMask", material.castsShadow ? sunShadowMask : 0u},
                                               {"reflectionProbe", surface.reflectionProbe},
                                               {"materialParameters", material.environment}});
                 target = &output["surfaces"].back();
@@ -3111,7 +3185,13 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                 }
                 else
                 {
-                    treeSurfaces.at(surface.visibilityGroup).insert(destinationSurface);
+                    if (visibility.nativeTopology)
+                    {
+                        for (const auto tree : visibility.groupTrees.at(surface.visibilityGroup))
+                            treeSurfaces.at(tree).insert(destinationSurface);
+                    }
+                    else
+                        treeSurfaces.at(surface.visibilityGroup).insert(destinationSurface);
                 }
             }
             std::unordered_map<std::uint32_t, std::uint32_t> remap;
@@ -3183,17 +3263,36 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
             cellProbeBounds[probe].Add(source.at("bounds"));
         }
         Json trees = Json::array();
-        for (const auto group : visibility.cellTrees.at(cellIndex))
+        for (std::size_t treeIndex = 0; treeIndex < visibility.cellTrees.at(cellIndex).size();
+             ++treeIndex)
         {
+            const auto group = visibility.cellTrees.at(cellIndex).at(treeIndex);
             const auto &owned = treeSurfaces.at(group);
             const auto &ownedModels = visibility.treeModels.at(group);
-            if (!owned.empty() || !ownedModels.empty())
-                trees.push_back({{"bounds", visibility.treeBounds.at(group)},
-                                 {"surfaces", std::vector<unsigned>(owned.begin(), owned.end())},
-                                 {"models", std::vector<unsigned>(ownedModels.begin(),
-                                                                    ownedModels.end())}});
+            if (visibility.nativeTopology || !owned.empty() || !ownedModels.empty())
+            {
+                Json tree = {{"bounds", visibility.treeBounds.at(group)},
+                             {"surfaces", std::vector<unsigned>(owned.begin(), owned.end())},
+                             {"models", std::vector<unsigned>(ownedModels.begin(),
+                                                                ownedModels.end())}};
+                if (visibility.nativeTopology)
+                {
+                    tree["childCount"] = visibility.treeChildCounts.at(group);
+                    tree["firstChild"] = visibility.treeFirstChildren.at(group);
+                    if (!treeIndex && !globalSurfaces.empty())
+                    {
+                        auto all = tree.at("surfaces").get<std::vector<unsigned>>();
+                        all.insert(all.end(), globalSurfaces.begin(), globalSurfaces.end());
+                        std::ranges::sort(all);
+                        all.erase(std::unique(all.begin(), all.end()), all.end());
+                        tree["surfaces"] = std::move(all);
+                        tree["bounds"] = world.at("bounds");
+                    }
+                }
+                trees.push_back(std::move(tree));
+            }
         }
-        if (!globalSurfaces.empty())
+        if (!visibility.nativeTopology && !globalSurfaces.empty())
             trees.push_back({{"bounds", source.at("bounds")},
                              {"surfaces", std::vector<unsigned>(globalSurfaces.begin(),
                                                                 globalSurfaces.end())}});
