@@ -3666,9 +3666,10 @@ CollisionData ReadCollision(const Json &collision)
     return result;
 }
 
-unsigned FootstepMaterial(std::string material);
+unsigned FootstepMaterial(std::string material, const RenderPlan &renderPlan);
 
-void AlignLadderEdgesToModels(CollisionData &collision, const SourceStaticModels &models)
+void AlignLadderEdgesToModels(CollisionData &collision, const SourceStaticModels &models,
+                              const RenderPlan &renderPlan)
 {
     struct LadderModel
     {
@@ -3695,9 +3696,10 @@ void AlignLadderEdgesToModels(CollisionData &collision, const SourceStaticModels
         candidate.name = model.name;
         if (!model.lods.front().surfaces.empty())
         {
-            candidate.material = FootstepMaterial(model.lods.front().surfaces.front().material);
+            candidate.material =
+                FootstepMaterial(model.lods.front().surfaces.front().material, renderPlan);
             for (const Surface &surface : model.lods.front().surfaces)
-                if (FootstepMaterial(surface.material) != candidate.material)
+                if (FootstepMaterial(surface.material, renderPlan) != candidate.material)
                 {
                     candidate.material = 0;
                     break;
@@ -3860,7 +3862,8 @@ void AlignLadderEdgesToModels(CollisionData &collision, const SourceStaticModels
         zt::info("iw3: aligned %zu ladder edge pairs to rendered models", aligned);
 }
 
-void AppendStaticModelCollision(CollisionData &collision, const SourceStaticModels &staticModels)
+void AppendStaticModelCollision(CollisionData &collision, const SourceStaticModels &staticModels,
+                                const RenderPlan &renderPlan)
 {
     constexpr std::size_t maximumVertices = 4'000'000;
     constexpr std::size_t maximumTriangles = 4'000'000;
@@ -3918,7 +3921,7 @@ void AppendStaticModelCollision(CollisionData &collision, const SourceStaticMode
                 CollisionMesh::Triangle output;
                 for (std::size_t corner = 0; corner < triangle.size(); ++corner)
                     output.indices[corner] = appendVertex(triangle[corner]);
-                output.material = FootstepMaterial(surface.material);
+                output.material = FootstepMaterial(surface.material, renderPlan);
                 mesh.triangles.push_back(output);
             }
         }
@@ -4115,8 +4118,45 @@ void CopyCompass(const std::filesystem::path &extracted, const std::filesystem::
     }
 }
 
-unsigned FootstepMaterial(std::string material)
+unsigned FootstepMaterial(std::string material, const RenderPlan &renderPlan)
 {
+    const auto source = renderPlan.materials.find(material);
+    if (source != renderPlan.materials.end())
+    {
+        // IW3 stores a one-hot physical surface bit. Replay inserts new
+        // surface families after the original metal/mud range, so bit index
+        // alone is not a valid native shape-tag or impact-table index.
+        switch (source->second.sourceSurfaceTypeBits)
+        {
+        case 4u: return 4;       // carpet
+        case 8u: return 3;       // cloth
+        case 16u: return 5;      // concrete
+        case 32u: return 6;      // dirt
+        case 64u: return 7;      // flesh
+        case 128u: return 8;     // foliage
+        case 256u: return 9;     // glass
+        case 512u: return 10;    // grass
+        case 1024u: return 11;   // gravel
+        case 2048u: return 12;   // ice
+        case 4096u: return 13;   // metal
+        case 8192u: return 15;   // mud
+        case 16384u: return 16;  // paper
+        case 32768u: return 17;  // plaster
+        case 65536u: return 18;  // rock
+        case 131072u: return 19; // sand
+        case 262144u: return 20; // snow
+        case 524288u: return 21; // water
+        case 1048576u: return 22; // wood
+        case 2097152u: return 23; // asphalt
+        case 4194304u: return 24; // tile
+        case 8388608u: return 25; // plastic
+        case 16777216u: return 26; // rubber
+        case 33554432u: return 35; // cushion
+        case 67108864u: return 27; // splash
+        case 134217728u: return 28; // thick metal
+        default: break;
+        }
+    }
     std::ranges::transform(material, material.begin(), [](const unsigned char value) {
         return static_cast<char>(std::tolower(value));
     });
@@ -4131,18 +4171,22 @@ unsigned FootstepMaterial(std::string material)
         return 22;
     if (contains("metal") || contains("steel") || contains("iron") || contains("diamond"))
         return 13;
-    if (contains("grass") || contains("foliage"))
+    if (contains("grass"))
         return 10;
-    if (contains("dirt") || contains("mud"))
+    if (contains("foliage"))
+        return 8;
+    if (contains("dirt"))
         return 6;
+    if (contains("mud"))
+        return 15;
     if (contains("sand"))
-        return 18;
+        return 19;
     if (contains("gravel"))
         return 11;
     if (contains("rock") || contains("stone"))
-        return 17;
+        return 18;
     if (contains("snow"))
-        return 19;
+        return 20;
     if (contains("ice"))
         return 12;
     if (contains("glass"))
@@ -4150,13 +4194,22 @@ unsigned FootstepMaterial(std::string material)
     if (contains("brick"))
         return 2;
     if (contains("plaster"))
-        return 16;
+        return 17;
     if (contains("paper"))
-        return 15;
+        return 16;
+    if (contains("tile"))
+        return 24;
+    if (contains("plastic"))
+        return 25;
+    if (contains("rubber"))
+        return 26;
+    if (contains("asphalt"))
+        return 23;
     return 5;
 }
 
-void WriteFootsteps(const std::filesystem::path &path, const std::vector<BrushModel> &models)
+void WriteFootsteps(const std::filesystem::path &path, const std::vector<BrushModel> &models,
+                    const RenderPlan &renderPlan)
 {
     // MWRSTEP1 stores world-space triangles. Only upward-facing faces are
     // walkable; walls, ceilings, and degenerate faces are excluded.
@@ -4165,7 +4218,7 @@ void WriteFootsteps(const std::filesystem::path &path, const std::vector<BrushMo
     {
         for (const auto &surface : models.front().surfaces)
         {
-            const unsigned material = FootstepMaterial(surface.material);
+            const unsigned material = FootstepMaterial(surface.material, renderPlan);
             for (std::size_t offset = 0; offset < surface.indices.size(); offset += 3)
             {
                 const auto &a = surface.vertices.at(surface.indices[offset]);
@@ -5527,12 +5580,13 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     }
     std::size_t triangles = 0;
     auto nativeCollision = ReadCollision(collision);
-    AlignLadderEdgesToModels(nativeCollision, sourceStaticModels);
+    AlignLadderEdgesToModels(nativeCollision, sourceStaticModels, renderPlan);
+    AppendStaticModelCollision(nativeCollision, sourceStaticModels, renderPlan);
     const Json render = BuildRender(world, visibility, brushModels, renderPlan,
                                     mapDirectory, options.map, entities, nativeCollision,
                                     triangles);
     result.footsteps = result.scratch / "footsteps.native";
-    WriteFootsteps(result.footsteps, brushModels);
+    WriteFootsteps(result.footsteps, brushModels, renderPlan);
 
     const std::string targetAsset = options.map + ".d3dbsp";
     WriteJson(mapDirectory / (targetAsset + ".render.json"), render);

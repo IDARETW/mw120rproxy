@@ -27,6 +27,7 @@ struct MaterialPlan
     SurfaceKind kind{SurfaceKind::opaque};
     bool castsShadow{true};
     unsigned flags{};
+    unsigned sourceSurfaceTypeBits{};
     std::array<float, 4> environment{0.8f, 4.0f, 2.5f, 0.625f};
     unsigned worldMaterialIndex{};
     std::string modelMaterial;

@@ -564,7 +564,7 @@ CollisionInput ReadCollision(const std::filesystem::path &path)
         if (vertexCount < 4 || vertexCount > 252 || hull.contents == 0 ||
             (hull.contents & ~supportedContents) != 0 || hull.model >= result.models.size() ||
             (hull.glassId && !(hull.contents & 0x10u)) ||
-            hull.materialOverride > 28 || !std::isfinite(hull.ladderRungOffset) ||
+            hull.materialOverride > 63 || !std::isfinite(hull.ladderRungOffset) ||
             std::abs(hull.ladderRungOffset) > 6.0f ||
             slabCount > 252 || ladderPlaneCount > 8 || (hull.surfaceFlags & ~0x7FFFFu) != 0 ||
             cursor + std::size_t(vertexCount) * 12 + std::size_t(slabCount) * 20 +
@@ -709,7 +709,7 @@ class FloorMaterials
             std::array<float, 9> values{};
             std::memcpy(values.data(), cursor, sizeof(values));
             triangle.material = Read<std::uint32_t>(cursor + 36);
-            if (triangle.material < 1 || triangle.material > 28 ||
+            if (triangle.material < 1 || triangle.material > 63 ||
                 std::any_of(values.begin(), values.end(),
                             [](float value) { return !std::isfinite(value); }))
                 throw std::runtime_error("Footstep triangle is invalid");

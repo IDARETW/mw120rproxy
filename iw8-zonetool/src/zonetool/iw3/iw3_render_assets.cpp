@@ -57,6 +57,7 @@ struct Cubemap
 struct SourceMaterial
 {
     std::string name;
+    unsigned surfaceTypeBits{};
     std::string color;
     std::string normal;
     std::string response;
@@ -1431,6 +1432,7 @@ SourceMaterial ReadMaterial(const std::filesystem::path &root,
     const Json source = ReadJson(path);
     SourceMaterial material;
     material.name = name;
+    material.surfaceTypeBits = source.value("surfaceTypeBits", 0u);
     if (source.contains("gameFlags"))
     {
         const auto &flags = source.at("gameFlags");
@@ -2377,6 +2379,7 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
         item.kind = material.kind;
         item.castsShadow = material.castsShadow;
         item.flags = material.flags;
+        item.sourceSurfaceTypeBits = material.surfaceTypeBits;
         item.environment = material.environment;
         if (material.kind != SurfaceKind::skipped)
         {

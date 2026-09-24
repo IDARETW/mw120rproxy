@@ -174,6 +174,9 @@ available HUD minimap. Source DPVS cells and AABB trees preserve their surface a
 membership, including model-only trees, in Replay's native visibility layout. Model conversion
 preserves the original indexed geometry and UVs, and
 generates Replay material/technique assets from the source color, normal, and response images.
+The server collision includes the authored collision LOD of placed static models that provide one.
+Exported IW3 material surface-type bits are translated to Replay's native collision and impact types;
+materials without a known source type use a name-based fallback.
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
 
