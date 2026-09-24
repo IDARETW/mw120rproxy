@@ -3508,6 +3508,44 @@ std::uint32_t ConvertContents(const std::uint32_t source)
     return result;
 }
 
+unsigned NativeSurfaceMaterial(const std::uint32_t sourceBits)
+{
+    // IW3 uses bit (surface type - 1); Replay has additional surface families
+    // and a different ordering. Return zero for types without a known mapping.
+    switch (sourceBits)
+    {
+    case 1u: return 1;         // bark
+    case 2u: return 2;         // brick
+    case 4u: return 4;         // carpet
+    case 8u: return 3;         // cloth
+    case 16u: return 5;        // concrete
+    case 32u: return 6;        // dirt
+    case 64u: return 7;        // flesh
+    case 128u: return 8;       // foliage
+    case 256u: return 9;       // glass
+    case 512u: return 10;      // grass
+    case 1024u: return 11;     // gravel
+    case 2048u: return 12;     // ice
+    case 4096u: return 13;     // metal
+    case 8192u: return 15;     // mud
+    case 16384u: return 16;    // paper
+    case 32768u: return 17;    // plaster
+    case 65536u: return 18;    // rock
+    case 131072u: return 19;   // sand
+    case 262144u: return 20;   // snow
+    case 524288u: return 21;   // water
+    case 1048576u: return 22;  // wood
+    case 2097152u: return 23;  // asphalt
+    case 4194304u: return 24;  // ceramic
+    case 8388608u: return 25;  // plastic
+    case 16777216u: return 26; // rubber
+    case 33554432u: return 35; // cushion
+    case 67108864u: return 27; // fruit
+    case 134217728u: return 28; // painted metal
+    default: return 0;
+    }
+}
+
 std::vector<CollisionHull::Slab> BuildTriggerSlabs(const std::vector<Vec3> &points,
                                                    const std::vector<Vec4> &planes)
 {
@@ -3555,6 +3593,26 @@ CollisionData ReadCollision(const Json &collision)
         !nodes.is_array())
         throw std::runtime_error("IW3 collision is missing brush-model topology");
 
+    std::vector<unsigned> collisionMaterials;
+    if (const auto sourceMaterials = collision.find("materials");
+        sourceMaterials != collision.end())
+    {
+        if (!sourceMaterials->is_array())
+            throw std::runtime_error("IW3 collision materials are not an array");
+        collisionMaterials.reserve(sourceMaterials->size());
+        for (const auto &material : *sourceMaterials)
+        {
+            const auto flags =
+                static_cast<std::uint32_t>(material.at("surfaceFlags").get<std::int32_t>());
+            const unsigned sourceType = (flags >> 20) & 31u;
+            const unsigned nativeType =
+                sourceType ? NativeSurfaceMaterial(1u << (sourceType - 1)) : 0;
+            collisionMaterials.push_back(sourceType && !nativeType
+                                             ? std::numeric_limits<unsigned>::max()
+                                             : nativeType);
+        }
+    }
+
     CollisionData result;
     result.models.reserve(sourceModels.size());
     std::vector<std::uint32_t> owner(sourceBrushes.size(), 0);
@@ -3581,6 +3639,8 @@ CollisionData ReadCollision(const Json &collision)
     }
 
     result.hulls.reserve(sourceBrushes.size() + collision.at("triangles").size());
+    std::size_t sourceTaggedBrushes = 0;
+    std::size_t mixedMaterialBrushes = 0;
     for (std::size_t brushIndex = 0; brushIndex < sourceBrushes.size(); ++brushIndex)
     {
         const auto &brush = sourceBrushes.at(brushIndex);
@@ -3608,6 +3668,49 @@ CollisionData ReadCollision(const Json &collision)
         hull.slabs = BuildTriggerSlabs(hull.points, planes);
         hull.contents = contents;
         hull.model = owner.at(brushIndex);
+        if (!collisionMaterials.empty())
+        {
+            const auto &axial = brush.at("axial_materials");
+            const auto &sides = brush.at("side_materials");
+            if (!axial.is_array() || axial.size() != 2 || !sides.is_array() ||
+                sides.size() != brush.at("planes").size())
+                throw std::runtime_error("IW3 brush material references are invalid");
+
+            unsigned sourceMaterial = 0;
+            bool mixed = false;
+            const auto consider = [&](const Json &reference) {
+                const auto index = reference.get<std::int64_t>();
+                if (index < 0)
+                    return;
+                if (static_cast<std::uint64_t>(index) >= collisionMaterials.size())
+                    throw std::runtime_error("IW3 brush material index is invalid");
+                const unsigned material = collisionMaterials[static_cast<std::size_t>(index)];
+                if (material == std::numeric_limits<unsigned>::max())
+                    mixed = true;
+                else if (material)
+                {
+                    if (sourceMaterial && sourceMaterial != material)
+                        mixed = true;
+                    sourceMaterial = material;
+                }
+            };
+            for (const auto &row : axial)
+            {
+                if (!row.is_array() || row.size() != 3)
+                    throw std::runtime_error("IW3 axial brush materials are invalid");
+                for (const auto &reference : row)
+                    consider(reference);
+            }
+            for (const auto &reference : sides)
+                consider(reference);
+            if (mixed)
+                ++mixedMaterialBrushes;
+            else if (sourceMaterial)
+            {
+                hull.materialOverride = sourceMaterial;
+                ++sourceTaggedBrushes;
+            }
+        }
         // IW3 records the climbable face separately from the brush planes.
         // Replay carries SURFACE_FLAG_LADDER through the low bits of the
         // Havok shape tag's userData field, so retain it in the native
@@ -3627,6 +3730,9 @@ CollisionData ReadCollision(const Json &collision)
         }
         result.hulls.push_back(std::move(hull));
     }
+    if (!collisionMaterials.empty())
+        zt::info("iw3: tagged %zu brush hulls from source materials; %zu mixed brush hulls retain floor-derived tags",
+                 sourceTaggedBrushes, mixedMaterialBrushes);
 
     const auto &vertices = collision.at("vertices");
     for (const auto &triangle : collision.at("triangles"))
@@ -4123,39 +4229,8 @@ unsigned FootstepMaterial(std::string material, const RenderPlan &renderPlan)
     const auto source = renderPlan.materials.find(material);
     if (source != renderPlan.materials.end())
     {
-        // IW3 stores a one-hot physical surface bit. Replay inserts new
-        // surface families after the original metal/mud range, so bit index
-        // alone is not a valid native shape-tag or impact-table index.
-        switch (source->second.sourceSurfaceTypeBits)
-        {
-        case 4u: return 4;       // carpet
-        case 8u: return 3;       // cloth
-        case 16u: return 5;      // concrete
-        case 32u: return 6;      // dirt
-        case 64u: return 7;      // flesh
-        case 128u: return 8;     // foliage
-        case 256u: return 9;     // glass
-        case 512u: return 10;    // grass
-        case 1024u: return 11;   // gravel
-        case 2048u: return 12;   // ice
-        case 4096u: return 13;   // metal
-        case 8192u: return 15;   // mud
-        case 16384u: return 16;  // paper
-        case 32768u: return 17;  // plaster
-        case 65536u: return 18;  // rock
-        case 131072u: return 19; // sand
-        case 262144u: return 20; // snow
-        case 524288u: return 21; // water
-        case 1048576u: return 22; // wood
-        case 2097152u: return 23; // asphalt
-        case 4194304u: return 24; // tile
-        case 8388608u: return 25; // plastic
-        case 16777216u: return 26; // rubber
-        case 33554432u: return 35; // cushion
-        case 67108864u: return 27; // splash
-        case 134217728u: return 28; // thick metal
-        default: break;
-        }
+        if (const unsigned nativeType = NativeSurfaceMaterial(source->second.sourceSurfaceTypeBits))
+            return nativeType;
     }
     std::ranges::transform(material, material.begin(), [](const unsigned char value) {
         return static_cast<char>(std::tolower(value));

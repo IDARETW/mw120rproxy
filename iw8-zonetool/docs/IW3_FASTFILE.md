@@ -176,7 +176,11 @@ preserves the original indexed geometry and UVs, and
 generates Replay material/technique assets from the source color, normal, and response images.
 The server collision includes the authored collision LOD of placed static models that provide one.
 Exported IW3 material surface-type bits are translated to Replay's native collision and impact types;
-materials without a known source type use a name-based fallback.
+render materials without a known source type use a name-based fallback. For convex world brushes,
+the converter reads the clip-map material indices on all axial and slanted sides. It writes a native
+shape tag when the mapped physical type agrees across those sides. Mixed-material brushes retain
+the nearest walkable-surface fallback because Replay's current convex-shape writer assigns one tag
+per hull, not one per face.
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
 

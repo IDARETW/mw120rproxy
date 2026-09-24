@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -1116,7 +1117,18 @@ template <class AssetType> class Collision final : public AbstractAssetDumper<As
                   {"dynamic_models", Json::array()},
                   {"dynamic_brushes", Json::array()},
                   {"submodels", Json::array()},
-                  {"leaf_brush_nodes", Json::array()}};
+                  {"leaf_brush_nodes", Json::array()},
+                  {"materials", Json::array()}};
+        if (c.numMaterials && !c.materials)
+            throw std::runtime_error("IW3 collision materials are missing");
+        for (unsigned i = 0; i < c.numMaterials; ++i)
+        {
+            const auto &material = c.materials[i];
+            const std::string_view name(material.material, sizeof(material.material));
+            j["materials"].push_back({{"name", std::string(name.substr(0, name.find('\0')))},
+                                      {"surfaceFlags", material.surfaceFlags},
+                                      {"contentFlags", material.contentFlags}});
+        }
         for (unsigned basis = 0; basis < 2; ++basis)
         {
             auto &output = basis == 0 ? j["dynamic_models"] : j["dynamic_brushes"];
@@ -1172,22 +1184,30 @@ template <class AssetType> class Collision final : public AbstractAssetDumper<As
                         {"maxs", V3(b.maxs)},
                         {"contents", b.contents},
                         {"planes", Json::array()},
-                        {"ladder_planes", Json::array()}};
+                        {"ladder_planes", Json::array()},
+                        {"axial_materials", Json::array()},
+                        {"side_materials", Json::array()}};
             auto ladder = [&](unsigned material, const float *n, float dist) {
                 if (material < c.numMaterials && (c.materials[material].surfaceFlags & 8))
                     out["ladder_planes"].push_back({n[0], n[1], n[2], dist});
             };
             for (int side = 0; side < 2; ++side)
+            {
+                Json axial = Json::array();
                 for (int axis = 0; axis < 3; ++axis)
                 {
                     float n[3]{};
                     n[axis] = side ? 1.f : -1.f;
+                    axial.push_back(b.axialMaterialNum[side][axis]);
                     ladder(b.axialMaterialNum[side][axis], n, side ? b.maxs[axis] : -b.mins[axis]);
                 }
+                out["axial_materials"].push_back(std::move(axial));
+            }
             for (unsigned k = 0; k < b.numsides; ++k)
             {
                 const auto &p = *b.sides[k].plane;
                 out["planes"].push_back({p.normal[0], p.normal[1], p.normal[2], p.dist});
+                out["side_materials"].push_back(b.sides[k].materialNum);
                 ladder(b.sides[k].materialNum, p.normal, p.dist);
             }
             j["brushes"].push_back(std::move(out));
