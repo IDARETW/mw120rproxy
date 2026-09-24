@@ -384,8 +384,8 @@ void testCasterBake()
         const std::array<replaysunshadow::Vertex, 4> corners{{
             {{16, 16, z}, {0, 0}, 1}, {{112, 16, z}, {1, 0}, 1},
             {{112, 112, z}, {1, 1}, 1}, {{16, 112, z}, {0, 1}, 1}}};
-        // Replay submits clockwise winding: world conversion reverses the
-        // normal-aligned IW3 triangles, while XSurfaces already use it.
+        // Replay submits clockwise winding. The extracted IW3 BSP triangle
+        // order already matches this shadow-raster contract.
         for (const unsigned index : {0u, 2u, 1u, 0u, 3u, 2u})
             surface.vertices.push_back(corners[index]);
         return surface;

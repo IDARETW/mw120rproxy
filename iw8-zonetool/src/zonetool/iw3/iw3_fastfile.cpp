@@ -2620,7 +2620,6 @@ void BuildShadowScene(const std::vector<BrushModel> &brushModels,
                       replaysunshadow::Scene &scene)
 {
     const auto append = [&](const Surface &source, const unsigned material,
-                            const bool reverseWinding,
                             const SourceStaticModelInstance *instance,
                             const std::array<Vec3, 3> *axis) {
         if (source.indices.size() % 3 || source.vertices.empty())
@@ -2630,9 +2629,10 @@ void BuildShadowScene(const std::vector<BrushModel> &brushModels,
         replaysunshadow::Surface caster;
         caster.material = material;
         caster.vertices.reserve(source.indices.size());
+        // IW3 BSP indices already have the winding expected by Replay's sun
+        // rasterizer. Reversing them culls sun-facing single-sided geometry.
         for (std::size_t first = 0; first < source.indices.size(); first += 3)
-            for (const std::size_t corner : {0u, reverseWinding ? 2u : 1u,
-                                             reverseWinding ? 1u : 2u})
+            for (const std::size_t corner : {0u, 1u, 2u})
             {
                 const std::uint32_t index = source.indices[first + corner];
                 if (index >= source.vertices.size())
@@ -2663,7 +2663,7 @@ void BuildShadowScene(const std::vector<BrushModel> &brushModels,
     {
         const auto found = plan.worldShadowMaterials.find(surface.material);
         if (found != plan.worldShadowMaterials.end())
-            append(surface, found->second, true, nullptr, nullptr);
+            append(surface, found->second, nullptr, nullptr);
     }
     const std::size_t worldSurfaceCount = scene.surfaces.size();
     for (const SourceStaticModelInstance &instance : staticModels.instances)
@@ -2683,11 +2683,11 @@ void BuildShadowScene(const std::vector<BrushModel> &brushModels,
             {
                 Surface corrected = surface;
                 AddLadderMidpointRungs(corrected, 0);
-                append(corrected, found->second, false, &instance, &axis);
+                append(corrected, found->second, &instance, &axis);
             }
             else
             {
-                append(surface, found->second, false, &instance, &axis);
+                append(surface, found->second, &instance, &axis);
             }
         }
     }
