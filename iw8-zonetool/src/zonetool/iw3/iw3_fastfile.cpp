@@ -2630,7 +2630,8 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
                      const std::string &entityText, CollisionData &collision)
 {
     Json panes = Json::array();
-    for (const EntityFields &entity : ParseEntityFields(entityText))
+    const std::vector<EntityFields> entities = ParseEntityFields(entityText);
+    for (const EntityFields &entity : entities)
     {
         const auto classname = entity.find("classname");
         const auto modelValue = entity.find("model");
@@ -2718,6 +2719,57 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
         if (paneMaterial.empty())
             throw std::runtime_error("IW3 glass pane has no nondegenerate textured face");
 
+        // IW3 scripted glass commonly links its intact brush to the shattered
+        // replacement by target/targetname. Follow that authored link rather
+        // than assuming adjacent brush-model indices or a material name suffix.
+        std::string shatteredMaterial = paneMaterial;
+        if (const auto target = entity.find("target"); target != entity.end())
+        {
+            const EntityFields *replacement = nullptr;
+            bool unique = true;
+            for (const EntityFields &candidate : entities)
+                if (const auto name = candidate.find("targetname");
+                    name != candidate.end() && name->second == target->second)
+                {
+                    if (replacement)
+                        unique = false;
+                    replacement = &candidate;
+                }
+            if (unique && replacement && replacement->contains("classname") &&
+                replacement->at("classname") == "script_brushmodel")
+            {
+                const auto linkedModel = replacement->find("model");
+                if (linkedModel != replacement->end() && linkedModel->second.size() > 1 &&
+                    linkedModel->second.front() == '*')
+                {
+                    std::uint32_t linkedIndex{};
+                    const char *begin = linkedModel->second.data() + 1;
+                    const char *end = linkedModel->second.data() + linkedModel->second.size();
+                    const auto number = std::from_chars(begin, end, linkedIndex);
+                    if (number.ec == std::errc{} && number.ptr == end &&
+                        linkedIndex < models.size())
+                    {
+                        std::string linkedMaterial;
+                        bool ambiguous = false;
+                        for (const Surface &surface : models[linkedIndex].surfaces)
+                        {
+                            const auto material = plan.materials.find(surface.material);
+                            if (material == plan.materials.end() ||
+                                material->second.kind != SurfaceKind::glass ||
+                                material->second.glassMaterial.empty())
+                                continue;
+                            if (!linkedMaterial.empty() &&
+                                linkedMaterial != material->second.glassMaterial)
+                                ambiguous = true;
+                            linkedMaterial = material->second.glassMaterial;
+                        }
+                        if (!ambiguous && !linkedMaterial.empty())
+                            shatteredMaterial = linkedMaterial;
+                    }
+                }
+            }
+        }
+
         const auto axis = EntityAxis(entity);
         const Vec3 localU{plane[0] == 0 ? 1.0f : 0.0f, plane[0] == 1 ? 1.0f : 0.0f,
                           plane[0] == 2 ? 1.0f : 0.0f};
@@ -2760,6 +2812,7 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, const RenderPlan &pl
         // the native shard geometry (an 8-unit IW3 pane becomes 0.5 here).
         const float fractureHalfThickness = std::max(0.125f, size[thin] / 16.0f);
         panes.push_back({{"material", paneMaterial},
+                         {"materialShattered", shatteredMaterial},
                          {"texVecs", texVecs},
                          {"texCoordOrigin", texOrigin},
                          {"origin", origin},

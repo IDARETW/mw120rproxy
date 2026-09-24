@@ -923,12 +923,19 @@ Mesh Load(const std::string &path)
         {
             GlassPane pane;
             pane.material = source.at("material").get<std::string>();
-            const auto material = std::find_if(m.assetMaterials.begin(), m.assetMaterials.end(),
-                [&](const Material &candidate) { return candidate.material == pane.material; });
-            if (material == m.assetMaterials.end() || material->techniques.empty() ||
-                std::any_of(material->techniques.begin(), material->techniques.end(),
-                            [](const Technique &technique) { return technique.header[0x9C] != 31; }))
-                throw std::runtime_error("Glass pane requires a native glass material");
+            pane.materialShattered = source.value("materialShattered", pane.material);
+            for (const std::string &name : {pane.material, pane.materialShattered})
+            {
+                const auto material = std::find_if(
+                    m.assetMaterials.begin(), m.assetMaterials.end(),
+                    [&](const Material &candidate) { return candidate.material == name; });
+                if (material == m.assetMaterials.end() || material->techniques.empty() ||
+                    std::any_of(material->techniques.begin(), material->techniques.end(),
+                                [](const Technique &technique) {
+                                    return technique.header[0x9C] != 31;
+                                }))
+                    throw std::runtime_error("Glass pane requires native glass materials");
+            }
             const auto origin = vector(source.at("origin"), 3);
             const auto quaternion = vector(source.at("quaternion"), 4);
             const auto texVecs = vector(source.at("texVecs"), 4);

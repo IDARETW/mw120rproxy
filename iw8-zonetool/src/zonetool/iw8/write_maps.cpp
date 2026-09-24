@@ -101,7 +101,8 @@ void emitFxMapBody(ZoneWriter &zw, const char *assetName, const replayrender::Me
         stamp32(definition.data(), 0x14, UINT32_MAX);
         const auto material = zw.assetAlias(ASSET_TYPE_MATERIAL, pane.material);
         stamp64(definition.data(), 0x18, material);
-        stamp64(definition.data(), 0x20, material);
+        stamp64(definition.data(), 0x20,
+                zw.assetAlias(ASSET_TYPE_MATERIAL, pane.materialShattered));
         stamp64(definition.data(), 0x28,
                 zw.assetAlias(ASSET_TYPE_PHYSICSASSET, kGlassPhysicsName));
         for (const size_t offset : {0x30u, 0x38u, 0x40u})

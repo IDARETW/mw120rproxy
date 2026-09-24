@@ -72,7 +72,7 @@ void ZoneWriter::build()
         return;
     }
 
-    // 2) XAsset[n] -> VIRTUAL(8). header=-3 (insert: registers the asset pointer).
+    // 2) XAsset[n] -> VIRTUAL(5). header=-3 (insert: registers the asset pointer).
     zb_.pushStream(XFILE_BLOCK_VIRTUAL);
     zb_.align(7);
     for (const auto &e : entries_)
@@ -97,7 +97,9 @@ void ZoneWriter::build()
             throw std::runtime_error("asset insertion offset exceeds Replay's packed range");
         const uint64_t alias =
             (static_cast<uint64_t>(XFILE_BLOCK_VIRTUAL) << 32) | (insertionOffset + 1);
-        assetAliases_.try_emplace(assetKey(e.type, e.name), alias);
+        if (!assetAliases_.try_emplace(assetKey(e.type, e.name), alias).second)
+            throw std::runtime_error("duplicate zone asset " +
+                                     std::string(iw8sz::type_name(e.type)) + " '" + e.name + "'");
         zb_.reserveCalc(8);
         if (e.body)
             e.body(*this);

@@ -195,7 +195,10 @@ substitution or loose script is required.
 
 The same command serializes native glass and ladder data where those source features are
 recognized. Glass definitions include Replay's native pane break-sound aliases; loader validation
-confirms their references, while audible playback remains a gameplay check. The converter also
+confirms their references, while audible playback remains a gameplay check. A unique
+`target`/`targetname` link from an intact glass brush to a shattered
+`script_brushmodel` supplies the native shattered-material slot. Without an unambiguous authored link,
+that slot retains the intact material. The converter also
 converts surface information into native footstep and collision tags in
 `srv_<map>.ff`. These features do not require an additional export step, package directory,
 `build-map` invocation, or loose sidecar. Supported multiplayer start and TDM spawn markers retain

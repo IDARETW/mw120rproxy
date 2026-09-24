@@ -112,6 +112,7 @@ struct NativeLightmap
 struct GlassPane
 {
     std::string material;
+    std::string materialShattered;
     std::array<float, 3> origin{};
     std::array<float, 4> quaternion{};
     std::array<float, 4> texVecs{};
