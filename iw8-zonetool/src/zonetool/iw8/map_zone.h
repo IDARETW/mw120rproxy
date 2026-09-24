@@ -913,9 +913,13 @@ inline void buildSrvMapZone(ZoneBuffer &zb, const char *assetName, const std::st
     zb.pushStream(XFILE_BLOCK_VIRTUAL);
     zb.align(7);
     // Load_clipMap_t E0FD30 -> Load_StageArray E05480, 40 bytes.
-    uint8_t stage[40]{};
-    stamp64(stage, 0, PTR_FOLLOWS);
-    stage[0x16] = 1;
+    uint8_t stage[sizeof(iw8::maps::Stage)]{};
+    stamp64(stage, offsetof(iw8::maps::Stage, name), PTR_FOLLOWS);
+    // Replay selects this Stage byte before copying the ComWorld sun to the frame.
+    if (lighting.sunPrimaryLightIndex > std::numeric_limits<uint8_t>::max())
+        throw std::runtime_error("sun primary-light index exceeds Replay stage range");
+    stage[offsetof(iw8::maps::Stage, sunPrimaryLightIndex)] =
+        static_cast<uint8_t>(lighting.sunPrimaryLightIndex);
     zb.write(stage, sizeof(stage));
     zb.writeStr("default");
     if (!collision.world.empty())

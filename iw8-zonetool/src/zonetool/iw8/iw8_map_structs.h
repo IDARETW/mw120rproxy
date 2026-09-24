@@ -97,6 +97,19 @@ struct cmodel_t
 };
 static_assert(sizeof(cmodel_t) == 0x38, "cmodel_t");
 
+struct Stage
+{
+    const char *name;             // 0x00
+    vec3_t origin;                // 0x08
+    uint16_t triggerIndex;        // 0x14
+    uint8_t sunPrimaryLightIndex; // 0x16
+    uint8_t _pad17;
+    uint32_t entityUID;           // 0x18
+    vec3_t skyRotationAngles;     // 0x1C
+};
+static_assert(offsetof(Stage, sunPrimaryLightIndex) == 0x16, "Stage.sunPrimaryLightIndex");
+static_assert(sizeof(Stage) == 0x28, "Stage");
+
 struct clipMap_t
 {                                               // 0xF8
     const char *name;                           // 0x00  PTR
@@ -104,7 +117,7 @@ struct clipMap_t
     uint32_t numStaticModelCollisionModelLists; // 0x0C  CNT
     void *staticModelCollisionModelLists;       // 0x10  PTR[0x0C]
     void *mapEnts;                              // 0x18  PTR  (MapEnts*, cross-link)
-    void *stages;                               // 0x20  PTR[stageCount]
+    Stage *stages;                              // 0x20  PTR[stageCount]
     uint8_t stageCount;                         // 0x28
     uint8_t _pad29[7];                          //
     MapTriggers stageTrigger;                   // 0x30  (0x50)
