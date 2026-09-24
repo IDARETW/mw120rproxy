@@ -106,6 +106,8 @@ void emitFxMapBody(ZoneWriter &zw, const char *assetName, const replayrender::Me
                 zw.assetAlias(ASSET_TYPE_PHYSICSASSET, kGlassPhysicsName));
         for (const size_t offset : {0x30u, 0x38u, 0x40u})
             stamp64(definition.data(), offset, PTR_FOLLOWS);
+        for (const size_t offset : {0x50u, 0x58u, 0x60u})
+            stamp64(definition.data(), offset, PTR_FOLLOWS);
         stampf(definition.data(), 0x68, 1.0f / (128.0f * 128.0f));
         stampf(definition.data(), 0x6C, 0.6341288f);
         definition[0x70] = 0xFF;
@@ -155,6 +157,8 @@ void emitFxMapBody(ZoneWriter &zw, const char *assetName, const replayrender::Me
         "vfx/code/glass/glass_shatter_piece",
         "vfx/code/glass/glass_shatter_64x64",
         "vfx/code/glass/glass_shatter_32x32"};
+    constexpr std::array<const char *, 3> glassSounds{
+        "glass_pane_shatter", "glass_pane_blowout", "glass_pane_breakout"};
     zw.write(definitions.data(), definitions.size() * sizeof(definitions.front()));
     for (size_t index = 0; index < definitions.size(); ++index)
     {
@@ -172,6 +176,8 @@ void emitFxMapBody(ZoneWriter &zw, const char *assetName, const replayrender::Me
             zw.popStream();
             zw.popStream();
         }
+        for (const char *sound : glassSounds)
+            zw.writeStr(sound);
     }
 
     zw.align(1);

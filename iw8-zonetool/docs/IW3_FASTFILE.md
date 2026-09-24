@@ -194,7 +194,9 @@ when absent, so Replay validates the bounds in the intended orientation. No prox
 substitution or loose script is required.
 
 The same command serializes native glass and ladder data where those source features are
-recognized. It also converts surface information into native footstep and collision tags in
+recognized. Glass definitions include Replay's native pane break-sound aliases; loader validation
+confirms their references, while audible playback remains a gameplay check. The converter also
+converts surface information into native footstep and collision tags in
 `srv_<map>.ff`. These features do not require an additional export step, package directory,
 `build-map` invocation, or loose sidecar. Supported multiplayer start and TDM spawn markers retain
 their source origins and angles. Alternate-mode markers without a proven Replay consumer, including
