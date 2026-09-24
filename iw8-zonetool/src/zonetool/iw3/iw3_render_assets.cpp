@@ -1095,17 +1095,19 @@ Image Resize(const Image &source, const unsigned width, const unsigned height, c
     for (unsigned y = 0; y < height; ++y)
     {
         const float sy = (static_cast<float>(y) + 0.5f) * source.height / height - 0.5f;
+        const int sy0 = static_cast<int>(std::floor(sy));
         const int y0 =
-            std::clamp(static_cast<int>(std::floor(sy)), 0, static_cast<int>(source.height) - 1);
-        const int y1 = std::min(y0 + 1, static_cast<int>(source.height) - 1);
-        const float fy = std::clamp(sy - std::floor(sy), 0.0f, 1.0f);
+            std::clamp(sy0, 0, static_cast<int>(source.height) - 1);
+        const int y1 = std::clamp(sy0 + 1, 0, static_cast<int>(source.height) - 1);
+        const float fy = sy - sy0;
         for (unsigned x = 0; x < width; ++x)
         {
             const float sx = (static_cast<float>(x) + 0.5f) * source.width / width - 0.5f;
+            const int sx0 = static_cast<int>(std::floor(sx));
             const int x0 =
-                std::clamp(static_cast<int>(std::floor(sx)), 0, static_cast<int>(source.width) - 1);
-            const int x1 = std::min(x0 + 1, static_cast<int>(source.width) - 1);
-            const float fx = std::clamp(sx - std::floor(sx), 0.0f, 1.0f);
+                std::clamp(sx0, 0, static_cast<int>(source.width) - 1);
+            const int x1 = std::clamp(sx0 + 1, 0, static_cast<int>(source.width) - 1);
+            const float fx = sx - sx0;
             float sample[4]{};
             for (unsigned iy = 0; iy < 2; ++iy)
                 for (unsigned ix = 0; ix < 2; ++ix)
