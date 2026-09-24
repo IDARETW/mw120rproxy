@@ -190,6 +190,9 @@ map.json
 
 `map.json` is required and is the only loose file accepted beside the fastfiles. The source dump
 layout is documented in [docs/INPUT_FORMAT.md](docs/INPUT_FORMAT.md).
+ZoneTool validates a complete package in a private sibling directory before replacing the
+requested output directory; failed conversion keeps the previous package intact. That directory
+must be empty or contain only the six files for this map.
 The `techsets_` fastfile owns material, technique-set, and shader definitions; the map fastfile
 owns resident images and carries native material references for world, model, glass, and effect
 assets. The generated localization companions can be empty.

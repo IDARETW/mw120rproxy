@@ -35,6 +35,8 @@
 #include <string>
 #include <vector>
 
+#include <Windows.h>
+
 using namespace zt;
 
 namespace
@@ -1236,8 +1238,119 @@ int buildMap(const Args &args, const iw3::PreparedMap *prepared = nullptr)
         info("common world: %d primary lights", commonWorld.primaryLightCount);
     }
 
-    return writeMapPackage(args, map, outputDirectory, entities, bounds, dumpDirectory, metadata,
-                           triggers, prepared, hasCompassBounds ? &compassBounds : nullptr);
+    // Build the complete family beside the requested output, then publish the
+    // directory only after all five zones and map.json pass validation.
+    const std::filesystem::path target =
+        std::filesystem::absolute(outputDirectory).lexically_normal();
+    const std::filesystem::path parent = target.parent_path();
+    std::error_code error;
+    std::filesystem::create_directories(parent, error);
+    if (error)
+    {
+        err("build-map: cannot create output parent %s: %s", parent.string().c_str(),
+            error.message().c_str());
+        return 1;
+    }
+    const bool initialTarget = std::filesystem::exists(target, error);
+    if (error ||
+        (initialTarget &&
+         (!prepareOutputDirectory(target.string(), map) ||
+          (GetFileAttributesW(target.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT))))
+    {
+        err("build-map: output directory is unavailable or contains unexpected files: %s",
+            target.string().c_str());
+        return 1;
+    }
+
+    const std::string tag = std::to_string(GetCurrentProcessId()) + "-" +
+                            std::to_string(GetTickCount64());
+    const std::filesystem::path stage =
+        parent / ("." + map + ".stage-" + tag);
+    const std::filesystem::path backup =
+        parent / ("." + map + ".backup-" + tag);
+    const bool backupExists = std::filesystem::exists(backup, error);
+    if (error || stage.parent_path() != parent || backup.parent_path() != parent ||
+        backupExists || !std::filesystem::create_directory(stage, error) || error)
+    {
+        err("build-map: could not create a private output stage beside %s",
+            target.string().c_str());
+        return 1;
+    }
+    const auto cleanKnownFiles = [&](const std::filesystem::path &directory) {
+        if (directory.parent_path() != parent ||
+            (GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT))
+            return;
+        std::error_code cleanupError;
+        for (const std::string &name : expectedFiles(map))
+        {
+            std::filesystem::remove(directory / name, cleanupError);
+            cleanupError.clear();
+            std::filesystem::remove(directory / (name + ".partial"), cleanupError);
+            cleanupError.clear();
+        }
+        std::filesystem::remove(directory, cleanupError);
+        if (cleanupError)
+            warn("build-map: could not clean %s: %s", directory.string().c_str(),
+                 cleanupError.message().c_str());
+    };
+
+    int result = 1;
+    try
+    {
+        result = writeMapPackage(args, map, stage.string(), entities, bounds,
+                                 dumpDirectory, metadata, triggers, prepared,
+                                 hasCompassBounds ? &compassBounds : nullptr);
+    }
+    catch (...)
+    {
+        cleanKnownFiles(stage);
+        throw;
+    }
+    if (result)
+    {
+        cleanKnownFiles(stage);
+        return result;
+    }
+    const bool hadTarget = std::filesystem::exists(target, error);
+    if (error ||
+        (hadTarget &&
+         ((GetFileAttributesW(target.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) ||
+          !prepareOutputDirectory(target.string(), map))))
+    {
+        cleanKnownFiles(stage);
+        err("build-map: output changed while conversion was running");
+        return 1;
+    }
+    if (hadTarget)
+    {
+        std::filesystem::rename(target, backup, error);
+        if (error)
+        {
+            cleanKnownFiles(stage);
+            err("build-map: could not preserve previous output: %s",
+                error.message().c_str());
+            return 1;
+        }
+    }
+    std::filesystem::rename(stage, target, error);
+    if (error)
+    {
+        const std::string publishError = error.message();
+        std::string recovery = "the validated stage remains at " + stage.string();
+        if (hadTarget)
+        {
+            error.clear();
+            std::filesystem::rename(backup, target, error);
+            recovery += error ? "; previous output remains at " + backup.string()
+                              : "; previous output was restored";
+        }
+        err("build-map: publish failed (%s); %s", publishError.c_str(), recovery.c_str());
+        return 1;
+    }
+    if (hadTarget)
+        cleanKnownFiles(backup);
+    info("build-map: published validated map output to %s", target.string().c_str());
+    return 0;
 }
 
 int buildIw3(const Args &args)

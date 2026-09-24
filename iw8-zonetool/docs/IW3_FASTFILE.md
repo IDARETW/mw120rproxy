@@ -127,6 +127,10 @@ techsets_mp_example.ff
 map.json
 ```
 
+ZoneTool builds all six files in a private sibling directory and validates the complete package
+before replacing the requested output directory. A failed conversion leaves the previous package
+intact. The requested directory must be empty or contain only that map's six output files.
+
 `techsets_mp_example.ff` owns the converted material, technique-set, and shader definitions.
 `mp_example.ff` keeps the resident images and the native material references used by world and
 model geometry, glass, and effects. The `eng_` and `ww_` companions can be empty.
