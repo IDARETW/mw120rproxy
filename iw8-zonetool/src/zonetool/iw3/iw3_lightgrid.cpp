@@ -506,69 +506,114 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
     std::vector<std::array<std::uint32_t, 4>> tetrahedra;
     constexpr std::array<std::array<unsigned, 3>, 6> permutations{{
         {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}};
-    for (const Cell &cell : cells)
+    // Keep complete cells first: their tetrahedron numbers and voxel starts are
+    // stable, while sparse cells may still contribute fully authored tetrahedra.
+    for (const bool sparsePass : {false, true})
     {
-        std::array<std::uint32_t, 8> corners{};
-        bool complete = true;
-        for (unsigned mask = 0; mask < 8; ++mask)
+        for (const Cell &cell : cells)
         {
-            const std::array<std::int32_t, 3> position{
-                cell.position[0] + ((mask & 1) ? 32 : 0),
-                cell.position[1] + ((mask & 2) ? 32 : 0),
-                cell.position[2] + ((mask & 4) ? 64 : 0)};
-            const auto found = lookup.find(position);
-            if (found == lookup.end())
+            std::array<std::uint32_t, 8> corners{};
+            std::array<bool, 8> present{};
+            bool complete = true;
+            for (unsigned mask = 0; mask < 8; ++mask)
             {
-                complete = false;
-                break;
-            }
-            corners[mask] = found->second;
-        }
-        if (!complete)
-            continue;
-        if (tetrahedra.size() > 8'000'000 - permutations.size())
-            throw std::runtime_error("IW3 light-grid tetrahedra exceed Replay limits");
-        const auto first = static_cast<std::uint32_t>(tetrahedra.size());
-        for (const auto &order : permutations)
-        {
-            unsigned mask = 0;
-            std::array<std::uint32_t, 4> tetrahedron{corners[0], 0, 0, 0};
-            for (unsigned step = 0; step < 3; ++step)
-            {
-                mask |= 1u << order[step];
-                tetrahedron[step + 1] = corners[mask];
-            }
-            tetrahedra.push_back(tetrahedron);
-        }
-        const std::int32_t voxelSize = 1 << rootShift;
-        std::array<std::uint32_t, 3> firstVoxel{};
-        std::array<std::uint32_t, 3> lastVoxel{};
-        constexpr std::array<std::int32_t, 3> sourceCellSize{32, 32, 64};
-        for (unsigned axis = 0; axis < 3; ++axis)
-        {
-            firstVoxel[axis] =
-                static_cast<std::uint32_t>((cell.position[axis] - gridLow[axis]) / voxelSize);
-            lastVoxel[axis] = static_cast<std::uint32_t>(
-                (cell.position[axis] + sourceCellSize[axis] - 1 - gridLow[axis]) / voxelSize);
-            if (lastVoxel[axis] >= dimensions[axis])
-                throw std::runtime_error("complete IW3 light-grid cell exceeds its voxel extent");
-        }
-        for (std::uint32_t y = firstVoxel[1]; y <= lastVoxel[1]; ++y)
-        {
-            for (std::uint32_t x = firstVoxel[0]; x <= lastVoxel[0]; ++x)
-            {
-                for (std::uint32_t z = firstVoxel[2]; z <= lastVoxel[2]; ++z)
+                const std::array<std::int32_t, 3> position{
+                    cell.position[0] + ((mask & 1) ? 32 : 0),
+                    cell.position[1] + ((mask & 2) ? 32 : 0),
+                    cell.position[2] + ((mask & 4) ? 64 : 0)};
+                const auto found = lookup.find(position);
+                if (found == lookup.end())
                 {
-                    const std::size_t voxel =
-                        (static_cast<std::size_t>(y) * dimensions[0] + x) * dimensions[2] + z;
-                    if (voxels[voxel] == UINT32_MAX)
-                        voxels[voxel] = first;
+                    complete = false;
+                    continue;
+                }
+                corners[mask] = found->second;
+                present[mask] = true;
+            }
+            if (complete == sparsePass || !present[0] || !present[7])
+                continue;
+            std::array<std::uint32_t, permutations.size()> starts{};
+            starts.fill(UINT32_MAX);
+            for (unsigned permutation = 0; permutation < permutations.size(); ++permutation)
+            {
+                const auto &order = permutations[permutation];
+                unsigned mask = 0;
+                std::array<std::uint32_t, 4> tetrahedron{corners[0], 0, 0, 0};
+                bool authored = true;
+                for (unsigned step = 0; step < 3; ++step)
+                {
+                    mask |= 1u << order[step];
+                    authored &= present[mask];
+                    tetrahedron[step + 1] = corners[mask];
+                }
+                if (!authored)
+                    continue;
+                if (tetrahedra.size() >= 8'000'000)
+                    throw std::runtime_error("IW3 light-grid tetrahedra exceed Replay limits");
+                starts[permutation] = static_cast<std::uint32_t>(tetrahedra.size());
+                tetrahedra.push_back(tetrahedron);
+            }
+            if (std::ranges::all_of(starts, [](const auto index) { return index == UINT32_MAX; }))
+                continue;
+            const std::int32_t voxelSize = 1 << rootShift;
+            std::array<std::uint32_t, 3> firstVoxel{};
+            std::array<std::uint32_t, 3> lastVoxel{};
+            constexpr std::array<std::int32_t, 3> sourceCellSize{32, 32, 64};
+            for (unsigned axis = 0; axis < 3; ++axis)
+            {
+                firstVoxel[axis] =
+                    static_cast<std::uint32_t>((cell.position[axis] - gridLow[axis]) / voxelSize);
+                lastVoxel[axis] = static_cast<std::uint32_t>(
+                    (cell.position[axis] + sourceCellSize[axis] - 1 - gridLow[axis]) / voxelSize);
+                if (lastVoxel[axis] >= dimensions[axis])
+                    throw std::runtime_error("IW3 light-grid cell exceeds its voxel extent");
+            }
+            for (std::uint32_t y = firstVoxel[1]; y <= lastVoxel[1]; ++y)
+            {
+                for (std::uint32_t x = firstVoxel[0]; x <= lastVoxel[0]; ++x)
+                {
+                    for (std::uint32_t z = firstVoxel[2]; z <= lastVoxel[2]; ++z)
+                    {
+                        const std::size_t voxel =
+                            (static_cast<std::size_t>(y) * dimensions[0] + x) * dimensions[2] + z;
+                        if (voxels[voxel] != UINT32_MAX)
+                            continue;
+                        if (!sparsePass)
+                        {
+                            voxels[voxel] = starts[0];
+                            continue;
+                        }
+                        // A sparse voxel may start a walk only when its center is
+                        // inside an authored simplex. Compare normalized coordinates
+                        // exactly on the common 1/64 source-cell lattice.
+                        const std::array<std::int32_t, 3> coordinate{
+                            2 * (gridLow[0] + static_cast<std::int32_t>(x) * voxelSize +
+                                 voxelSize / 2 - cell.position[0]),
+                            2 * (gridLow[1] + static_cast<std::int32_t>(y) * voxelSize +
+                                 voxelSize / 2 - cell.position[1]),
+                            gridLow[2] + static_cast<std::int32_t>(z) * voxelSize +
+                                voxelSize / 2 - cell.position[2]};
+                        for (unsigned permutation = 0; permutation < permutations.size(); ++permutation)
+                        {
+                            if (starts[permutation] == UINT32_MAX)
+                                continue;
+                            const auto &order = permutations[permutation];
+                            if (coordinate[order[0]] <= 64 &&
+                                coordinate[order[0]] >= coordinate[order[1]] &&
+                                coordinate[order[1]] >= coordinate[order[2]] &&
+                                coordinate[order[2]] >= 0)
+                            {
+                                voxels[voxel] = starts[permutation];
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
     }
     if (tetrahedra.empty())
-        throw std::runtime_error("IW3 light-grid has no complete source cells");
+        throw std::runtime_error("IW3 light-grid has no authored tetrahedra");
 
     // Replay treats UINT32_MAX as an unassigned voxel and samples its fallback
     // probe.  Preserve sparse IW3 columns instead of extending tetrahedra into
