@@ -443,6 +443,138 @@ float Median(std::vector<float> values)
     return (values[middle - 1] + high) * 0.5f;
 }
 
+// Triangulate only the convex hull of corners actually present in an IW3 cell.
+// The least corner is the fan apex; a four-corner face uses its least corner
+// and opposite diagonal, matching the complete-cell boundary triangulation.
+std::vector<std::array<unsigned, 4>> SparseCellTetrahedra(const unsigned mask)
+{
+    constexpr std::array<std::array<int, 3>, 8> points{{
+        {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
+        {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1}}};
+    std::array<unsigned, 8> vertices{};
+    unsigned count = 0;
+    for (unsigned vertex = 0; vertex < 8; ++vertex)
+        if (mask & (1u << vertex))
+            vertices[count++] = vertex;
+    if (count < 4)
+        return {};
+
+    const unsigned anchor = vertices[0];
+    std::vector<unsigned> faces;
+    for (unsigned i = 0; i < count; ++i)
+    {
+        for (unsigned j = i + 1; j < count; ++j)
+        {
+            for (unsigned k = j + 1; k < count; ++k)
+            {
+                const auto &a = points[vertices[i]];
+                const auto &b = points[vertices[j]];
+                const auto &c = points[vertices[k]];
+                const std::array<int, 3> u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+                const std::array<int, 3> v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                const std::array<int, 3> normal{
+                    u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0]};
+                if (normal == std::array<int, 3>{0, 0, 0})
+                    continue;
+                bool positive = false;
+                bool negative = false;
+                unsigned face = 0;
+                for (unsigned n = 0; n < count; ++n)
+                {
+                    const unsigned vertex = vertices[n];
+                    const auto &p = points[vertex];
+                    const int side = normal[0] * (p[0] - a[0]) +
+                                     normal[1] * (p[1] - a[1]) +
+                                     normal[2] * (p[2] - a[2]);
+                    positive |= side > 0;
+                    negative |= side < 0;
+                    if (!side)
+                        face |= 1u << vertex;
+                }
+                if (positive == negative)
+                    continue;
+                if (!(face & (1u << anchor)) &&
+                    std::ranges::find(faces, face) == faces.end())
+                    faces.push_back(face);
+            }
+        }
+    }
+
+    std::ranges::sort(faces);
+    std::vector<std::array<unsigned, 4>> tetrahedra;
+    for (const unsigned face : faces)
+    {
+        std::array<unsigned, 4> corners{};
+        unsigned faceCount = 0;
+        for (unsigned vertex = 0; vertex < 8; ++vertex)
+            if (face & (1u << vertex))
+                corners[faceCount++] = vertex;
+        if (faceCount == 3)
+        {
+            tetrahedra.push_back({anchor, corners[0], corners[1], corners[2]});
+            continue;
+        }
+        if (faceCount != 4)
+            throw std::runtime_error("unsupported IW3 light-grid hull face");
+
+        unsigned opposite = 1;
+        int longest = -1;
+        for (unsigned index = 1; index < 4; ++index)
+        {
+            const auto delta = std::array<int, 3>{
+                points[corners[index]][0] - points[corners[0]][0],
+                points[corners[index]][1] - points[corners[0]][1],
+                points[corners[index]][2] - points[corners[0]][2]};
+            const int length = delta[0] * delta[0] + delta[1] * delta[1] +
+                               delta[2] * delta[2];
+            if (length > longest)
+            {
+                longest = length;
+                opposite = index;
+            }
+        }
+        std::array<unsigned, 2> others{};
+        for (unsigned index = 1, next = 0; index < 4; ++index)
+            if (index != opposite)
+                others[next++] = corners[index];
+        tetrahedra.push_back({anchor, corners[0], others[0], corners[opposite]});
+        tetrahedra.push_back({anchor, corners[0], corners[opposite], others[1]});
+    }
+    return tetrahedra;
+}
+
+bool SparseTetrahedronContains(const std::array<std::int32_t, 3> &point,
+                               const std::array<unsigned, 4> &tetrahedron)
+{
+    const auto corner = [](const unsigned mask) {
+        return std::array<std::int64_t, 3>{(mask & 1) ? 64 : 0, (mask & 2) ? 64 : 0,
+                                           (mask & 4) ? 64 : 0};
+    };
+    const auto difference = [](const auto &a, const auto &b) {
+        return std::array<std::int64_t, 3>{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+    };
+    const auto determinant = [](const auto &a, const auto &b, const auto &c) {
+        return a[0] * (b[1] * c[2] - b[2] * c[1]) +
+               a[1] * (b[2] * c[0] - b[0] * c[2]) +
+               a[2] * (b[0] * c[1] - b[1] * c[0]);
+    };
+    const auto origin = corner(tetrahedron[0]);
+    const auto a = difference(corner(tetrahedron[1]), origin);
+    const auto b = difference(corner(tetrahedron[2]), origin);
+    const auto c = difference(corner(tetrahedron[3]), origin);
+    const auto q = difference(std::array<std::int64_t, 3>{point[0], point[1], point[2]},
+                              origin);
+    const auto volume = determinant(a, b, c);
+    if (!volume)
+        throw std::runtime_error("degenerate IW3 light-grid tetrahedron");
+    const auto sign = volume < 0 ? -1 : 1;
+    const auto x = sign * determinant(q, b, c);
+    const auto y = sign * determinant(a, q, c);
+    const auto z = sign * determinant(a, b, q);
+    return x >= 0 && y >= 0 && z >= 0 && x + y + z <= sign * volume;
+}
+
 std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
                                        const std::vector<std::uint8_t> &palette)
 {
@@ -506,68 +638,91 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
     std::vector<std::array<std::uint32_t, 4>> tetrahedra;
     constexpr std::array<std::array<unsigned, 3>, 6> permutations{{
         {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}};
+    std::array<std::vector<std::array<unsigned, 4>>, 256> cellTetrahedra;
+    for (unsigned mask = 1; mask < 255; ++mask)
+        cellTetrahedra[mask] = SparseCellTetrahedra(mask);
+    for (const auto &order : permutations)
+    {
+        unsigned mask = 0;
+        std::array<unsigned, 4> tetrahedron{0, 0, 0, 0};
+        for (unsigned step = 0; step < 3; ++step)
+        {
+            mask |= 1u << order[step];
+            tetrahedron[step + 1] = mask;
+        }
+        cellTetrahedra[255].push_back(tetrahedron);
+    }
+
+    // A sparse hull need not contain its lowest corner. Enumerate each possible
+    // source-cell base around authored probes, then deduplicate the bases.
+    std::vector<std::array<std::int32_t, 3>> candidateBases;
+    candidateBases.reserve(cells.size() * 8);
+    for (const Cell &cell : cells)
+        for (unsigned mask = 0; mask < 8; ++mask)
+            candidateBases.push_back({cell.position[0] - ((mask & 1) ? 32 : 0),
+                                      cell.position[1] - ((mask & 2) ? 32 : 0),
+                                      cell.position[2] - ((mask & 4) ? 64 : 0)});
+    std::ranges::sort(candidateBases);
+    candidateBases.erase(std::unique(candidateBases.begin(), candidateBases.end()),
+                         candidateBases.end());
+
     // Keep complete cells first: their tetrahedron numbers and voxel starts are
-    // stable, while sparse cells may still contribute fully authored tetrahedra.
+    // stable, while sparse cells contribute only their authored convex hulls.
+    std::size_t octantStarts = 0;
     for (const bool sparsePass : {false, true})
     {
-        for (const Cell &cell : cells)
+        const std::size_t baseCount = sparsePass ? candidateBases.size() : cells.size();
+        for (std::size_t baseIndex = 0; baseIndex < baseCount; ++baseIndex)
         {
+            const auto &base = sparsePass ? candidateBases[baseIndex] : cells[baseIndex].position;
             std::array<std::uint32_t, 8> corners{};
-            std::array<bool, 8> present{};
-            bool complete = true;
+            unsigned presentMask = 0;
             for (unsigned mask = 0; mask < 8; ++mask)
             {
                 const std::array<std::int32_t, 3> position{
-                    cell.position[0] + ((mask & 1) ? 32 : 0),
-                    cell.position[1] + ((mask & 2) ? 32 : 0),
-                    cell.position[2] + ((mask & 4) ? 64 : 0)};
+                    base[0] + ((mask & 1) ? 32 : 0), base[1] + ((mask & 2) ? 32 : 0),
+                    base[2] + ((mask & 4) ? 64 : 0)};
                 const auto found = lookup.find(position);
                 if (found == lookup.end())
-                {
-                    complete = false;
                     continue;
-                }
                 corners[mask] = found->second;
-                present[mask] = true;
+                presentMask |= 1u << mask;
             }
-            if (complete == sparsePass || !present[0] || !present[7])
+            if ((presentMask == 255) == sparsePass)
                 continue;
-            std::array<std::uint32_t, permutations.size()> starts{};
-            starts.fill(UINT32_MAX);
-            for (unsigned permutation = 0; permutation < permutations.size(); ++permutation)
+            const auto &localTetrahedra = cellTetrahedra[presentMask];
+            if (localTetrahedra.empty())
+                continue;
+            std::vector<std::uint32_t> starts;
+            starts.reserve(localTetrahedra.size());
+            for (const auto &local : localTetrahedra)
             {
-                const auto &order = permutations[permutation];
-                unsigned mask = 0;
-                std::array<std::uint32_t, 4> tetrahedron{corners[0], 0, 0, 0};
-                bool authored = true;
-                for (unsigned step = 0; step < 3; ++step)
-                {
-                    mask |= 1u << order[step];
-                    authored &= present[mask];
-                    tetrahedron[step + 1] = corners[mask];
-                }
-                if (!authored)
-                    continue;
                 if (tetrahedra.size() >= 8'000'000)
                     throw std::runtime_error("IW3 light-grid tetrahedra exceed Replay limits");
-                starts[permutation] = static_cast<std::uint32_t>(tetrahedra.size());
-                tetrahedra.push_back(tetrahedron);
+                starts.push_back(static_cast<std::uint32_t>(tetrahedra.size()));
+                tetrahedra.push_back({corners[local[0]], corners[local[1]],
+                                      corners[local[2]], corners[local[3]]});
             }
-            if (std::ranges::all_of(starts, [](const auto index) { return index == UINT32_MAX; }))
-                continue;
             const std::int32_t voxelSize = 1 << rootShift;
             std::array<std::uint32_t, 3> firstVoxel{};
             std::array<std::uint32_t, 3> lastVoxel{};
             constexpr std::array<std::int32_t, 3> sourceCellSize{32, 32, 64};
+            bool intersectsGrid = true;
             for (unsigned axis = 0; axis < 3; ++axis)
             {
-                firstVoxel[axis] =
-                    static_cast<std::uint32_t>((cell.position[axis] - gridLow[axis]) / voxelSize);
-                lastVoxel[axis] = static_cast<std::uint32_t>(
-                    (cell.position[axis] + sourceCellSize[axis] - 1 - gridLow[axis]) / voxelSize);
-                if (lastVoxel[axis] >= dimensions[axis])
-                    throw std::runtime_error("IW3 light-grid cell exceeds its voxel extent");
+                const auto start = std::max(base[axis], gridLow[axis]);
+                const auto end = std::min(base[axis] + sourceCellSize[axis], gridHigh[axis]);
+                if (end <= start)
+                {
+                    intersectsGrid = false;
+                    break;
+                }
+                firstVoxel[axis] = static_cast<std::uint32_t>((start - gridLow[axis]) / voxelSize);
+                lastVoxel[axis] =
+                    static_cast<std::uint32_t>((end - 1 - gridLow[axis]) / voxelSize);
             }
+            if (!intersectsGrid)
+                continue;
             for (std::uint32_t y = firstVoxel[1]; y <= lastVoxel[1]; ++y)
             {
                 for (std::uint32_t x = firstVoxel[0]; x <= lastVoxel[0]; ++x)
@@ -583,28 +738,37 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
                             voxels[voxel] = starts[0];
                             continue;
                         }
-                        // A sparse voxel may start a walk only when its center is
-                        // inside an authored simplex. Compare normalized coordinates
-                        // exactly on the common 1/64 source-cell lattice.
-                        const std::array<std::int32_t, 3> coordinate{
-                            2 * (gridLow[0] + static_cast<std::int32_t>(x) * voxelSize +
-                                 voxelSize / 2 - cell.position[0]),
-                            2 * (gridLow[1] + static_cast<std::int32_t>(y) * voxelSize +
-                                 voxelSize / 2 - cell.position[1]),
-                            gridLow[2] + static_cast<std::int32_t>(z) * voxelSize +
-                                voxelSize / 2 - cell.position[2]};
-                        for (unsigned permutation = 0; permutation < permutations.size(); ++permutation)
+                        // A sparse voxel starts a walk only when its center or
+                        // an octant center lies inside an authored simplex.
+                        // This reaches partial voxels without extending the hull.
+                        for (unsigned sample = 0; sample < 9 && voxels[voxel] == UINT32_MAX;
+                             ++sample)
                         {
-                            if (starts[permutation] == UINT32_MAX)
-                                continue;
-                            const auto &order = permutations[permutation];
-                            if (coordinate[order[0]] <= 64 &&
-                                coordinate[order[0]] >= coordinate[order[1]] &&
-                                coordinate[order[1]] >= coordinate[order[2]] &&
-                                coordinate[order[2]] >= 0)
+                            const unsigned octant = sample ? sample - 1 : 0;
+                            const std::array<std::int32_t, 3> offset{
+                                static_cast<std::int32_t>(voxelSize *
+                                    (sample ? ((octant & 1) ? 3 : 1) : 2) / 4),
+                                static_cast<std::int32_t>(voxelSize *
+                                    (sample ? ((octant & 2) ? 3 : 1) : 2) / 4),
+                                static_cast<std::int32_t>(voxelSize *
+                                    (sample ? ((octant & 4) ? 3 : 1) : 2) / 4)};
+                            const std::array<std::int32_t, 3> coordinate{
+                                2 * (gridLow[0] + static_cast<std::int32_t>(x) * voxelSize +
+                                     offset[0] - base[0]),
+                                2 * (gridLow[1] + static_cast<std::int32_t>(y) * voxelSize +
+                                     offset[1] - base[1]),
+                                gridLow[2] + static_cast<std::int32_t>(z) * voxelSize +
+                                    offset[2] - base[2]};
+                            for (std::size_t localIndex = 0;
+                                 localIndex < localTetrahedra.size(); ++localIndex)
                             {
-                                voxels[voxel] = starts[permutation];
-                                break;
+                                if (SparseTetrahedronContains(coordinate,
+                                                              localTetrahedra[localIndex]))
+                                {
+                                    voxels[voxel] = starts[localIndex];
+                                    octantStarts += sample != 0;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -622,8 +786,9 @@ std::vector<std::uint8_t> BuildPayload(std::vector<Cell> cells,
         std::count(voxels.begin(), voxels.end(), UINT32_MAX);
     if (unassignedVoxelCount == voxels.size())
         throw std::runtime_error("IW3 light-grid has no populated Replay voxels");
-    zt::info("iw3: retained %zu unassigned Replay light-grid voxels and %zu authored starts",
-             unassignedVoxelCount, voxels.size() - unassignedVoxelCount);
+    zt::info("iw3: retained %zu unassigned Replay light-grid voxels and %zu authored starts "
+             "(%zu sparse octant starts)", unassignedVoxelCount,
+             voxels.size() - unassignedVoxelCount, octantStarts);
 
     std::vector<std::array<std::uint32_t, 4>> neighbors(tetrahedra.size(),
                                                         {UINT32_MAX, UINT32_MAX, UINT32_MAX,

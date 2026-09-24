@@ -135,9 +135,10 @@ consumes the BC4, R11G11B10F, and BC5 lighting planes through its native lightma
 glass, sky, unbaked, model, and VFX families keep their explicit conversion paths. Replay's engine GTAO image and sampler are
 bound through the native `t95`/`s8` contract. The converter does not invent the target's optional
 64-byte-per-tetrahedron light-grid visibility records when the IW3 source cannot prove them.
-The native light grid keeps complete IW3 cells in source order and adds a tetrahedron from an
-incomplete cell only when all four corner probes exist. A sparse voxel starts from one of those
-tetrahedra only when its center lies inside it; other voxels use Replay's native fallback probe.
+The native light grid keeps complete IW3 cells in source order and triangulates the convex hull
+of authored corners in incomplete cells without adding probes. A sparse voxel starts from an
+authored tetrahedron only when its center or an octant center lies inside that tetrahedron;
+other voxels use Replay's native fallback probe.
 
 Direct IW3 conversion also bakes map-specific compressed sun-shadow data from the fixed world
 and placed static models at their highest-detail LOD. It uses the final sun direction, authored
