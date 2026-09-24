@@ -189,13 +189,16 @@ When the source entity string contains the stock pair of `script_origin` entitie
 `targetname` is `minimap_corner`, the compiler derives northwest and southeast world bounds using
 the IW3 worldspawn `northyaw` rule. If `compass_map_<map>` is available, the main fastfile then
 contains a native Replay startup `ScriptFile` that binds that material and those coordinates through
-the engine's minimap builtin. No proxy-side image substitution or loose script is required.
+the engine's minimap builtin. The worldspawn also carries `northyaw`, using IW3's 90-degree default
+when absent, so Replay validates the bounds in the intended orientation. No proxy-side image
+substitution or loose script is required.
 
 The same command serializes native glass and ladder data where those source features are
 recognized. It also converts surface information into native footstep and collision tags in
 `srv_<map>.ff`. These features do not require an additional export step, package directory,
-`build-map` invocation, or loose sidecar. Multiplayer spawn markers retain their source origins
-and angles, including DM, Domination, Sabotage, Search and Destroy, CTF, and TDM markers.
+`build-map` invocation, or loose sidecar. Supported multiplayer start and TDM spawn markers retain
+their source origins and angles. Alternate-mode markers without a proven Replay consumer, including
+DM and non-start Sabotage markers, are omitted with an explicit build warning.
 
 Map-local `rawfile` declarations from the map and sibling load zones are embedded in the main
 fastfile with Replay's native zlib-compressed `RawFile` layout. Payload bytes are preserved exactly,

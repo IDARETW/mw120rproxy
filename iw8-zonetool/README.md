@@ -102,7 +102,9 @@ static-model membership, including model-only trees, so Replay can use the nativ
 consumer without dropping distant placements. When the source entities contain exactly two
 `script_origin` records named `minimap_corner`, the compiler orders them with the IW3 worldspawn
 `northyaw` rule and embeds a Replay startup `ScriptFile` that calls the native minimap builtin with
-the image and world bounds. It also
+the image and world bounds. The same `northyaw` is serialized into Replay's worldspawn; when IW3
+omits it, the converter writes IW3's 90-degree default so the native compass and those bounds use
+the same orientation. It also
 derives native walkable-surface triangles from upward-facing IW3 world faces and bakes their
 surface types into the Replay Havok shape tags. Unclassified faces use Replay's concrete fallback.
 IW3 spawn classes with a matched Replay `MapEnts` consumer are retained with their source origin

@@ -111,17 +111,27 @@ void emitCompassStartup(ZoneWriter &writer, const std::string &assetName,
 
     const std::string compass = "compass_map_" + mapName;
 
-    // Invoke Replay's native seven-argument setminimap builtin (0x1D3)
-    // directly. Values are pushed in reverse argument order by the IW8 VM.
-    std::vector<uint8_t> bytecode{0x3B, 0x4B, 0x15, 0x7A, 0x00, 0x00, 0x00, 0x00,
+    // Replay reads worldspawn northyaw into configstring 9 before this
+    // startup call. Its native span check expects the source northwest and
+    // southeast corners in that rotated frame, in this order.
+    const float firstX = northwestX;
+    const float firstY = northwestY;
+    const float secondX = southeastX;
+    const float secondY = southeastY;
+
+    // Invoke Replay's native seven-argument setminimap builtin (0x1D3).
+    // Builtin calls consume direct arguments; PreScriptCall (0x15) is only
+    // emitted before script calls and would leave a marker on the VM stack.
+    // Values are pushed in reverse argument order by the IW8 VM.
+    std::vector<uint8_t> bytecode{0x3B, 0x4B, 0x7A, 0x00, 0x00, 0x00, 0x00,
                                   0x16, 0x01, 0x70};
-    appendF32(bytecode, southeastY);
+    appendF32(bytecode, secondY);
     bytecode.push_back(0x70);
-    appendF32(bytecode, southeastX);
+    appendF32(bytecode, secondX);
     bytecode.push_back(0x70);
-    appendF32(bytecode, northwestY);
+    appendF32(bytecode, firstY);
     bytecode.push_back(0x70);
-    appendF32(bytecode, northwestX);
+    appendF32(bytecode, firstX);
     bytecode.insert(bytecode.end(), {0x7A, 0x00, 0x00, 0x00, 0x00,
                                      0x23, 0x07, 0xD3, 0x01, 0x58, 0x3B});
     const uint32_t functionSize = static_cast<uint32_t>(bytecode.size() - 1);

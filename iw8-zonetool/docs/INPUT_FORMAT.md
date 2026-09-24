@@ -38,9 +38,11 @@ The compiler writes both the Replay image and its `compass_map_<map-id>` 2D mate
 fastfile. To activate it, the source entity dump must contain exactly two `script_origin` records
 whose `targetname` is `minimap_corner`. The compiler orders those corners with IW3's worldspawn
 `northyaw` rule and embeds the small Replay startup `ScriptFile` that invokes the native minimap
-builtin with the material and world bounds. When the image is absent, the build completes with a
-warning. When the image exists without valid corners, the assets are retained and the missing
-startup binding is reported as a warning.
+builtin with the material and world bounds. The compiler also preserves `northyaw` in Replay's
+worldspawn, supplying IW3's 90-degree default when the key is absent. Replay uses that value to
+orient the native compass before the startup script sets its bounds. When the image is absent, the
+build completes with a warning. When the image exists without valid corners, the assets are
+retained and the missing startup binding is reported as a warning.
 
 ## Required data
 

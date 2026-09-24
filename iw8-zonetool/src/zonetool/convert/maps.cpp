@@ -16,6 +16,10 @@
 
 namespace convert
 {
+// Replay 1.20's worldspawn lookup at RVA 0xFC865F reads this key and writes
+// its string value to north-yaw configstring 9 before map script startup.
+constexpr uint32_t kNorthYawKey = 0x02B4;
+
 bool iw3KeyToIw8KeyId(const std::string &key, uint32_t &keyId)
 {
     if (iw8::havok::FindOpaqueString(key, keyId))
@@ -23,7 +27,7 @@ bool iw3KeyToIw8KeyId(const std::string &key, uint32_t &keyId)
 
     // Replay 1.20's opaque-string table. These are the IW3 entity keys used by
     // the native map classes that the converter currently carries forward.
-    static constexpr std::array<std::pair<const char *, uint32_t>, 27> ids{{
+    static constexpr std::array<std::pair<const char *, uint32_t>, 28> ids{{
         {"ambient", 0x0048},
         {"angles", 0x0050},
         {"classname", 0x00D4},
@@ -31,6 +35,7 @@ bool iw3KeyToIw8KeyId(const std::string &key, uint32_t &keyId)
         {"diffusefraction", 0x013D},
         {"height", 0x01E9},
         {"model", 0x028C},
+        {"northyaw", kNorthYawKey},
         {"origin", 0x02C5},
         {"radius", 0x030E},
         {"script_exploder", 0x0349},
@@ -545,6 +550,18 @@ size_t iw3ToIw8EntityString(const std::string &input, std::string &output,
             else
                 body += pair.value;
             body += "\"";
+        }
+
+        if (name == "worldspawn" &&
+            std::none_of(entity.begin(), entity.end(), [](const KeyValue &pair) {
+                return lowercase(pair.key) == "northyaw";
+            }))
+        {
+            // IW3 defaults northyaw to 90; Replay defaults the missing key
+            // to 0, which makes native setminimap reject IW3 corner bounds.
+            if (!body.empty())
+                body.push_back(' ');
+            body += std::to_string(kNorthYawKey) + " \"90\"";
         }
 
         if (trigger)
