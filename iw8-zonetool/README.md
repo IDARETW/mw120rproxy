@@ -162,12 +162,13 @@ not establish visual parity with the original map. Prepared `build-map` inputs w
 IW3 caster scene retain their existing lighting and do not acquire this bake automatically.
 
 The twelve IW3 impact rows are mapped into Replay's native impact table for small/large bullets,
-shotgun, armor-piercing, grenade, rocket, and dud events. A converted source effect replaces the
-matching native slot, an explicitly empty source slot clears it, and an unsupported nonempty source
-effect retains Replay's stock fallback. `impacts/small_glass` is also used by the native glass
-consumer. The generated footstep, collision, and light-grid files exist only in the private
-conversion directory and are embedded in the fastfiles before that directory is removed. No loose
-gameplay sidecar is emitted.
+shotgun, armor-piercing, grenade, rocket, and dud events. Ordinary bullet hits retain Replay's
+native IW8 effects, including their bullet-hole decal emitters. Supported converted glass effects
+replace the corresponding bullet-glass slots; supported non-bullet source effects can replace their
+matching slots. Empty or unsupported source effects keep Replay's native fallback.
+`impacts/small_glass` is also used by the native glass consumer. The generated footstep, collision,
+and light-grid files exist only in the private conversion directory and are embedded in the
+fastfiles before that directory is removed. No loose gameplay sidecar is emitted.
 
 The patched Unlinker setup and complete command are documented in
 [`docs/IW3_FASTFILE.md`](docs/IW3_FASTFILE.md).

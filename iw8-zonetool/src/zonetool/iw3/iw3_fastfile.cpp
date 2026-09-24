@@ -5032,18 +5032,21 @@ iw8::impact::EffectOverrides ReadImpactOverrides(
 
         const auto append = [&](const Json &value, const bool isFlesh,
                                 const std::size_t index) {
-            std::string effect;
-            if (!value.is_null())
-            {
-                if (!value.is_string() || !IsValidFxAssetName(value.get<std::string>()))
-                    throw std::runtime_error("IW3 impact FX slot has an invalid effect name");
-                const auto alias = effectAliases.find(value.get<std::string>());
-                if (alias == effectAliases.end())
-                    return;
-                effect = "," + alias->second;
-            }
+            if (value.is_null())
+                return;
+            if (!value.is_string() || !IsValidFxAssetName(value.get<std::string>()))
+                throw std::runtime_error("IW3 impact FX slot has an invalid effect name");
+            // Keep Replay's decal-bearing bullet effects for ordinary hits.
+            // The converted IW3 cushion effect, for example, has no mark/decal
+            // element and would replace Replay's native rubber bullet mark.
+            // Glass retains its converted break effect at surface type 9.
+            if (sourceRow < 8 && (isFlesh || index != 9))
+                return;
+            const auto alias = effectAliases.find(value.get<std::string>());
+            if (alias == effectAliases.end())
+                return;
             overrides.push_back({targetRows[sourceRow].first, targetRows[sourceRow].second,
-                                 isFlesh, index, std::move(effect)});
+                                 isFlesh, index, "," + alias->second});
         };
         for (std::size_t index = 0; index < nonFleshCount; ++index)
             append(nonFlesh.at(index), false, index);

@@ -242,8 +242,9 @@ output rather than creating a partial particle system.
 
 The converter reads the IW3 impact table and maps its twelve semantic rows into Replay's native
 impact table: small and large bullet hit/exit, shotgun hit/exit, armor-piercing hit/exit, grenade
-bounce and explosion, rocket explosion, and projectile dud. Converted source effects replace their
-matching slots, null source slots clear them, and unsupported nonempty source effects keep Replay's
-stock fallback. The converted `impacts/small_glass` effect is also wired into the native glass
-consumer. Successful structural validation checks the generated package; it is not a gameplay or
-visual acceptance test for every converted feature.
+bounce and explosion, rocket explosion, and projectile dud. Ordinary bullet-hit slots retain IW8's
+native effects and decal emitters. Supported converted glass effects replace their bullet-glass
+slots, and supported non-bullet effects can replace their corresponding native slots. Null or
+unsupported source effects keep Replay's native fallback. The converted `impacts/small_glass`
+effect is also wired into the native glass consumer. Successful structural validation checks the
+generated package; it is not a gameplay or visual acceptance test for every converted feature.
