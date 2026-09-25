@@ -562,8 +562,9 @@ CollisionInput ReadCollision(const std::filesystem::path &path)
             cursor += 4;
         }
         if (vertexCount < 4 || vertexCount > 252 || hull.contents == 0 ||
-            (hull.contents & ~supportedContents) != 0 || hull.model >= result.models.size() ||
-            (hull.glassId && !(hull.contents & 0x10u)) ||
+            hull.model >= result.models.size() ||
+            (hull.glassId ? hull.contents != kBreakableGlassContents
+                          : (hull.contents & ~supportedContents) != 0) ||
             hull.materialOverride > 63 || !std::isfinite(hull.ladderRungOffset) ||
             std::abs(hull.ladderRungOffset) > 6.0f ||
             slabCount > 252 || ladderPlaneCount > 8 || (hull.surfaceFlags & ~0x7FFFFu) != 0 ||
@@ -1363,7 +1364,7 @@ std::vector<std::uint8_t> BuildShapeList(ReplayHavok &havok, const std::vector<H
     const auto findTag = [&](const std::uint32_t shapeContents, const std::uint32_t material,
                              const std::uint32_t surfaceFlags,
                              const std::uint16_t glassId = 0) {
-        if (material > 0x1FFFu || (glassId && !(shapeContents & 0x10u)))
+        if (material > 0x1FFFu || (glassId && shapeContents != kBreakableGlassContents))
             throw std::runtime_error("Native glass collision tag is invalid");
         const ShapeTagKey key{shapeContents, material, surfaceFlags, glassId};
         auto tag = tagIndices.find(key);
@@ -1375,7 +1376,11 @@ std::vector<std::uint8_t> BuildShapeList(ReplayHavok &havok, const std::vector<H
         const std::uint64_t userData = (std::uint64_t((shapeContents & 1) ? 1 : 3) << 48) |
                                        (std::uint64_t(glassId) << 32) |
                                        (std::uint64_t(material) << 19) | surfaceFlags;
-        tags.push_back({shapeContents, 0x1AB7BC33u, 0xFFFFu, {}, userData});
+        const auto materialNameCrc = material == 9u ||
+                                             material == kBreakableGlassSurfaceMaterial
+                                         ? kGlassMaterialNameCrc
+                                         : 0x1AB7BC33u;
+        tags.push_back({shapeContents, materialNameCrc, 0xFFFFu, {}, userData});
         tagIndices.emplace(key, newIndex);
         return newIndex;
     };
@@ -1423,9 +1428,9 @@ std::vector<std::uint8_t> BuildShapeList(ReplayHavok &havok, const std::vector<H
             const auto highest = std::max_element(
                 hull.points.begin(), hull.points.end(),
                 [](const auto &left, const auto &right) { return left[2] < right[2]; });
-            // Surface type 9 maps to Replay's native breakable-glass flags
-            // (9 << 19 == 0x480000); glassId is one-based in userData[32:47].
-            const auto material = hull.glassId ? 9u
+            // Numbered panes use the shipped breakable-glass surface type;
+            // glassId is one-based in userData[32:47].
+            const auto material = hull.glassId ? kBreakableGlassSurfaceMaterial
                                   : hull.materialOverride ? hull.materialOverride
                                   : useFloorMaterials ? floors.At(center[0], center[1], (*highest)[2])
                                                       : 5u;

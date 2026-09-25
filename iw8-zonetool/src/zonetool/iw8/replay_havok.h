@@ -10,6 +10,12 @@
 namespace iw8::havok
 {
 
+// Replay 1.20's numbered breakable panes use this shape filter in the shipped
+// Backlot collision map. Ordinary unnumbered glass uses different filters.
+inline constexpr std::uint32_t kBreakableGlassContents = 0x04200001u;
+inline constexpr std::uint32_t kBreakableGlassSurfaceMaterial = 39u;
+inline constexpr std::uint32_t kGlassMaterialNameCrc = 0xF728E572u;
+
 struct BakeInput
 {
     std::filesystem::path replayExecutable;

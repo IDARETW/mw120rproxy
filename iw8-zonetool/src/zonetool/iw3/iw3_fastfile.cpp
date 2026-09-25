@@ -2961,12 +2961,12 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, RenderPlan &plan,
                 continue;
             CollisionHull paneHull = sourceHull;
             paneHull.model = 0;
-            paneHull.contents |= 0x10u;
+            paneHull.contents = iw8::havok::kBreakableGlassContents;
             paneHull.glassId = glassId;
             paneHull.slabs.clear();
             for (auto &point : paneHull.points)
                 point = Add(Transform(axis, point), entityOrigin);
-            sourceHull.contents |= 0x10u;
+            sourceHull.contents = iw8::havok::kBreakableGlassContents;
             sourceHull.glassId = glassId;
             collision.hulls.push_back(std::move(paneHull));
             ++matchedHulls;

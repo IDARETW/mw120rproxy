@@ -232,7 +232,11 @@ confirms their references, while audible playback remains a gameplay check. A un
 that slot retains the intact material. When linked brushes use different texture coordinates,
 the converter embeds a shattered-material shader variant that maps the pane's native UVs to the
 linked brush's UVs; no external shader or texture file is needed. The converter also
-converts surface information into native footstep and collision tags in
+uses Replay's numbered breakable-pane collision filter, surface material, and material CRC for
+these linked glass pieces. Those fields match the shipped Replay 1.20 Backlot `col_map` shape tags;
+ordinary unnumbered glass keeps its separate collision mapping. Native asset loading verifies
+the serialized fields, while fracture and shot behavior still require gameplay testing. The
+converter also converts surface information into native footstep and collision tags in
 `srv_<map>.ff`. These features do not require an additional export step, package directory,
 `build-map` invocation, or loose sidecar. Supported multiplayer start and TDM spawn markers retain
 their source origins and angles. Alternate-mode markers without a proven Replay consumer, including
