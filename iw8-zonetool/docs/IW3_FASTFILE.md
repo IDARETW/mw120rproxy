@@ -180,6 +180,10 @@ retain those authored levels, while resized tiles and the lightmap/sky regions u
 downsample path. This keeps thin source alpha detail in the lower shattered-glass mips without
 changing the native glass geometry or material state.
 The server collision includes the authored collision LOD of placed static models that provide one.
+When the IW3 clip-map export supplies per-triangle contents, the converter applies
+the same supported-contents mapping used for brushes. A source triangle with no
+mapped Replay collision contents is omitted rather than silently made solid;
+an export without per-triangle contents keeps the established solid fallback.
 Exported IW3 material surface-type bits are translated to Replay's native collision and impact types;
 render materials without a known source type use a name-based fallback. For convex world brushes,
 the converter reads the clip-map material indices on all axial and slanted sides. It writes a native

@@ -3858,8 +3858,18 @@ CollisionData ReadCollision(const Json &collision)
                  mixedMaterialBrushes - splitMixedBoxes - splitMixedSlanted);
 
     const auto &vertices = collision.at("vertices");
-    for (const auto &triangle : collision.at("triangles"))
+    const auto &sourceTriangles = collision.at("triangles");
+    const auto sourceTriangleContents = collision.find("triangle_contents");
+    if (sourceTriangleContents != collision.end() &&
+        (!sourceTriangleContents->is_array() ||
+         sourceTriangleContents->size() != sourceTriangles.size() ||
+         collision.value("triangle_contents_schema", std::string{}) !=
+             "material-partitions-v1"))
+        throw std::runtime_error("invalid IW3 collision triangle contents");
+    std::size_t unsupportedTriangleContents = 0;
+    for (std::size_t triangleIndex = 0; triangleIndex < sourceTriangles.size(); ++triangleIndex)
     {
+        const auto &triangle = sourceTriangles.at(triangleIndex);
         if (!triangle.is_array() || triangle.size() != 3)
         {
             throw std::runtime_error("invalid IW3 collision triangle");
@@ -3878,14 +3888,30 @@ CollisionData ReadCollision(const Json &collision)
         const Vec3 cross = Cross(Subtract(points[1], points[0]), Subtract(points[2], points[0]));
         if (Dot(cross, cross) < 1.0e-12f)
             continue;
+        std::uint32_t contents = 1;
+        if (sourceTriangleContents != collision.end() &&
+            !sourceTriangleContents->at(triangleIndex).is_null())
+        {
+            contents = ConvertContents(
+                sourceTriangleContents->at(triangleIndex).get<std::uint32_t>());
+            if (!contents)
+            {
+                ++unsupportedTriangleContents;
+                continue;
+            }
+        }
         const Vec3 offset = Multiply(Unit(cross), 0.125f);
         CollisionHull hull;
+        hull.contents = contents;
         hull.points.reserve(6);
         for (const float direction : {-1.0f, 1.0f})
             for (const Vec3 &point : points)
                 hull.points.push_back(Add(point, Multiply(offset, direction)));
         result.hulls.push_back(std::move(hull));
     }
+    if (unsupportedTriangleContents)
+        zt::info("iw3: omitted %zu source collision triangles whose contents have no Replay mapping",
+                 unsupportedTriangleContents);
     constexpr std::size_t maximumHulls = 262144;
     if (result.hulls.empty() || result.hulls.size() > maximumHulls)
     {
