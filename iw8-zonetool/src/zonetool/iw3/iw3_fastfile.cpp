@@ -87,6 +87,7 @@ struct SourceStaticModelInstance
     Vec3 origin{};
     std::array<Vec3, 3> axis{};
     float scale{1.0f};
+    std::uint16_t reflectionProbe{};
 };
 
 struct SourceStaticModels
@@ -2058,6 +2059,11 @@ std::vector<BrushModel> ReadBrushModels(const Json &world, const std::filesystem
 
         SourceStaticModelInstance converted;
         converted.model = found->second;
+        const auto reflectionProbe = instance.at("reflection_probe").get<unsigned>();
+        const auto sourceProbeCount = world.at("reflection_probes").size();
+        if (reflectionProbe >= sourceProbeCount || reflectionProbe > UINT16_MAX)
+            throw std::runtime_error("IW3 static-model instance references an invalid reflection probe");
+        converted.reflectionProbe = static_cast<std::uint16_t>(reflectionProbe);
         converted.origin = ReadVector<3>(instance.at("origin"));
         converted.scale = instance.at("scale").get<float>();
         if (!std::isfinite(converted.scale) || converted.scale <= 0.0f)
@@ -2993,7 +2999,8 @@ Json BuildGlassPanes(const std::vector<BrushModel> &models, RenderPlan &plan,
 Json BuildRender(const Json &world, const VisibilityGroups &visibility,
                  const std::vector<BrushModel> &models, RenderPlan &plan,
                  const std::filesystem::path &mapDirectory, const std::string &map,
-                 const std::string &entities, CollisionData &collision,
+                 const std::string &entities, const SourceStaticModels &sourceStaticModels,
+                 const replayrender::StaticModels &staticModels, CollisionData &collision,
                  std::size_t &triangleCount)
 {
     const unsigned sunCount = world.at("sun_primary_light_index").get<unsigned>();
@@ -3057,6 +3064,33 @@ Json BuildRender(const Json &world, const VisibilityGroups &visibility,
     const auto sourceProbeCount = world.at("reflection_probes").size();
     std::vector<ProbeBounds> geometryProbeBounds(sourceProbeCount);
     std::vector<ProbeBounds> cellProbeBounds(sourceProbeCount);
+
+    if (sourceStaticModels.instances.size() != staticModels.instances.size())
+        throw std::runtime_error("IW3 static-model reflection assignments do not match Replay instances");
+    for (std::size_t index = 0; index < sourceStaticModels.instances.size(); ++index)
+    {
+        const SourceStaticModelInstance &sourceInstance = sourceStaticModels.instances[index];
+        const replayrender::StaticModelInstance &targetInstance = staticModels.instances[index];
+        if (sourceInstance.reflectionProbe >= sourceProbeCount ||
+            sourceInstance.model >= staticModels.models.size() ||
+            targetInstance.model != sourceInstance.model)
+            throw std::runtime_error("IW3 static-model reflection assignment has invalid indices");
+
+        const replaybounds::Bounds &localBounds = staticModels.models[sourceInstance.model].bounds;
+        const std::array<Vec3, 3> axis = StaticModelAxis(sourceInstance);
+        for (unsigned corner = 0; corner < 8; ++corner)
+        {
+            Vec3 local{};
+            for (std::size_t component = 0; component < 3; ++component)
+                local[component] = localBounds.midpoint[component] +
+                                   ((corner & (1u << component)) ? 1.0f : -1.0f) *
+                                       localBounds.halfSize[component];
+            const Vec3 worldPosition = Add(
+                sourceInstance.origin,
+                Multiply(Transform(axis, local), sourceInstance.scale));
+            geometryProbeBounds[sourceInstance.reflectionProbe].Add(worldPosition);
+        }
+    }
 
     const auto appendSky = [&] {
         MaterialPlan skyPlan;
@@ -5816,8 +5850,8 @@ PreparedMap PrepareFastfile(const ImportOptions &options)
     AlignLadderEdgesToModels(nativeCollision, sourceStaticModels, renderPlan);
     AppendStaticModelCollision(nativeCollision, sourceStaticModels, renderPlan);
     const Json render = BuildRender(world, visibility, brushModels, renderPlan,
-                                    mapDirectory, options.map, entities, nativeCollision,
-                                    triangles);
+                                    mapDirectory, options.map, entities, sourceStaticModels,
+                                    result.staticModels, nativeCollision, triangles);
     result.footsteps = result.scratch / "footsteps.native";
     WriteFootsteps(result.footsteps, brushModels, renderPlan);
 
