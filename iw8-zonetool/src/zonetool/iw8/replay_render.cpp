@@ -798,6 +798,16 @@ void validateUmbraTome(const std::vector<uint8_t> &data, uint32_t objectCount,
         uint64_t(tile) + tileSize > data.size() || read32(data, tile + 0x18) != 33 ||
         read32(data, tile + 0x34) != 1)
         throw std::runtime_error("Invalid conservative Umbra tile header");
+    const float tileScale = readFloat(data, tile + 0x44);
+    const float inverseTileScale = readFloat(data, tile + 0x48);
+    if (!std::isfinite(tileScale) || tileScale <= 0 || !std::isfinite(inverseTileScale) ||
+        inverseTileScale <= 0 ||
+        std::abs(double(tileScale) * inverseTileScale - 1.0) > 1.0e-5)
+        throw std::runtime_error("Invalid conservative Umbra tile coordinate scale");
+    for (unsigned axis = 0; axis < 3; ++axis)
+        if (double(readFloat(data, tile + axis * 4)) + double(tileScale) * 65536.0 <
+            readFloat(data, tile + 12 + axis * 4))
+            throw std::runtime_error("Conservative Umbra cell does not cover its tile");
     validateRange(data, tile + read32(data, tile + 0x1C), 4, "tile tree");
     validateRange(data, tile + read32(data, tile + 0x20), 4, "tile map");
     validateRange(data, tile + read32(data, tile + 0x38), 36, "tile cell");
@@ -2409,6 +2419,20 @@ std::vector<uint8_t> BuildUmbraTome(const Mesh &m, const StaticModels &staticMod
     put(tome.data(), tile + 0x18, uint32_t(33));
     put(tome.data(), tile + 0x30, 0.0f);
     put(tome.data(), tile + 0x34, uint32_t(1));
+    double largestExtent = 0;
+    for (unsigned axis = 0; axis < 3; ++axis)
+        largestExtent = std::max(largestExtent, double(maximum[axis]) - minimum[axis]);
+    const double requiredScale = largestExtent / 65536.0;
+    float tileScale = static_cast<float>(requiredScale);
+    if (double(tileScale) < requiredScale)
+        tileScale = std::nextafter(tileScale, std::numeric_limits<float>::infinity());
+    const float inverseTileScale = 1.0f / tileScale;
+    if (!std::isfinite(tileScale) || tileScale <= 0 || !std::isfinite(inverseTileScale))
+        throw std::runtime_error("Replay Umbra tile cannot quantize its bounds");
+    // Replay 1.20 mode-1 queries decode cell coordinates with tile +0x44 and
+    // quantize the camera position with its reciprocal at tile +0x48.
+    put(tome.data(), tile + 0x44, tileScale);
+    put(tome.data(), tile + 0x48, inverseTileScale);
 
     const uint32_t tileTree = allocate16(tome, 4);
     put(tome.data(), tileTree, uint32_t(3));
