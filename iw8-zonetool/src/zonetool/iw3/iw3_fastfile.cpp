@@ -3607,8 +3607,9 @@ std::optional<std::vector<CollisionHull>> SplitSlantedBrushFaces(
             return std::nullopt;
 
         std::vector<std::size_t> face;
+        // Nearby thin-brush faces must not share reconstructed vertices.
         for (std::size_t index = 0; index < hull.points.size(); ++index)
-            if (std::abs(Dot(normal, hull.points[index]) - plane[3]) <= 0.01f * length)
+            if (std::abs(Dot(normal, hull.points[index]) - plane[3]) <= 0.002f * length)
                 face.push_back(index);
         if (face.size() < 3)
             continue;
