@@ -191,6 +191,8 @@ void EmitSortedSurfaces(iw8::ZoneWriter &writer, const Mesh &mesh,
 void StampStaticModels(std::vector<uint8_t> &world, const StaticModels &models);
 void EmitStaticModels(iw8::ZoneWriter &writer, const StaticModels &models,
                       unsigned lastSunPrimaryLightIndex);
+std::vector<std::vector<replaybounds::Bounds>>
+BuildCellTreeBounds(const Mesh &mesh, const StaticModels &models);
 void StampReflectionProbes(std::vector<uint8_t> &world, const Mesh &mesh,
                            const iw8::ZoneWriter &writer);
 void EmitReflectionProbes(iw8::ZoneWriter &writer, const Mesh &mesh);

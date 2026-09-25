@@ -1782,6 +1782,65 @@ void EmitStaticModels(ZoneWriter &writer, const StaticModels &models,
         writer.writeT<uint32_t>(0);
 }
 
+std::vector<std::vector<replaybounds::Bounds>>
+BuildCellTreeBounds(const Mesh &mesh, const StaticModels &models)
+{
+    std::vector<replaybounds::Bounds> collectionBounds;
+    collectionBounds.reserve(models.instances.size());
+    for (const auto &instance : models.instances)
+    {
+        if (instance.model >= models.models.size())
+            throw std::runtime_error("Replay AABB tree has an invalid static-model instance");
+        collectionBounds.push_back(TransformBounds(models.models[instance.model].bounds, instance));
+    }
+
+    std::vector<std::vector<replaybounds::Bounds>> result;
+    result.reserve(mesh.cells.size());
+    for (const auto &cell : mesh.cells)
+    {
+        std::vector<replaybounds::Bounds> bounds;
+        bounds.reserve(cell.trees.size());
+        for (const auto &tree : cell.trees)
+            bounds.push_back(tree.bounds);
+        for (size_t index = cell.trees.size(); index-- > 0;)
+        {
+            const auto &tree = cell.trees[index];
+            replaybounds::Accumulator enclosing;
+            const auto add = [&](const replaybounds::Bounds &box) {
+                std::array<float, 3> minimum{}, maximum{};
+                for (unsigned axis = 0; axis < 3; ++axis)
+                {
+                    minimum[axis] = box.midpoint[axis] - box.halfSize[axis];
+                    maximum[axis] = box.midpoint[axis] + box.halfSize[axis];
+                }
+                enclosing.Add(minimum);
+                enclosing.Add(maximum);
+            };
+            add(tree.bounds);
+            for (const auto model : tree.staticModelIndexes)
+            {
+                if (model >= collectionBounds.size())
+                    throw std::runtime_error("Replay AABB tree references an invalid static model");
+                add(collectionBounds[model]);
+            }
+            if (tree.childCount)
+            {
+                if (tree.childrenOffset % 48 || tree.childrenOffset == 0)
+                    throw std::runtime_error("Replay AABB tree has an invalid child offset");
+                const size_t first = index + tree.childrenOffset / 48;
+                if (first <= index || first > bounds.size() ||
+                    tree.childCount > bounds.size() - first)
+                    throw std::runtime_error("Replay AABB tree has an invalid child range");
+                for (size_t child = first; child < first + tree.childCount; ++child)
+                    add(bounds[child]);
+            }
+            bounds[index] = enclosing.Finish();
+        }
+        result.push_back(std::move(bounds));
+    }
+    return result;
+}
+
 void StampReflectionProbes(std::vector<uint8_t> &world, const Mesh &mesh,
                            const ZoneWriter &writer)
 {

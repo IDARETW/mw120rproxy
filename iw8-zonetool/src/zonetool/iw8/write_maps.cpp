@@ -563,14 +563,16 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
     zw.pushStream(XFILE_BLOCK_VIRTUAL);
     zw.writeStr(assetName);
     replayrender::EmitVertices(zw, mesh);
+    const auto treeBounds = replayrender::BuildCellTreeBounds(mesh, staticModels);
     zw.align(3);
     for (const auto &cell : mesh.cells)
         zw.writeT<uint32_t>(static_cast<uint32_t>(cell.trees.size()));
     zw.align(7);
     for (const auto &cell : mesh.cells)
         zw.writeT<uint64_t>(cell.trees.empty() ? PTR_NULL : PTR_FOLLOWS);
-    for (const auto &cell : mesh.cells)
+    for (size_t cellIndex = 0; cellIndex < mesh.cells.size(); ++cellIndex)
     {
+        const auto &cell = mesh.cells[cellIndex];
         if (cell.trees.empty())
             continue;
         // Load_GfxCellTree reads its array count from Replay's temp stream.
@@ -579,15 +581,16 @@ void emitGfxMapBody(ZoneWriter &zw, const char *assetName, const std::string &me
         zw.writeT<uint32_t>(static_cast<uint32_t>(cell.trees.size()));
         zw.popStream();
         zw.align(7);
-        for (const auto &source : cell.trees)
+        for (size_t treeIndex = 0; treeIndex < cell.trees.size(); ++treeIndex)
         {
+            const auto &source = cell.trees[treeIndex];
             if (source.staticModelIndexes.size() > UINT16_MAX)
                 throw std::runtime_error("Replay AABB tree has too many static-model indexes");
             for (const auto index : source.staticModelIndexes)
                 if (index >= staticModels.instances.size())
                     throw std::runtime_error("Replay AABB tree references an invalid static model");
             uint8_t tree[48]{};
-            source.bounds.Write(tree);
+            treeBounds[cellIndex][treeIndex].Write(tree);
             stamp32(tree, 0x18, source.surfaceCount);
             stamp32(tree, 0x1C, source.firstSurface);
             stamp32(tree, 0x20, source.childrenOffset);
