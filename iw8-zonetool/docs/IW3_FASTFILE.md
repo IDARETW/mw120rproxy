@@ -180,9 +180,10 @@ render materials without a known source type use a name-based fallback. For conv
 the converter reads the clip-map material indices on all axial and slanted sides. It writes a native
 shape tag when the mapped physical type agrees across those sides. Mixed-material brushes retain
 their source face types when they are fixed-world axial boxes: six convex pieces tile the original
-solid, each with the material tag of its exterior face. Mixed slanted brushes and entity brushes
-retain the nearest walkable-surface fallback because Replay's convex-shape writer assigns one tag
-per hull, not one per face.
+solid, each with the material tag of its exterior face. Fixed-world slanted convex brushes use the
+same center-to-face split only when the reconstructed source planes form distinct, closed faces;
+otherwise they retain the nearest walkable-surface fallback. Entity brushes also retain that
+fallback because Replay's convex-shape writer assigns one tag per hull, not one per face.
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
 

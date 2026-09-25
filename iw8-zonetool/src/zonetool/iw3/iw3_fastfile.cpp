@@ -3584,6 +3584,72 @@ std::vector<CollisionHull::Slab> BuildTriggerSlabs(const std::vector<Vec3> &poin
     return slabs;
 }
 
+std::optional<std::vector<CollisionHull>> SplitSlantedBrushFaces(
+    const CollisionHull &hull, const std::vector<Vec4> &planes,
+    const std::vector<unsigned> &materials)
+{
+    if (planes.size() != materials.size())
+        throw std::runtime_error("IW3 brush face materials do not match its planes");
+    Vec3 center{};
+    for (const Vec3 &point : hull.points)
+        center = Add(center, point);
+    center = Multiply(center, 1.0f / hull.points.size());
+
+    std::vector<CollisionHull> pieces;
+    std::vector<std::vector<std::size_t>> faces;
+    std::vector<unsigned> faceIncidence(hull.points.size());
+    for (std::size_t planeIndex = 0; planeIndex < planes.size(); ++planeIndex)
+    {
+        const Vec4 &plane = planes[planeIndex];
+        const Vec3 normal{plane[0], plane[1], plane[2]};
+        const float length = std::sqrt(Dot(normal, normal));
+        if (length < 1.0e-6f || plane[3] - Dot(normal, center) < 0.02f * length)
+            return std::nullopt;
+
+        std::vector<std::size_t> face;
+        for (std::size_t index = 0; index < hull.points.size(); ++index)
+            if (std::abs(Dot(normal, hull.points[index]) - plane[3]) <= 0.01f * length)
+                face.push_back(index);
+        if (face.size() < 3)
+            continue;
+        const Vec3 edge = Subtract(hull.points[face[1]], hull.points[face[0]]);
+        const bool planarArea = std::ranges::any_of(face.begin() + 2, face.end(),
+                                                    [&](const std::size_t index) {
+            return std::abs(Dot(Cross(edge, Subtract(hull.points[index], hull.points[face[0]])),
+                                normal)) > 0.01f * length;
+        });
+        if (!planarArea)
+            continue;
+        if (std::ranges::find(faces, face) != faces.end())
+            return std::nullopt;
+        faces.push_back(face);
+        for (const std::size_t index : face)
+            ++faceIncidence[index];
+
+        CollisionHull piece;
+        piece.contents = hull.contents;
+        piece.model = hull.model;
+        piece.materialOverride = materials[planeIndex];
+        piece.points.push_back(center);
+        for (const std::size_t index : face)
+            piece.points.push_back(hull.points[index]);
+        if (piece.points.size() > 252)
+            return std::nullopt;
+        pieces.push_back(std::move(piece));
+    }
+    // A closed convex polyhedron has every vertex on at least three faces and
+    // V - E + F = 2, with 2E equal to the sum of face-vertex incidences.
+    // Reject incomplete face lists instead of leaving a gap in the collision
+    // volume when a source plane cannot be matched to the reconstructed hull.
+    const std::size_t incidences = std::accumulate(faceIncidence.begin(), faceIncidence.end(),
+                                                   std::size_t{});
+    if (pieces.size() < 4 ||
+        !std::ranges::all_of(faceIncidence, [](const unsigned count) { return count >= 3; }) ||
+        incidences != 2 * (hull.points.size() + faces.size() - 2))
+        return std::nullopt;
+    return pieces;
+}
+
 CollisionData ReadCollision(const Json &collision)
 {
     const auto &sourceBrushes = collision.at("brushes");
@@ -3642,6 +3708,7 @@ CollisionData ReadCollision(const Json &collision)
     std::size_t sourceTaggedBrushes = 0;
     std::size_t mixedMaterialBrushes = 0;
     std::size_t splitMixedBoxes = 0;
+    std::size_t splitMixedSlanted = 0;
     for (std::size_t brushIndex = 0; brushIndex < sourceBrushes.size(); ++brushIndex)
     {
         const auto &brush = sourceBrushes.at(brushIndex);
@@ -3671,6 +3738,7 @@ CollisionData ReadCollision(const Json &collision)
         hull.model = owner.at(brushIndex);
         bool mixedMaterials = false;
         std::array<std::array<unsigned, 3>, 2> axialMaterials{};
+        std::vector<unsigned> sideMaterials;
         if (!collisionMaterials.empty())
         {
             const auto &axial = brush.at("axial_materials");
@@ -3705,8 +3773,9 @@ CollisionData ReadCollision(const Json &collision)
                 for (std::size_t axis = 0; axis < 3; ++axis)
                     axialMaterials[side][axis] = consider(row.at(axis));
             }
+            sideMaterials.reserve(sides.size());
             for (const auto &reference : sides)
-                consider(reference);
+                sideMaterials.push_back(consider(reference));
             if (mixedMaterials)
                 ++mixedMaterialBrushes;
             else if (sourceMaterial)
@@ -3762,12 +3831,31 @@ CollisionData ReadCollision(const Json &collision)
                 }
             ++splitMixedBoxes;
         }
+        else if (mixedMaterials && hull.model == 0 && !brush.at("planes").empty() &&
+                 !(brush.at("contents").get<std::uint32_t>() & (0x10u | 0x40u)) &&
+                 hull.ladderPlanes.empty())
+        {
+            for (std::size_t axis = 0; axis < 3; ++axis)
+            {
+                sideMaterials.push_back(axialMaterials[0][axis]);
+                sideMaterials.push_back(axialMaterials[1][axis]);
+            }
+            if (auto pieces = SplitSlantedBrushFaces(hull, planes, sideMaterials))
+            {
+                for (auto &piece : *pieces)
+                    result.hulls.push_back(std::move(piece));
+                ++splitMixedSlanted;
+            }
+            else
+                result.hulls.push_back(std::move(hull));
+        }
         else
             result.hulls.push_back(std::move(hull));
     }
     if (!collisionMaterials.empty())
-        zt::info("iw3: tagged %zu brush hulls from source materials; split %zu mixed axial brushes into face-tagged convex pieces; %zu other mixed brushes retain floor-derived tags",
-                 sourceTaggedBrushes, splitMixedBoxes, mixedMaterialBrushes - splitMixedBoxes);
+        zt::info("iw3: tagged %zu brush hulls from source materials; split %zu mixed axial and %zu slanted brushes into face-tagged convex pieces; %zu other mixed brushes retain floor-derived tags",
+                 sourceTaggedBrushes, splitMixedBoxes, splitMixedSlanted,
+                 mixedMaterialBrushes - splitMixedBoxes - splitMixedSlanted);
 
     const auto &vertices = collision.at("vertices");
     for (const auto &triangle : collision.at("triangles"))
