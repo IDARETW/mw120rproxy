@@ -3867,8 +3867,25 @@ CollisionData ReadCollision(const Json &collision)
              "material-partitions-v1"))
         throw std::runtime_error("invalid IW3 collision triangle contents");
     std::size_t unsupportedTriangleContents = 0;
+    std::size_t unreferencedTriangles = 0;
     for (std::size_t triangleIndex = 0; triangleIndex < sourceTriangles.size(); ++triangleIndex)
     {
+        std::uint32_t contents = 1;
+        if (sourceTriangleContents != collision.end())
+        {
+            const auto &sourceContents = sourceTriangleContents->at(triangleIndex);
+            if (sourceContents.is_null())
+            {
+                ++unreferencedTriangles;
+                continue;
+            }
+            contents = ConvertContents(sourceContents.get<std::uint32_t>());
+            if (!contents)
+            {
+                ++unsupportedTriangleContents;
+                continue;
+            }
+        }
         const auto &triangle = sourceTriangles.at(triangleIndex);
         if (!triangle.is_array() || triangle.size() != 3)
         {
@@ -3888,18 +3905,6 @@ CollisionData ReadCollision(const Json &collision)
         const Vec3 cross = Cross(Subtract(points[1], points[0]), Subtract(points[2], points[0]));
         if (Dot(cross, cross) < 1.0e-12f)
             continue;
-        std::uint32_t contents = 1;
-        if (sourceTriangleContents != collision.end() &&
-            !sourceTriangleContents->at(triangleIndex).is_null())
-        {
-            contents = ConvertContents(
-                sourceTriangleContents->at(triangleIndex).get<std::uint32_t>());
-            if (!contents)
-            {
-                ++unsupportedTriangleContents;
-                continue;
-            }
-        }
         const Vec3 offset = Multiply(Unit(cross), 0.125f);
         CollisionHull hull;
         hull.contents = contents;
@@ -3912,6 +3917,9 @@ CollisionData ReadCollision(const Json &collision)
     if (unsupportedTriangleContents)
         zt::info("iw3: omitted %zu source collision triangles whose contents have no Replay mapping",
                  unsupportedTriangleContents);
+    if (unreferencedTriangles)
+        zt::info("iw3: omitted %zu source collision triangles not referenced by a clip-map partition",
+                 unreferencedTriangles);
     constexpr std::size_t maximumHulls = 262144;
     if (result.hulls.empty() || result.hulls.size() > maximumHulls)
     {

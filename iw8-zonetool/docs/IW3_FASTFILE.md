@@ -183,7 +183,8 @@ The server collision includes the authored collision LOD of placed static models
 When the IW3 clip-map export supplies per-triangle contents, the converter applies
 the same supported-contents mapping used for brushes. A source triangle with no
 mapped Replay collision contents is omitted rather than silently made solid;
-an export without per-triangle contents keeps the established solid fallback.
+an unreferenced (`null`) triangle is also omitted. An export without the
+per-triangle array keeps the established solid fallback.
 Exported IW3 material surface-type bits are translated to Replay's native collision and impact types;
 render materials without a known source type use a name-based fallback. For convex world brushes,
 the converter reads the clip-map material indices on all axial and slanted sides. It writes a native
