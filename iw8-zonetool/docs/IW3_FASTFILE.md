@@ -174,6 +174,11 @@ available HUD minimap. Source DPVS cells and AABB trees preserve their surface a
 membership, including model-only trees, in Replay's native visibility layout. Model conversion
 preserves the original indexed geometry and UVs, and
 generates Replay material/technique assets from the source color, normal, and response images.
+Direct material images retain the source DDS/IWI mip levels when supplied; missing levels are
+generated from the preceding level. Exact-size material tiles in the shared world atlas also
+retain those authored levels, while resized tiles and the lightmap/sky regions use the atlas
+downsample path. This keeps thin source alpha detail in the lower shattered-glass mips without
+changing the native glass geometry or material state.
 The server collision includes the authored collision LOD of placed static models that provide one.
 Exported IW3 material surface-type bits are translated to Replay's native collision and impact types;
 render materials without a known source type use a name-based fallback. For convex world brushes,

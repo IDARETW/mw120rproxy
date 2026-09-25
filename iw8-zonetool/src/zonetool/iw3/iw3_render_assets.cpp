@@ -43,6 +43,8 @@ struct Image
     unsigned width{};
     unsigned height{};
     std::vector<std::uint8_t> rgba;
+    // Authored source levels in largest-to-smallest order, excluding this level.
+    std::vector<Image> mips;
 };
 
 struct Cubemap
@@ -488,6 +490,10 @@ std::size_t DdsLevelSize(const unsigned width, const unsigned height, const std:
     return (static_cast<std::size_t>(width) * height * bits + 7) / 8;
 }
 
+Image DecodeDdsLevel(std::span<const std::uint8_t> source, unsigned width, unsigned height,
+                     std::uint32_t fourCC, unsigned bits,
+                     const std::array<std::uint32_t, 4> &masks);
+
 std::vector<Image> DecodeDds(const std::filesystem::path &path)
 {
     const auto bytes = ReadBytes(path);
@@ -567,13 +573,22 @@ std::vector<Image> DecodeDds(const std::filesystem::path &path)
                 throw std::runtime_error("unsupported uncompressed DDS image " + path.string());
             }
         }
-        result.push_back(std::move(image));
         for (unsigned level = 0, w = width, h = height; level < mipCount; ++level)
         {
-            offset += DdsLevelSize(w, h, fourCC, bits);
+            if (level && w == 1 && h == 1 && !image.mips.empty() &&
+                image.mips.back().width == 1 && image.mips.back().height == 1)
+                throw std::runtime_error("DDS has too many mip levels " + path.string());
+            const std::size_t size = DdsLevelSize(w, h, fourCC, bits);
+            if (offset > bytes.size() || size > bytes.size() - offset)
+                throw std::runtime_error("truncated DDS mip pixels " + path.string());
+            if (level)
+                image.mips.push_back(DecodeDdsLevel(data.subspan(offset, size), w, h,
+                                                    fourCC, bits, masks));
+            offset += size;
             w = std::max(1u, w / 2);
             h = std::max(1u, h / 2);
         }
+        result.push_back(std::move(image));
     }
     return result;
 }
@@ -718,6 +733,8 @@ std::vector<Image> DecodeIwi(const std::filesystem::path &path)
         Read<std::uint32_t>(data, 12) != bytes.size())
         throw std::runtime_error("truncated IW3 IWI image " + path.string());
     const std::size_t start = bytes.size() - faceSize * faces;
+    if ((flags & 2u) && start != 28)
+        throw std::runtime_error("unexpected IW3 IWI mip payload " + path.string());
     std::vector<Image> result;
     result.reserve(faces);
     for (unsigned face = 0; face < faces; ++face)
@@ -780,6 +797,57 @@ std::vector<Image> DecodeIwi(const std::filesystem::path &path)
             }
         }
         result.push_back(std::move(image));
+    }
+    // IW3 stores its mip levels smallest first. Preserve the authored levels
+    // for direct Replay materials instead of averaging the top level again;
+    // thin alpha details such as shattered glass otherwise disappear in mips.
+    if (faces == 1 && !(flags & 2u))
+    {
+        std::size_t offset = start;
+        unsigned mipWidth = width, mipHeight = height;
+        while (mipWidth > 1 || mipHeight > 1)
+        {
+            mipWidth = std::max(1u, mipWidth / 2);
+            mipHeight = std::max(1u, mipHeight / 2);
+            const std::size_t size =
+                fourCC ? DdsLevelSize(mipWidth, mipHeight, fourCC, 0)
+                       : static_cast<std::size_t>(mipWidth) * mipHeight * bytesPerPixel;
+            if (offset < 28 || size > offset - 28)
+                throw std::runtime_error("truncated IW3 IWI mip chain " + path.string());
+            offset -= size;
+            if (fourCC)
+            {
+                result.front().mips.push_back(DecodeDdsLevel(data.subspan(offset, size),
+                                                              mipWidth, mipHeight, fourCC, 0,
+                                                              {0, 0, 0, 0}));
+                continue;
+            }
+            Image mip{mipWidth, mipHeight,
+                      std::vector<std::uint8_t>(static_cast<std::size_t>(mipWidth) *
+                                                mipHeight * 4)};
+            for (std::size_t index = 0; index <
+                                        static_cast<std::size_t>(mipWidth) * mipHeight;
+                 ++index)
+            {
+                const auto *pixel = bytes.data() + offset + index * bytesPerPixel;
+                auto *target = mip.rgba.data() + index * 4;
+                if (format == 1)
+                    target[0] = pixel[2], target[1] = pixel[1], target[2] = pixel[0],
+                    target[3] = pixel[3];
+                else if (format == 2)
+                    target[0] = pixel[2], target[1] = pixel[1], target[2] = pixel[0],
+                    target[3] = 255;
+                else if (format == 3)
+                    target[0] = target[1] = target[2] = pixel[0], target[3] = pixel[1];
+                else if (format == 4)
+                    target[0] = target[1] = target[2] = pixel[0], target[3] = 255;
+                else
+                    target[0] = target[1] = target[2] = 255, target[3] = pixel[0];
+            }
+            result.front().mips.push_back(std::move(mip));
+        }
+        if (offset != 28)
+            throw std::runtime_error("invalid IW3 IWI mip layout " + path.string());
     }
     return result;
 }
@@ -2027,12 +2095,28 @@ Image Downsample(const Image &source, const bool color)
 std::vector<std::uint8_t> MipChain(Image image, const unsigned levels, const bool color)
 {
     std::vector<std::uint8_t> output;
+    auto authoredMips = std::move(image.mips);
+    image.mips.clear();
     for (unsigned level = 0; level < levels; ++level)
     {
         output.insert(output.end(), image.rgba.begin(), image.rgba.end());
         output.resize((output.size() + 15) & ~std::size_t{15});
         if (level + 1 < levels)
-            image = Downsample(image, color);
+        {
+            const unsigned width = std::max(1u, image.width / 2);
+            const unsigned height = std::max(1u, image.height / 2);
+            if (level < authoredMips.size())
+            {
+                if (authoredMips[level].width != width ||
+                    authoredMips[level].height != height ||
+                    authoredMips[level].rgba.size() !=
+                        static_cast<std::size_t>(width) * height * 4)
+                    throw std::runtime_error("invalid authored image mip dimensions");
+                image = std::move(authoredMips[level]);
+            }
+            else
+                image = Downsample(image, color);
+        }
     }
     return output;
 }
@@ -2370,6 +2454,13 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     std::array<Image, 3> atlases{Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)},
                                  Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)},
                                  Image{4096, 4096, std::vector<std::uint8_t>(4096ull * 4096 * 4)}};
+    struct AtlasTileMipSource
+    {
+        std::size_t tile;
+        std::string image;
+        std::array<float, 4> tint;
+    };
+    std::array<std::vector<AtlasTileMipSource>, 3> atlasTileMips;
 
     plan.columns = columns;
     std::set<std::size_t> writtenTiles;
@@ -2386,18 +2477,33 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
             item.tile = tileNumbers.at(TileKey(material));
             if (writtenTiles.insert(item.tile).second)
             {
+                const auto retainMips = [&](const unsigned channel, const std::string &name) {
+                    if (name.empty())
+                        return;
+                    const Image &source = image(name).front();
+                    if (source.width == cell && source.height == cell && !source.mips.empty())
+                        atlasTileMips[channel].push_back(
+                            {item.tile, name, material.tint});
+                };
                 const Image color =
                     Resize(image(material.color).front(), cell, cell, true, material.tint);
                 Paste(atlases[0], color, static_cast<unsigned>(item.tile % columns) * cell,
                       static_cast<unsigned>(item.tile / columns) * cell);
+                retainMips(0, material.color);
                 if (!material.normal.empty())
+                {
                     Paste(atlases[1], Resize(image(material.normal).front(), cell, cell, false),
                           static_cast<unsigned>(item.tile % columns) * cell,
                           static_cast<unsigned>(item.tile / columns) * cell);
+                    retainMips(1, material.normal);
+                }
                 if (!material.response.empty())
+                {
                     Paste(atlases[2], Resize(image(material.response).front(), cell, cell, false),
                           static_cast<unsigned>(item.tile % columns) * cell,
                           static_cast<unsigned>(item.tile / columns) * cell);
+                    retainMips(2, material.response);
+                }
             }
             plan.hasCutout |= item.kind == SurfaceKind::cutout;
             plan.hasGlass |= item.kind == SurfaceKind::glass;
@@ -2605,7 +2711,13 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
                                    const std::array<float, 4> &tint,
                                    const std::string_view domain) {
         if (channel == 0)
+        {
+            for (auto &mip : source.mips)
+                mip = Resize(mip, mip.width, mip.height, true, tint);
+            auto authoredMips = std::move(source.mips);
             source = Resize(source, source.width, source.height, true, tint);
+            source.mips = std::move(authoredMips);
+        }
         unsigned levels = 1, width = source.width, height = source.height;
         while (width > 1 || height > 1)
         {
@@ -2635,6 +2747,30 @@ RenderPlan PrepareRenderAssets(const std::filesystem::path &exportRoot, const Js
     material["imageDefinitions"] = Json::array();
     for (unsigned channel = 0; channel < 3; ++channel)
     {
+        // Keep authored mip coverage inside exact-size material tiles. The
+        // surrounding atlas (including lightmaps and sky) still downsamples
+        // normally; the source's lower levels must not be re-averaged away.
+        for (unsigned level = 1; level < mipCount && !atlasTileMips[channel].empty(); ++level)
+        {
+            Image next = Downsample(level == 1 ? atlases[channel]
+                                               : atlases[channel].mips.back(),
+                                    channel == 0);
+            const unsigned mipCell = cell >> level;
+            for (const auto &tile : atlasTileMips[channel])
+            {
+                const auto &sourceMips = image(tile.image).front().mips;
+                if (level > sourceMips.size() || sourceMips[level - 1].width != mipCell ||
+                    sourceMips[level - 1].height != mipCell)
+                    continue;
+                const Image authored = Resize(sourceMips[level - 1], mipCell, mipCell,
+                                              channel == 0,
+                                              channel == 0 ? tile.tint
+                                                           : std::array<float, 4>{1, 1, 1, 1});
+                Paste(next, authored, static_cast<unsigned>(tile.tile % columns) * mipCell,
+                      static_cast<unsigned>(tile.tile / columns) * mipCell);
+            }
+            atlases[channel].mips.push_back(std::move(next));
+        }
         auto chain = MipChain(std::move(atlases[channel]), mipCount, channel == 0);
         const std::string filename = map + "_atlas_" + std::to_string(channel) + ".rgba";
         const std::string name = ImageName(map, channel, chain);
