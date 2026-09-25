@@ -3641,6 +3641,7 @@ CollisionData ReadCollision(const Json &collision)
     result.hulls.reserve(sourceBrushes.size() + collision.at("triangles").size());
     std::size_t sourceTaggedBrushes = 0;
     std::size_t mixedMaterialBrushes = 0;
+    std::size_t splitMixedBoxes = 0;
     for (std::size_t brushIndex = 0; brushIndex < sourceBrushes.size(); ++brushIndex)
     {
         const auto &brush = sourceBrushes.at(brushIndex);
@@ -3668,6 +3669,8 @@ CollisionData ReadCollision(const Json &collision)
         hull.slabs = BuildTriggerSlabs(hull.points, planes);
         hull.contents = contents;
         hull.model = owner.at(brushIndex);
+        bool mixedMaterials = false;
+        std::array<std::array<unsigned, 3>, 2> axialMaterials{};
         if (!collisionMaterials.empty())
         {
             const auto &axial = brush.at("axial_materials");
@@ -3677,33 +3680,34 @@ CollisionData ReadCollision(const Json &collision)
                 throw std::runtime_error("IW3 brush material references are invalid");
 
             unsigned sourceMaterial = 0;
-            bool mixed = false;
-            const auto consider = [&](const Json &reference) {
+            const auto consider = [&](const Json &reference) -> unsigned {
                 const auto index = reference.get<std::int64_t>();
                 if (index < 0)
-                    return;
+                    return 0;
                 if (static_cast<std::uint64_t>(index) >= collisionMaterials.size())
                     throw std::runtime_error("IW3 brush material index is invalid");
                 const unsigned material = collisionMaterials[static_cast<std::size_t>(index)];
                 if (material == std::numeric_limits<unsigned>::max())
-                    mixed = true;
+                    mixedMaterials = true;
                 else if (material)
                 {
                     if (sourceMaterial && sourceMaterial != material)
-                        mixed = true;
+                        mixedMaterials = true;
                     sourceMaterial = material;
                 }
+                return material == std::numeric_limits<unsigned>::max() ? 0 : material;
             };
-            for (const auto &row : axial)
+            for (std::size_t side = 0; side < 2; ++side)
             {
+                const auto &row = axial.at(side);
                 if (!row.is_array() || row.size() != 3)
                     throw std::runtime_error("IW3 axial brush materials are invalid");
-                for (const auto &reference : row)
-                    consider(reference);
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                    axialMaterials[side][axis] = consider(row.at(axis));
             }
             for (const auto &reference : sides)
                 consider(reference);
-            if (mixed)
+            if (mixedMaterials)
                 ++mixedMaterialBrushes;
             else if (sourceMaterial)
             {
@@ -3728,11 +3732,42 @@ CollisionData ReadCollision(const Json &collision)
             if (!hull.ladderPlanes.empty())
                 hull.surfaceFlags |= 0x8u;
         }
-        result.hulls.push_back(std::move(hull));
+        // Each pyramid has one original box face as its base and the box center
+        // as its apex. The six convex pieces tile the same solid volume, while
+        // Replay can give their exterior faces distinct native shape tags.
+        if (mixedMaterials && hull.model == 0 && brush.at("planes").empty() &&
+            !(brush.at("contents").get<std::uint32_t>() & (0x10u | 0x40u)) &&
+            hull.ladderPlanes.empty())
+        {
+            const Vec3 center = Multiply(Add(minimum, maximum), 0.5f);
+            for (std::size_t side = 0; side < 2; ++side)
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                {
+                    CollisionHull face;
+                    face.contents = hull.contents;
+                    face.model = hull.model;
+                    face.materialOverride = axialMaterials[side][axis];
+                    face.points.push_back(center);
+                    for (unsigned corner = 0; corner < 4; ++corner)
+                    {
+                        Vec3 point = minimum;
+                        point[axis] = side ? maximum[axis] : minimum[axis];
+                        point[(axis + 1) % 3] = corner & 1u ? maximum[(axis + 1) % 3]
+                                                           : minimum[(axis + 1) % 3];
+                        point[(axis + 2) % 3] = corner & 2u ? maximum[(axis + 2) % 3]
+                                                           : minimum[(axis + 2) % 3];
+                        face.points.push_back(point);
+                    }
+                    result.hulls.push_back(std::move(face));
+                }
+            ++splitMixedBoxes;
+        }
+        else
+            result.hulls.push_back(std::move(hull));
     }
     if (!collisionMaterials.empty())
-        zt::info("iw3: tagged %zu brush hulls from source materials; %zu mixed brush hulls retain floor-derived tags",
-                 sourceTaggedBrushes, mixedMaterialBrushes);
+        zt::info("iw3: tagged %zu brush hulls from source materials; split %zu mixed axial brushes into face-tagged convex pieces; %zu other mixed brushes retain floor-derived tags",
+                 sourceTaggedBrushes, splitMixedBoxes, mixedMaterialBrushes - splitMixedBoxes);
 
     const auto &vertices = collision.at("vertices");
     for (const auto &triangle : collision.at("triangles"))

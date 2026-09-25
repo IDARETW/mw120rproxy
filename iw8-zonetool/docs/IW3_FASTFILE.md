@@ -179,7 +179,9 @@ Exported IW3 material surface-type bits are translated to Replay's native collis
 render materials without a known source type use a name-based fallback. For convex world brushes,
 the converter reads the clip-map material indices on all axial and slanted sides. It writes a native
 shape tag when the mapped physical type agrees across those sides. Mixed-material brushes retain
-the nearest walkable-surface fallback because Replay's current convex-shape writer assigns one tag
+their source face types when they are fixed-world axial boxes: six convex pieces tile the original
+solid, each with the material tag of its exterior face. Mixed slanted brushes and entity brushes
+retain the nearest walkable-surface fallback because Replay's convex-shape writer assigns one tag
 per hull, not one per face.
 Authored model culling and alpha coverage are carried into the generated passes. IW3 technique
 sets themselves cannot be copied verbatim because the engines use different shader layouts.
